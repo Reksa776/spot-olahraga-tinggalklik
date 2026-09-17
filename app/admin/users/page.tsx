@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { FiUsers } from "react-icons/fi";
+import { FiSearch, FiUsers } from "react-icons/fi";
+import { Button, Group, Stack, Text, TextInput } from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    ErrorBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
 
 type User = {
     id: string; name: string | null; email: string | null; phone: string | null;
@@ -13,7 +24,14 @@ async function readJson(r: Response) { const t = await r.text(); if (!t) throw n
 
 function formatDate(v: string) { return new Date(v).toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric" }); }
 function roleLabel(r: string) { switch (r) { case "ADMIN": return "Admin"; case "SELLER": return "Seller"; case "AFFILIATOR": return "Affiliator"; default: return "Customer"; } }
-function roleColor(r: string) { switch (r) { case "ADMIN": return "bg-purple-50 text-purple-700"; case "SELLER": return "bg-blue-50 text-blue-700"; case "AFFILIATOR": return "bg-amber-50 text-amber-700"; default: return "bg-gray-100 text-gray-600"; } }
+
+/**
+ * Role → tone. The role pills were hand-tinted per role before (`purple` / `blue` / `amber` / grey);
+ * those tints are re-expressed in the shared semantic vocabulary so a role reads the same here as
+ * every other status in the dashboard. ADMIN stays `brand` on purpose — it is the privileged
+ * identity of this very surface, not a status.
+ */
+function roleTone(r: string): Tone { switch (r) { case "ADMIN": return "brand"; case "SELLER": return "info"; case "AFFILIATOR": return "warn"; default: return "neutral"; } }
 
 export default function AdminUsersPage() {
     const [users, setUsers] = useState<User[]>([]);
@@ -41,66 +59,107 @@ export default function AdminUsersPage() {
 
     function handleSearch(e: React.FormEvent) { e.preventDefault(); setPage(1); load(); }
 
+    const totalPages = Math.ceil(total / limit);
+
     return (
-        <div className="min-h-full bg-gray-50/70 p-4 md:p-6 lg:p-8">
-            <div className="mx-auto max-w-[1500px] space-y-6">
-                <div>
-                    <div className="mb-2 flex items-center gap-2 text-xs text-gray-400"><span>Admin</span><span>/</span><span className="text-gray-600">Pengguna</span></div>
-                    <h1 className="text-2xl font-bold tracking-tight text-gray-950">Pengguna</h1>
-                    <p className="mt-1 text-sm text-gray-500">Daftar pengguna terdaftar.</p>
-                </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin"
+                title="Pengguna"
+                description="Daftar pengguna terdaftar."
+            />
 
-                {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+            <SectionCard
+                title="Daftar Pengguna"
+                description={`${total} pengguna`}
+                actions={
+                    <form onSubmit={handleSearch}>
+                        <Group gap="sm" wrap="nowrap">
+                            <TextInput
+                                value={search}
+                                onChange={(e) => setSearch(e.currentTarget.value)}
+                                placeholder="Cari nama/email/telepon…"
+                                aria-label="Cari pengguna"
+                                size="md"
+                                w={{ base: 180, sm: 280 }}
+                                leftSection={<FiSearch size={16} />}
+                            />
 
-                <section className="overflow-hidden border border-gray-200 bg-white">
-                    <div className="flex flex-col gap-4 border-b border-gray-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
-                        <div><h2 className="text-sm font-semibold text-gray-950">Daftar Pengguna</h2><p className="mt-0.5 text-xs text-gray-400">{total} pengguna</p></div>
-                        <form onSubmit={handleSearch} className="flex gap-2">
-                            <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari nama/email/telepon..." className="h-10 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-gray-400 focus:bg-white md:w-72" />
-                            <button type="submit" className="h-10 rounded-lg bg-gray-950 px-4 text-sm font-medium text-white hover:bg-gray-800">Cari</button>
-                        </form>
-                    </div>
+                            <Button type="submit" size="md" color="ink" radius="md">
+                                Cari
+                            </Button>
+                        </Group>
+                    </form>
+                }
+            >
+                <DataTable
+                    minWidth={760}
+                    loading={loading}
+                    error={error ? <ErrorBlock message={error} /> : undefined}
+                    empty={
+                        <EmptyBlock
+                            icon={<FiUsers size={22} />}
+                            title="Tidak ada pengguna ditemukan"
+                            description={
+                                search
+                                    ? "Coba kata kunci lain atau kosongkan pencarian."
+                                    : "Belum ada pengguna terdaftar."
+                            }
+                        />
+                    }
+                    columns={[
+                        { header: "Nama" },
+                        { header: "Email" },
+                        { header: "Telepon" },
+                        { header: "Role" },
+                        { header: "Bergabung" },
+                        { header: "Orders", align: "right" },
+                    ]}
+                    rows={users.map((u) => ({
+                        key: u.id,
+                        cells: [
+                            <Stack gap={0} key="name">
+                                <Text size="sm" fw={600}>{u.name || "Tanpa nama"}</Text>
+                                <Text size="xs" c="dimmed" ff="monospace">{u.id.slice(0, 8)}…</Text>
+                            </Stack>,
+                            <Text size="sm" key="email">{u.email || "-"}</Text>,
+                            <Text size="sm" key="phone">{u.phone || "-"}</Text>,
+                            <StatusBadge key="role" tone={roleTone(u.role)}>{roleLabel(u.role)}</StatusBadge>,
+                            <Text size="sm" c="dimmed" key="joined">{formatDate(u.createdAt)}</Text>,
+                            <Text size="sm" fw={600} key="orders">{u._count?.orders ?? 0}</Text>,
+                        ],
+                    }))}
+                    footer={
+                        totalPages > 1 ? (
+                            <Group justify="space-between" align="center">
+                                <Button
+                                    variant="default"
+                                    size="md"
+                                    radius="md"
+                                    disabled={page <= 1}
+                                    onClick={() => setPage((p) => p - 1)}
+                                >
+                                    Sebelumnya
+                                </Button>
 
-                    {loading ? (
-                        <div className="flex min-h-[300px] items-center justify-center"><div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-800" /></div>
-                    ) : users.length === 0 ? (
-                        <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center"><FiUsers size={24} className="text-gray-400" /><p className="mt-4 text-sm font-semibold text-gray-900">Tidak ada pengguna ditemukan</p></div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full min-w-[700px] text-left">
-                                <thead><tr className="border-b border-gray-200 bg-gray-50/80">
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Nama</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Email</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Telepon</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Role</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Bergabung</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Orders</th>
-                                </tr></thead>
-                                <tbody className="divide-y divide-gray-100">
-                                    {users.map((u) => (
-                                        <tr key={u.id} className="group transition hover:bg-gray-50/70">
-                                            <td className="px-5 py-4"><p className="text-sm font-semibold text-gray-900">{u.name || "Tanpa nama"}</p><p className="text-xs text-gray-400">{u.id.slice(0, 8)}...</p></td>
-                                            <td className="px-5 py-4"><p className="text-sm text-gray-700">{u.email || "-"}</p></td>
-                                            <td className="px-5 py-4"><p className="text-sm text-gray-700">{u.phone || "-"}</p></td>
-                                            <td className="px-5 py-4"><span className={`rounded-md px-2 py-1 text-xs font-medium ${roleColor(u.role)}`}>{roleLabel(u.role)}</span></td>
-                                            <td className="px-5 py-4"><p className="text-xs text-gray-700">{formatDate(u.createdAt)}</p></td>
-                                            <td className="px-5 py-4"><p className="text-sm font-medium text-gray-900">{u._count?.orders ?? 0}</p></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                                <Text size="sm" c="dimmed">
+                                    Halaman {page} / {totalPages}
+                                </Text>
 
-                    {total > limit && (
-                        <div className="flex items-center justify-between border-t border-gray-200 px-5 py-3">
-                            <button type="button" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Sebelumnya</button>
-                            <span className="text-xs text-gray-500">Halaman {page} / {Math.ceil(total / limit)}</span>
-                            <button type="button" disabled={page * limit >= total} onClick={() => setPage((p) => p + 1)} className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Selanjutnya</button>
-                        </div>
-                    )}
-                </section>
-            </div>
-        </div>
+                                <Button
+                                    variant="default"
+                                    size="md"
+                                    radius="md"
+                                    disabled={page * limit >= total}
+                                    onClick={() => setPage((p) => p + 1)}
+                                >
+                                    Selanjutnya
+                                </Button>
+                            </Group>
+                        ) : undefined
+                    }
+                />
+            </SectionCard>
+        </Stack>
     );
 }

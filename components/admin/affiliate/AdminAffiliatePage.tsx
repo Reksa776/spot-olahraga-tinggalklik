@@ -2,8 +2,30 @@
 
 import { useEffect, useState, useCallback } from "react";
 import toast from "react-hot-toast";
-import { useDialog } from "@/components/ui/Dialog";
-import Link from "next/link";
+
+import {
+    Alert,
+    Button,
+    Group,
+    Image,
+    Modal,
+    Pagination,
+    Select,
+    SimpleGrid,
+    Stack,
+    Text,
+    Textarea,
+    TextInput,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
 
 /* ==========================================
  * TYPES
@@ -63,18 +85,11 @@ function statusLabel(status: string) {
     }
 }
 
-function statusClass(status: string) {
-    switch (status) {
-        case "PENDING":
-            return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200";
-        case "APPROVED":
-            return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200";
-        case "REJECTED":
-            return "bg-red-50 text-red-700 ring-1 ring-inset ring-red-200";
-        default:
-            return "bg-gray-50 text-gray-600 ring-1 ring-inset ring-gray-200";
-    }
-}
+const STATUS_TONE: Record<string, Tone> = {
+    PENDING: "warn",
+    APPROVED: "success",
+    REJECTED: "error",
+};
 
 function formatDate(value: string) {
     return new Date(value).toLocaleDateString(
@@ -91,7 +106,24 @@ function formatDate(value: string) {
 
 /* ==========================================
  * MAIN COMPONENT
- * ========================================== */
+ * ==========================================
+ *
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: `statusLabel` and `formatDate` (same `id-ID` formatting), `loadApplications`
+ * and its query-string contract (`page`, `limit=20`, `status` only when not "ALL", `search` only
+ * when non-empty), the two `toast.error` branches (`data.message ?? "Gagal mengambil data."` on a
+ * non-OK response, "Terjadi kesalahan." plus `console.error` on a throw), the response fallbacks,
+ * the `useEffect(() => { loadApplications(page, statusFilter, search); }, [page, loadApplications])`
+ * trigger, both filter handlers (page reset + re-fetch), the APPROVE `PATCH` body (`{ action:
+ * "APPROVE" }`), the REJECT `PATCH` body (`{ action: "REJECT", rejectionReason: rejectReason.trim() }`)
+ * with its "Alasan penolakan wajib diisi." guard and its success-only
+ * `setRejectReason("")`, the success toasts, the post-mutation refresh, the `processing` gate and
+ * the "Memproses..." labels.
+ *
+ * The approve confirmation was the shared `useDialog` promise; it is now a dashboard-owned Mantine
+ * `Modal` whose title ("Setujui Pengajuan") and message are byte-for-byte the same.
+ */
 
 export default function AdminAffiliatePage() {
     const [applications, setApplications] =
@@ -116,6 +148,10 @@ export default function AdminAffiliatePage() {
         useState("");
     const [processing, setProcessing] =
         useState(false);
+
+    // Approve confirmation
+    const [approveTarget, setApproveTarget] =
+        useState<Application | null>(null);
 
     const loadApplications = useCallback(
         async (
@@ -192,24 +228,15 @@ export default function AdminAffiliatePage() {
 
     /* ==========================================
      * APPROVE
-     * ========================================== */
+     * ==========================================
+     *
+     * The confirmation is a `Modal` now rather than the shared promise-based dialog, so the
+     * "open" half lives in the modal branch below (`setApproveTarget`) and this function is the
+     * `runApprove` half that previously ran after the promise resolved. The mutation itself —
+     * endpoint, method, body, success toast, refresh and error copy — is unchanged.
+     */
 
-    const dialog = useDialog();
-
-    async function handleApprove(
-        application: Application
-    ) {
-        if (
-            !(await dialog.confirm({
-                title: "Setujui Pengajuan",
-                message: `Setujui pengajuan dari ${application.user?.name ?? "user ini"}?`,
-                variant: "info",
-                confirmText: "Setujui",
-            }))
-        ) {
-            return;
-        }
-
+    async function runApprove(application: Application) {
         try {
             setProcessing(true);
 
@@ -324,471 +351,337 @@ export default function AdminAffiliatePage() {
      * ========================================== */
 
     return (
-        <div className="p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">
-                    Pengajuan Affiliator
-                </h1>
-                <p className="text-sm text-gray-500">
-                    Review dan kelola pengajuan
-                    Affiliator dari customer.
-                </p>
-            </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Affiliate"
+                title="Pengajuan Affiliator"
+                description="Review dan kelola pengajuan Affiliator dari customer."
+            />
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-100 px-5 py-4">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                        <div>
-                            <h2 className="text-sm font-semibold text-gray-900">
-                                Semua Pengajuan
-                            </h2>
-                            <p className="mt-0.5 text-xs text-gray-500">
-                                Menampilkan{" "}
-                                {
-                                    applications.length
-                                }{" "}
-                                dari{" "}
-                                {pagination.total}{" "}
-                                pengajuan
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                        <form
-                            onSubmit={handleSearch}
-                            className="relative flex-1 lg:max-w-sm"
-                        >
-                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
-                                ⌕
-                            </span>
-                            <input
-                                type="text"
+            <SectionCard
+                title="Semua Pengajuan"
+                description={`Menampilkan ${applications.length} dari ${pagination.total} pengajuan`}
+            >
+                <Stack gap="md">
+                    <Group gap="sm" align="flex-end" wrap="wrap">
+                        <form onSubmit={handleSearch}>
+                            <TextInput
+                                size="md"
+                                radius="md"
                                 value={search}
                                 onChange={(e) =>
-                                    setSearch(
-                                        e.target.value
-                                    )
+                                    setSearch(e.currentTarget.value)
                                 }
                                 placeholder="Cari nama, email..."
-                                className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-gray-400"
+                                aria-label="Cari pengajuan"
+                                w={{ base: 200, sm: 260 }}
                             />
                         </form>
-                        <select
+
+                        <Select
+                            size="md"
+                            radius="md"
+                            allowDeselect={false}
                             value={statusFilter}
-                            onChange={(e) =>
-                                handleStatusFilter(
-                                    e.target.value
-                                )
+                            onChange={(value) =>
+                                handleStatusFilter(value ?? "ALL")
                             }
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-gray-400"
-                        >
-                            <option value="ALL">
-                                Semua status
-                            </option>
-                            <option value="PENDING">
-                                Menunggu Review
-                            </option>
-                            <option value="APPROVED">
-                                Disetujui
-                            </option>
-                            <option value="REJECTED">
-                                Ditolak
-                            </option>
-                        </select>
-                    </div>
-                </div>
+                            aria-label="Filter status"
+                            data={[
+                                { value: "ALL", label: "Semua status" },
+                                { value: "PENDING", label: "Menunggu Review" },
+                                { value: "APPROVED", label: "Disetujui" },
+                                { value: "REJECTED", label: "Ditolak" },
+                            ]}
+                        />
+                    </Group>
 
-                {/* TABLE */}
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[800px] text-left">
-                        <thead className="border-b border-gray-100 bg-gray-50/70">
-                            <tr>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Customer
-                                </th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Bank
-                                </th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Rekening
-                                </th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Status
-                                </th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Tanggal
-                                </th>
-                                <th className="px-5 py-3.5 text-right text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                    Aksi
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {applications.map(
-                                (app) => (
-                                    <tr
-                                        key={app.id}
-                                        className="group transition-colors hover:bg-gray-50/70"
+                    <DataTable
+                        minWidth={900}
+                        loading={loading}
+                        empty={
+                            <EmptyBlock
+                                title="Belum ada pengajuan"
+                                description="Pengajuan Affiliator dari customer akan muncul di sini."
+                            />
+                        }
+                        footer={
+                            pagination.totalPages > 1 ? (
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                    <Text size="sm" c="dimmed">
+                                        Halaman {pagination.page} dari {pagination.totalPages}
+                                    </Text>
+
+                                    <Pagination
+                                        size="md"
+                                        total={pagination.totalPages}
+                                        value={page}
+                                        onChange={setPage}
+                                    />
+                                </Group>
+                            ) : undefined
+                        }
+                        columns={[
+                            { header: "Customer" },
+                            { header: "Bank" },
+                            { header: "Rekening" },
+                            { header: "Status" },
+                            { header: "Tanggal" },
+                            { header: "Aksi", align: "right" },
+                        ]}
+                        rows={applications.map((app) => ({
+                            key: String(app.id),
+                            cells: [
+                                <Stack gap={0} key="customer">
+                                    <Text size="sm" fw={600}>
+                                        {app.user?.name ?? "-"}
+                                    </Text>
+
+                                    <Text size="xs" c="dimmed">
+                                        {app.user?.email ?? "-"}
+                                    </Text>
+                                </Stack>,
+
+                                <Text key="bank" size="sm">
+                                    {app.kyc?.bankName ?? "-"}
+                                </Text>,
+
+                                <Text key="account" size="sm" ff="monospace">
+                                    {app.kyc?.bankAccountNumber ?? "-"}
+                                </Text>,
+
+                                <StatusBadge key="status" tone={STATUS_TONE[app.status] ?? "neutral"}>
+                                    {statusLabel(app.status)}
+                                </StatusBadge>,
+
+                                <Text key="date" size="xs" c="dimmed">
+                                    {formatDate(app.createdAt)}
+                                </Text>,
+
+                                <Group justify="flex-end" key="actions">
+                                    <Button
+                                        variant="default"
+                                        size="sm"
+                                        radius="md"
+                                        onClick={() => {
+                                            setReviewing(app);
+                                            setRejectReason("");
+                                        }}
                                     >
-                                        <td className="px-5 py-4">
-                                            <p className="text-sm font-semibold text-gray-900">
-                                                {app
-                                                    .user
-                                                    ?.name ??
-                                                    "-"}
-                                            </p>
-                                            <p className="mt-0.5 text-xs text-gray-500">
-                                                {app
-                                                    .user
-                                                    ?.email ??
-                                                    "-"}
-                                            </p>
-                                        </td>
-                                        <td className="px-5 py-4">
-                                            <p className="text-sm text-gray-700">
-                                                {app
-                                                    .kyc
-                                                    ?.bankName ??
-                                                    "-"}
-                                            </p>
-                                        </td>
-                                        <td className="px-5 py-4">
-                                            <p className="font-mono text-sm text-gray-700">
-                                                {app
-                                                    .kyc
-                                                    ?.bankAccountNumber ??
-                                                    "-"}
-                                            </p>
-                                        </td>
-                                        <td className="px-5 py-4">
-                                            <span
-                                                className={`inline-flex whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold ${statusClass(
-                                                    app.status
-                                                )}`}
-                                            >
-                                                {statusLabel(
-                                                    app.status
-                                                )}
-                                            </span>
-                                        </td>
-                                        <td className="px-5 py-4">
-                                            <p className="whitespace-nowrap text-xs text-gray-500">
-                                                {formatDate(
-                                                    app.createdAt
-                                                )}
-                                            </p>
-                                        </td>
-                                        <td className="px-5 py-4 text-right">
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    setReviewing(
-                                                        app
-                                                    );
-                                                    setRejectReason(
-                                                        ""
-                                                    );
-                                                }}
-                                                className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
-                                            >
-                                                Review
-                                            </button>
-                                        </td>
-                                    </tr>
-                                )
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-
-                {applications.length === 0 && (
-                    <div className="border-t border-gray-100 px-6 py-14 text-center">
-                        <p className="text-sm font-medium text-gray-900">
-                            Belum ada pengajuan
-                        </p>
-                        <p className="mt-1 text-xs text-gray-500">
-                            Pengajuan Affiliator
-                            dari customer akan
-                            muncul di sini.
-                        </p>
-                    </div>
-                )}
-
-                {/* PAGINATION */}
-                {pagination.totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                        <p className="text-xs text-gray-500">
-                            Halaman {pagination.page}{" "}
-                            dari{" "}
-                            {pagination.totalPages}
-                        </p>
-                        <div className="flex gap-2">
-                            <button
-                                type="button"
-                                disabled={page <= 1}
-                                onClick={() =>
-                                    setPage((p) =>
-                                        Math.max(
-                                            1,
-                                            p - 1
-                                        )
-                                    )
-                                }
-                                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                Sebelumnya
-                            </button>
-                            <button
-                                type="button"
-                                disabled={
-                                    page >=
-                                    pagination.totalPages
-                                }
-                                onClick={() =>
-                                    setPage((p) =>
-                                        Math.min(
-                                            pagination.totalPages,
-                                            p + 1
-                                        )
-                                    )
-                                }
-                                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                Selanjutnya
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
+                                        Review
+                                    </Button>
+                                </Group>,
+                            ],
+                        }))}
+                    />
+                </Stack>
+            </SectionCard>
 
             {/* ==========================================
              * REVIEW MODAL
              * ========================================== */}
 
-            {reviewing && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                    <div className="w-full max-w-lg rounded-2xl bg-white shadow-xl">
-                        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
-                            <h3 className="text-base font-semibold text-gray-900">
-                                Review Pengajuan
-                            </h3>
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    setReviewing(null)
-                                }
-                                className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+            <Modal
+                opened={reviewing !== null}
+                onClose={() => setReviewing(null)}
+                size="lg"
+                title="Review Pengajuan"
+                centered
+            >
+                <Stack gap="md">
+                    {/* Customer Info */}
+                    <Stack gap={4}>
+                        <Text size="xs" c="dimmed">
+                            Customer
+                        </Text>
+
+                        <Text size="sm" fw={500}>
+                            {reviewing?.user?.name ?? "-"}
+                        </Text>
+
+                        <Text size="xs" c="dimmed">
+                            {reviewing?.user?.email ?? "-"}
+                        </Text>
+
+                        <Text size="xs" c="dimmed">
+                            {reviewing?.user?.phone ?? "-"}
+                        </Text>
+                    </Stack>
+
+                    {/* KTP */}
+                    {reviewing?.kyc?.ktpImageUrl ? (
+                        <Stack gap={4}>
+                            <Text size="xs" c="dimmed">
+                                Foto KTP
+                            </Text>
+
+                            <Image
+                                src={reviewing.kyc.ktpImageUrl}
+                                alt="KTP"
+                                h={160}
+                                w="auto"
+                                fit="cover"
+                                radius="md"
+                            />
+                        </Stack>
+                    ) : null}
+
+                    {/* Bank */}
+                    <SimpleGrid cols={2} spacing="md">
+                        <Stack gap={4}>
+                            <Text size="xs" c="dimmed">
+                                Bank
+                            </Text>
+
+                            <Text size="sm" fw={500}>
+                                {reviewing?.kyc?.bankName ?? "-"}
+                            </Text>
+                        </Stack>
+
+                        <Stack gap={4}>
+                            <Text size="xs" c="dimmed">
+                                Pemilik Rekening
+                            </Text>
+
+                            <Text size="sm" fw={500}>
+                                {reviewing?.kyc?.bankAccountName ?? "-"}
+                            </Text>
+                        </Stack>
+                    </SimpleGrid>
+
+                    <Stack gap={4}>
+                        <Text size="xs" c="dimmed">
+                            Nomor Rekening
+                        </Text>
+
+                        <Text size="sm" fw={500} ff="monospace">
+                            {reviewing?.kyc?.bankAccountNumber ?? "-"}
+                        </Text>
+                    </Stack>
+
+                    {/* Social Media */}
+                    {reviewing?.kyc?.socialMediaPlatform ? (
+                        <Stack gap={4}>
+                            <Text size="xs" c="dimmed">
+                                Sosial Media
+                            </Text>
+
+                            <Text size="sm">
+                                {reviewing.kyc.socialMediaPlatform}
+                                {reviewing.kyc.socialMediaUsername
+                                    ? ` — ${reviewing.kyc.socialMediaUsername}`
+                                    : ""}
+                            </Text>
+
+                            {reviewing.kyc.socialMediaUrl ? (
+                                <Image
+                                    src={reviewing.kyc.socialMediaUrl}
+                                    alt="Foto Sosial Media"
+                                    h={160}
+                                    w="auto"
+                                    fit="cover"
+                                    radius="md"
+                                />
+                            ) : null}
+                        </Stack>
+                    ) : null}
+
+                    {/* Reject reason if exists */}
+                    {reviewing?.rejectionReason ? (
+                        <Alert color="red" variant="light" radius="md">
+                            <Text size="xs" fw={500} c="red.7">
+                                Alasan Penolakan Sebelumnya:
+                            </Text>
+
+                            <Text size="sm" c="red.8" mt={4}>
+                                {reviewing.rejectionReason}
+                            </Text>
+                        </Alert>
+                    ) : null}
+
+                    {/* REJECT REASON INPUT */}
+                    {reviewing?.status === "PENDING" ? (
+                        <Textarea
+                            label="Alasan Penolakan (jika Reject)"
+                            size="md"
+                            radius="md"
+                            placeholder="Masukkan alasan penolakan..."
+                            minRows={3}
+                            maxRows={6}
+                            autosize
+                            value={rejectReason}
+                            onChange={(e) =>
+                                setRejectReason(e.currentTarget.value)
+                            }
+                        />
+                    ) : null}
+
+                    {/* ACTIONS */}
+                    {reviewing?.status === "PENDING" ? (
+                        <Group grow gap="sm" mt="xs">
+                            <Button
+                                variant="default"
+                                size="md"
+                                radius="md"
+                                color="red"
+                                onClick={() => handleReject(reviewing)}
+                                disabled={processing}
                             >
-                                ✕
-                            </button>
-                        </div>
+                                {processing ? "Memproses..." : "Tolak"}
+                            </Button>
 
-                        <div className="max-h-[70vh] overflow-y-auto px-6 py-5">
-                            {/* Customer Info */}
-                            <div className="space-y-3">
-                                <div>
-                                    <p className="text-xs text-gray-400">
-                                        Customer
-                                    </p>
-                                    <p className="text-sm font-medium text-gray-900">
-                                        {reviewing
-                                            .user
-                                            ?.name ??
-                                            "-"}
-                                    </p>
-                                    <p className="text-xs text-gray-500">
-                                        {reviewing
-                                            .user
-                                            ?.email ??
-                                            "-"}
-                                    </p>
-                                    <p className="text-xs text-gray-500">
-                                        {reviewing
-                                            .user
-                                            ?.phone ??
-                                            "-"}
-                                    </p>
-                                </div>
+                            <Button
+                                size="md"
+                                radius="md"
+                                color="green"
+                                onClick={() => setApproveTarget(reviewing)}
+                                disabled={processing}
+                            >
+                                {processing ? "Memproses..." : "Setujui"}
+                            </Button>
+                        </Group>
+                    ) : null}
+                </Stack>
+            </Modal>
 
-                                {/* KTP */}
-                                {reviewing.kyc
-                                    ?.ktpImageUrl && (
-                                    <div>
-                                        <p className="text-xs text-gray-400">
-                                            Foto KTP
-                                        </p>
-                                        <img
-                                            src={
-                                                reviewing
-                                                    .kyc
-                                                    .ktpImageUrl
-                                            }
-                                            alt="KTP"
-                                            className="mt-1 h-40 rounded-lg border border-gray-200 object-cover"
-                                        />
-                                    </div>
-                                )}
+            {/* ==========================================
+             * APPROVE CONFIRMATION
+             * ========================================== */}
 
-                                {/* Bank */}
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <p className="text-xs text-gray-400">
-                                            Bank
-                                        </p>
-                                        <p className="text-sm font-medium text-gray-900">
-                                            {reviewing
-                                                .kyc
-                                                ?.bankName ??
-                                                "-"}
-                                        </p>
-                                    </div>
-                                    <div>
-                                        <p className="text-xs text-gray-400">
-                                            Pemilik
-                                            Rekening
-                                        </p>
-                                        <p className="text-sm font-medium text-gray-900">
-                                            {reviewing
-                                                .kyc
-                                                ?.bankAccountName ??
-                                                "-"}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div>
-                                    <p className="text-xs text-gray-400">
-                                        Nomor Rekening
-                                    </p>
-                                    <p className="font-mono text-sm font-medium text-gray-900">
-                                        {reviewing
-                                            .kyc
-                                            ?.bankAccountNumber ??
-                                            "-"}
-                                    </p>
-                                </div>
+            <Modal
+                opened={approveTarget !== null}
+                onClose={() => setApproveTarget(null)}
+                title="Setujui Pengajuan"
+                centered
+            >
+                <Text size="sm">
+                    Setujui pengajuan dari{" "}
+                    {approveTarget?.user?.name ?? "user ini"}?
+                </Text>
 
-                                {/* Social Media */}
-                                {reviewing.kyc
-                                    ?.socialMediaPlatform && (
-                                    <div>
-                                        <p className="text-xs text-gray-400">
-                                            Sosial Media
-                                        </p>
-                                        <p className="text-sm text-gray-700">
-                                            {
-                                                reviewing
-                                                    .kyc
-                                                    .socialMediaPlatform
-                                            }
-                                            {reviewing
-                                                .kyc
-                                                .socialMediaUsername
-                                                ? ` — ${reviewing.kyc.socialMediaUsername}`
-                                                : ""}
-                                        </p>
-                                        {reviewing
-                                            .kyc
-                                            .socialMediaUrl && (
-                                            <img
-                                                src={
-                                                    reviewing
-                                                        .kyc
-                                                        .socialMediaUrl
-                                                }
-                                                alt="Foto Sosial Media"
-                                                className="mt-2 h-40 rounded-lg border border-gray-200 object-cover"
-                                            />
-                                        )}
-                                    </div>
-                                )}
+                <Group grow gap="sm" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setApproveTarget(null)}
+                    >
+                        Batal
+                    </Button>
 
-                                {/* Reject reason if exists */}
-                                {reviewing.rejectionReason && (
-                                    <div className="rounded-lg bg-red-50 p-3">
-                                        <p className="text-xs font-medium text-red-600">
-                                            Alasan
-                                            Penolakan
-                                            Sebelumnya:
-                                        </p>
-                                        <p className="mt-1 text-sm text-red-700">
-                                            {
-                                                reviewing.rejectionReason
-                                            }
-                                        </p>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* REJECT REASON INPUT */}
-                            {reviewing.status ===
-                                "PENDING" && (
-                                <div className="mt-5">
-                                    <label className="text-sm font-medium text-gray-700">
-                                        Alasan
-                                        Penolakan
-                                        (jika
-                                        Reject)
-                                    </label>
-                                    <textarea
-                                        value={
-                                            rejectReason
-                                        }
-                                        onChange={(e) =>
-                                            setRejectReason(
-                                                e.target
-                                                    .value
-                                            )
-                                        }
-                                        placeholder="Masukkan alasan penolakan..."
-                                        rows={3}
-                                        className="mt-2 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
-                                    />
-                                </div>
-                            )}
-                        </div>
-
-                        {/* ACTIONS */}
-                        {reviewing.status ===
-                            "PENDING" && (
-                            <div className="flex gap-3 border-t border-gray-100 px-6 py-4">
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        handleReject(
-                                            reviewing
-                                        )
-                                    }
-                                    disabled={
-                                        processing
-                                    }
-                                    className="flex-1 rounded-xl border border-red-200 bg-white px-4 py-2.5 text-sm font-medium text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    {processing
-                                        ? "Memproses..."
-                                        : "Tolak"}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        handleApprove(
-                                            reviewing
-                                        )
-                                    }
-                                    disabled={
-                                        processing
-                                    }
-                                    className="flex-1 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    {processing
-                                        ? "Memproses..."
-                                        : "Setujui"}
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
-        </div>
+                    <Button
+                        size="md"
+                        radius="md"
+                        onClick={() => {
+                            const target = approveTarget;
+                            setApproveTarget(null);
+                            if (target) runApprove(target);
+                        }}
+                    >
+                        Setujui
+                    </Button>
+                </Group>
+            </Modal>
+        </Stack>
     );
 }

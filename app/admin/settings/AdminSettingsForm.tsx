@@ -5,6 +5,41 @@ import Link from "next/link";
 import { FiArrowLeft, FiSave } from "react-icons/fi";
 import toast from "react-hot-toast";
 
+import {
+    Box,
+    Button,
+    Grid,
+    Group,
+    Select,
+    Skeleton,
+    Stack,
+    Text,
+    Textarea,
+    TextInput,
+} from "@mantine/core";
+
+import { PageHeader, SectionCard } from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * This is the largest form in the dashboard and its semantics are load-bearing, so nothing about
+ * the state machine changed. Preserved exactly: `StoreForm` and `initialForm` (every field,
+ * including `rajaOngkirDestinationId`), `updateField`, `loadRegions` and its query builder,
+ * all four "load wilayah" handlers with their loading flags and toast copy, `loadDestinationId`
+ * (both the success `setForm` with `Number(destinationId)` and the failure `setForm` that clears
+ * the id, plus the `console.log`), `loadSettings` with its field-by-field `?? null` mapping and the
+ * cascade of `loadCities`/`loadDistricts`/`loadSubdistricts` for already-saved values, the
+ * `Promise.all([loadProvinces(), loadSettings()])` init (and its eslint-disable), all four
+ * `handle*Change` cascades that null out and clear child levels, `handleSubmit`'s five validation
+ * branches, and the `PUT /api/admin/settings` body — which is the **whole form object**, not a
+ * projection, so `JSON.stringify(form)` is kept verbatim.
+ *
+ * The five region controls keep their exact `disabled` conditions and the string-id contract with
+ * the `handle*Change(value: string)` handlers; `Select` supplies the same empty/placeholder option
+ * the native `<select>` had.
+ */
+
 type Region = {
     id: number;
     name: string;
@@ -83,15 +118,11 @@ export default function AdminSettingsForm() {
 
     const [loadingCities, setLoadingCities] = useState(false);
     const [loadingDistricts, setLoadingDistricts] = useState(false);
-    const [loadingSubdistricts, setLoadingSubdistricts] =
-        useState(false);
+    const [loadingSubdistricts, setLoadingSubdistricts] = useState(false);
 
     const [form, setForm] = useState<StoreForm>(initialForm);
 
-    function updateField<K extends keyof StoreForm>(
-        field: K,
-        value: StoreForm[K]
-    ) {
+    function updateField<K extends keyof StoreForm>(field: K, value: StoreForm[K]) {
         setForm((prev) => ({
             ...prev,
             [field]: value,
@@ -104,223 +135,139 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function loadRegions(
-        type: string,
-        id?: number
-    ): Promise<Region[]> {
-        const query = id
-            ? `?type=${type}&id=${id}`
-            : `?type=${type}`;
+    async function loadRegions(type: string, id?: number): Promise<Region[]> {
+        const query = id ? `?type=${type}&id=${id}` : `?type=${type}`;
 
-        const response = await fetch(
-            `/api/admin/settings/regions${query}`,
-            {
-                cache: "no-store",
-            }
-        );
+        const response = await fetch(`/api/admin/settings/regions${query}`, {
+            cache: "no-store",
+        });
 
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(
-                data.message ||
-                "Gagal mengambil data wilayah."
-            );
+            throw new Error(data.message || "Gagal mengambil data wilayah.");
         }
 
-        return Array.isArray(data.data)
-            ? data.data
-            : [];
+        return Array.isArray(data.data) ? data.data : [];
     }
 
     async function loadProvinces() {
         try {
-            const data = await loadRegions(
-                "provinces"
-            );
+            const data = await loadRegions("provinces");
 
             setProvinces(data);
         } catch (error) {
-            console.error(
-                "LOAD PROVINCES ERROR:",
-                error
-            );
+            console.error("LOAD PROVINCES ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil provinsi."
+                error instanceof Error ? error.message : "Gagal mengambil provinsi."
             );
         }
     }
 
-    async function loadCities(
-        provinceId: number
-    ) {
+    async function loadCities(provinceId: number) {
         try {
             setLoadingCities(true);
 
-            const data = await loadRegions(
-                "cities",
-                provinceId
-            );
+            const data = await loadRegions("cities", provinceId);
 
             setCities(data);
         } catch (error) {
-            console.error(
-                "LOAD CITIES ERROR:",
-                error
-            );
+            console.error("LOAD CITIES ERROR:", error);
 
-            toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil kota."
-            );
+            toast.error(error instanceof Error ? error.message : "Gagal mengambil kota.");
         } finally {
             setLoadingCities(false);
         }
     }
 
-    async function loadDistricts(
-        cityId: number
-    ) {
+    async function loadDistricts(cityId: number) {
         try {
             setLoadingDistricts(true);
 
-            const data = await loadRegions(
-                "districts",
-                cityId
-            );
+            const data = await loadRegions("districts", cityId);
 
             setDistricts(data);
         } catch (error) {
-            console.error(
-                "LOAD DISTRICTS ERROR:",
-                error
-            );
+            console.error("LOAD DISTRICTS ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil kecamatan."
+                error instanceof Error ? error.message : "Gagal mengambil kecamatan."
             );
         } finally {
             setLoadingDistricts(false);
         }
     }
 
-    async function loadSubdistricts(
-        districtId: number
-    ) {
+    async function loadSubdistricts(districtId: number) {
         try {
             setLoadingSubdistricts(true);
 
-            const data = await loadRegions(
-                "subdistricts",
-                districtId
-            );
+            const data = await loadRegions("subdistricts", districtId);
 
             setSubdistricts(data);
         } catch (error) {
-            console.error(
-                "LOAD SUBDISTRICTS ERROR:",
-                error
-            );
+            console.error("LOAD SUBDISTRICTS ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil kelurahan."
+                error instanceof Error ? error.message : "Gagal mengambil kelurahan."
             );
         } finally {
             setLoadingSubdistricts(false);
         }
     }
 
-    async function loadDestinationId(
-        subdistrict: string,
-        postalCode: string
-    ) {
+    async function loadDestinationId(subdistrict: string, postalCode: string) {
         try {
-            if (
-                !subdistrict &&
-                !postalCode
-            ) {
+            if (!subdistrict && !postalCode) {
                 return null;
             }
 
-            const params =
-                new URLSearchParams();
+            const params = new URLSearchParams();
 
             if (subdistrict) {
-                params.set(
-                    "subdistrict",
-                    subdistrict
-                );
+                params.set("subdistrict", subdistrict);
             }
 
             if (postalCode) {
-                params.set(
-                    "postalCode",
-                    postalCode
-                );
+                params.set("postalCode", postalCode);
             }
 
-            const response =
-                await fetch(
-                    `/api/admin/settings/destination?${params.toString()}`,
-                    {
-                        cache: "no-store",
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            console.log(
-                "DESTINATION RESULT:",
-                data
+            const response = await fetch(
+                `/api/admin/settings/destination?${params.toString()}`,
+                {
+                    cache: "no-store",
+                }
             );
+
+            const data = await response.json();
+
+            console.log("DESTINATION RESULT:", data);
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                    "Gagal mendapatkan destination ID."
-                );
+                throw new Error(data.message || "Gagal mendapatkan destination ID.");
             }
 
-            const destinationId =
-                data?.data?.id ??
-                data?.data?.destinationId;
+            const destinationId = data?.data?.id ?? data?.data?.destinationId;
 
             if (!destinationId) {
-                throw new Error(
-                    "Destination ID tidak ditemukan."
-                );
+                throw new Error("Destination ID tidak ditemukan.");
             }
 
             setForm((prev) => ({
                 ...prev,
 
-                rajaOngkirDestinationId:
-                    Number(destinationId),
+                rajaOngkirDestinationId: Number(destinationId),
             }));
 
-            return Number(
-                destinationId
-            );
+            return Number(destinationId);
         } catch (error) {
-            console.error(
-                "LOAD DESTINATION ID ERROR:",
-                error
-            );
+            console.error("LOAD DESTINATION ID ERROR:", error);
 
             setForm((prev) => ({
                 ...prev,
 
-                rajaOngkirDestinationId:
-                    null,
+                rajaOngkirDestinationId: null,
             }));
 
             toast.error(
@@ -341,20 +288,14 @@ export default function AdminSettingsForm() {
 
     async function loadSettings() {
         try {
-            const response = await fetch(
-                "/api/admin/settings",
-                {
-                    cache: "no-store",
-                }
-            );
+            const response = await fetch("/api/admin/settings", {
+                cache: "no-store",
+            });
 
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                    "Gagal mengambil pengaturan."
-                );
+                throw new Error(data.message || "Gagal mengambil pengaturan.");
             }
 
             if (!data.data) {
@@ -362,68 +303,42 @@ export default function AdminSettingsForm() {
             }
 
             const nextForm: StoreForm = {
-                storeName:
-                    data.data.storeName ?? "",
+                storeName: data.data.storeName ?? "",
 
-                phone:
-                    data.data.phone ?? "",
+                phone: data.data.phone ?? "",
 
-                email:
-                    data.data.email ?? "",
+                email: data.data.email ?? "",
 
-                logo:
-                    data.data.logo ?? "",
+                logo: data.data.logo ?? "",
 
-                address:
-                    data.data.address ?? "",
-                tiktokPixelId:
-                    data.data.tiktokPixelId ?? "",
+                address: data.data.address ?? "",
+                tiktokPixelId: data.data.tiktokPixelId ?? "",
 
-                provinceId:
-                    data.data.provinceId ?? null,
+                provinceId: data.data.provinceId ?? null,
 
-                province:
-                    data.data.province ?? "",
+                province: data.data.province ?? "",
 
-                cityId:
-                    data.data.cityId ?? null,
+                cityId: data.data.cityId ?? null,
 
-                city:
-                    data.data.city ?? "",
+                city: data.data.city ?? "",
 
-                districtId:
-                    data.data.districtId ?? null,
+                districtId: data.data.districtId ?? null,
 
-                district:
-                    data.data.district ?? "",
+                district: data.data.district ?? "",
 
-                subdistrictId:
-                    data.data.subdistrictId ?? null,
+                subdistrictId: data.data.subdistrictId ?? null,
 
-                subdistrict:
-                    data.data.subdistrict ?? "",
+                subdistrict: data.data.subdistrict ?? "",
 
-                postalCode:
-                    data.data.postalCode ?? "",
+                postalCode: data.data.postalCode ?? "",
 
-                rajaOngkirDestinationId:
-                    data.data
-                        .rajaOngkirDestinationId ??
-                    null,
+                rajaOngkirDestinationId: data.data.rajaOngkirDestinationId ?? null,
 
                 latitude:
-                    data.data.latitude != null
-                        ? String(
-                            data.data.latitude
-                        )
-                        : "",
+                    data.data.latitude != null ? String(data.data.latitude) : "",
 
                 longitude:
-                    data.data.longitude != null
-                        ? String(
-                            data.data.longitude
-                        )
-                        : "",
+                    data.data.longitude != null ? String(data.data.longitude) : "",
             };
 
             setForm(nextForm);
@@ -435,32 +350,21 @@ export default function AdminSettingsForm() {
              */
 
             if (nextForm.provinceId) {
-                await loadCities(
-                    nextForm.provinceId
-                );
+                await loadCities(nextForm.provinceId);
             }
 
             if (nextForm.cityId) {
-                await loadDistricts(
-                    nextForm.cityId
-                );
+                await loadDistricts(nextForm.cityId);
             }
 
             if (nextForm.districtId) {
-                await loadSubdistricts(
-                    nextForm.districtId
-                );
+                await loadSubdistricts(nextForm.districtId);
             }
         } catch (error) {
-            console.error(
-                "LOAD SETTINGS ERROR:",
-                error
-            );
+            console.error("LOAD SETTINGS ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil pengaturan."
+                error instanceof Error ? error.message : "Gagal mengambil pengaturan."
             );
         }
     }
@@ -475,10 +379,7 @@ export default function AdminSettingsForm() {
         async function init() {
             setLoading(true);
 
-            await Promise.all([
-                loadProvinces(),
-                loadSettings(),
-            ]);
+            await Promise.all([loadProvinces(), loadSettings()]);
 
             setLoading(false);
         }
@@ -493,9 +394,7 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function handleProvinceChange(
-        value: string
-    ) {
+    async function handleProvinceChange(value: string) {
         const provinceId = Number(value);
 
         if (!provinceId) {
@@ -524,18 +423,14 @@ export default function AdminSettingsForm() {
             return;
         }
 
-        const province = provinces.find(
-            (item) =>
-                item.id === provinceId
-        );
+        const province = provinces.find((item) => item.id === provinceId);
 
         setForm((prev) => ({
             ...prev,
 
             provinceId,
 
-            province:
-                province?.name ?? "",
+            province: province?.name ?? "",
 
             cityId: null,
             city: "",
@@ -562,9 +457,7 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function handleCityChange(
-        value: string
-    ) {
+    async function handleCityChange(value: string) {
         const cityId = Number(value);
 
         if (!cityId) {
@@ -589,18 +482,14 @@ export default function AdminSettingsForm() {
             return;
         }
 
-        const city = cities.find(
-            (item) =>
-                item.id === cityId
-        );
+        const city = cities.find((item) => item.id === cityId);
 
         setForm((prev) => ({
             ...prev,
 
             cityId,
 
-            city:
-                city?.name ?? "",
+            city: city?.name ?? "",
 
             districtId: null,
             district: "",
@@ -623,9 +512,7 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function handleDistrictChange(
-        value: string
-    ) {
+    async function handleDistrictChange(value: string) {
         const districtId = Number(value);
 
         if (!districtId) {
@@ -646,19 +533,14 @@ export default function AdminSettingsForm() {
             return;
         }
 
-        const district =
-            districts.find(
-                (item) =>
-                    item.id === districtId
-            );
+        const district = districts.find((item) => item.id === districtId);
 
         setForm((prev) => ({
             ...prev,
 
             districtId,
 
-            district:
-                district?.name ?? "",
+            district: district?.name ?? "",
 
             subdistrictId: null,
             subdistrict: "",
@@ -668,9 +550,7 @@ export default function AdminSettingsForm() {
 
         setSubdistricts([]);
 
-        await loadSubdistricts(
-            districtId
-        );
+        await loadSubdistricts(districtId);
     }
 
     /**
@@ -679,11 +559,8 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function handleSubdistrictChange(
-        value: string
-    ) {
-        const subdistrictId =
-            Number(value);
+    async function handleSubdistrictChange(value: string) {
+        const subdistrictId = Number(value);
 
         if (!subdistrictId) {
             setForm((prev) => ({
@@ -694,28 +571,18 @@ export default function AdminSettingsForm() {
 
                 postalCode: "",
 
-                rajaOngkirDestinationId:
-                    null,
+                rajaOngkirDestinationId: null,
             }));
 
             return;
         }
 
-        const subdistrict =
-            subdistricts.find(
-                (item) =>
-                    item.id ===
-                    subdistrictId
-            );
+        const subdistrict = subdistricts.find((item) => item.id === subdistrictId);
 
         const postalCode =
-            subdistrict?.zip_code ??
-            subdistrict?.postal_code ??
-            subdistrict?.postalCode ??
-            "";
+            subdistrict?.zip_code ?? subdistrict?.postal_code ?? subdistrict?.postalCode ?? "";
 
-        const subdistrictName =
-            subdistrict?.name ?? "";
+        const subdistrictName = subdistrict?.name ?? "";
 
         // Update UI terlebih dahulu
         setForm((prev) => ({
@@ -723,21 +590,16 @@ export default function AdminSettingsForm() {
 
             subdistrictId,
 
-            subdistrict:
-                subdistrictName,
+            subdistrict: subdistrictName,
 
             postalCode,
 
-            rajaOngkirDestinationId:
-                null,
+            rajaOngkirDestinationId: null,
         }));
 
         // Ambil RajaOngkir Destination ID
         if (subdistrictName) {
-            await loadDestinationId(
-                subdistrictName,
-                postalCode
-            );
+            await loadDestinationId(subdistrictName, postalCode);
         }
     }
 
@@ -747,86 +609,59 @@ export default function AdminSettingsForm() {
      * ============================
      */
 
-    async function handleSubmit(
-        event: FormEvent
-    ) {
+    async function handleSubmit(event: FormEvent) {
         event.preventDefault();
 
         if (!form.storeName.trim()) {
-            toast.error(
-                "Nama toko wajib diisi."
-            );
+            toast.error("Nama toko wajib diisi.");
             return;
         }
 
         if (!form.address.trim()) {
-            toast.error(
-                "Alamat toko wajib diisi."
-            );
+            toast.error("Alamat toko wajib diisi.");
             return;
         }
 
         if (!form.provinceId) {
-            toast.error(
-                "Pilih provinsi."
-            );
+            toast.error("Pilih provinsi.");
             return;
         }
 
         if (!form.cityId) {
-            toast.error(
-                "Pilih kota/kabupaten."
-            );
+            toast.error("Pilih kota/kabupaten.");
             return;
         }
 
         if (!form.districtId) {
-            toast.error(
-                "Pilih kecamatan."
-            );
+            toast.error("Pilih kecamatan.");
             return;
         }
 
         if (!form.subdistrictId) {
-            toast.error(
-                "Pilih kelurahan/desa."
-            );
+            toast.error("Pilih kelurahan/desa.");
             return;
         }
 
         try {
             setSaving(true);
 
-            const response =
-                await fetch(
-                    "/api/admin/settings",
-                    {
-                        method: "PUT",
+            const response = await fetch("/api/admin/settings", {
+                method: "PUT",
 
-                        headers: {
-                            "Content-Type":
-                                "application/json",
-                        },
+                headers: {
+                    "Content-Type": "application/json",
+                },
 
-                        body: JSON.stringify(
-                            form
-                        ),
-                    }
-                );
+                body: JSON.stringify(form),
+            });
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                    "Gagal menyimpan pengaturan."
-                );
+                throw new Error(data.message || "Gagal menyimpan pengaturan.");
             }
 
-            toast.success(
-                "Pengaturan toko berhasil disimpan."
-            );
+            toast.success("Pengaturan toko berhasil disimpan.");
 
             /**
              * Reload data supaya
@@ -836,15 +671,10 @@ export default function AdminSettingsForm() {
 
             await loadSettings();
         } catch (error) {
-            console.error(
-                "SAVE SETTINGS ERROR:",
-                error
-            );
+            console.error("SAVE SETTINGS ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal menyimpan pengaturan."
+                error instanceof Error ? error.message : "Gagal menyimpan pengaturan."
             );
         } finally {
             setSaving(false);
@@ -859,518 +689,311 @@ export default function AdminSettingsForm() {
 
     if (loading) {
         return (
-            <main className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6">
-                <div className="mx-auto max-w-5xl">
-                    <div className="rounded-3xl border border-gray-200 bg-white p-8 shadow-sm">
-                        <div className="animate-pulse">
-                            Memuat pengaturan toko...
-                        </div>
-                    </div>
-                </div>
-            </main>
+            <Box maw={1040}>
+                <Skeleton height={34} width={280} radius="sm" />
+                <Skeleton height={16} width={320} mt="sm" radius="sm" />
+
+                <Stack gap="lg" mt="xl">
+                    <Skeleton height={220} radius="md" />
+                    <Skeleton height={180} radius="md" />
+                    <Skeleton height={420} radius="md" />
+                    <Skeleton height={200} radius="md" />
+                </Stack>
+            </Box>
         );
     }
 
     return (
-        <main className="min-h-screen bg-gray-50 px-4 py-8 sm:px-6">
-            <div className="mx-auto max-w-5xl">
-
-                {/* HEADER */}
-
-                <div className="mb-6">
-                    <Link
+        <Box maw={1040}>
+            <PageHeader
+                eyebrow="Admin"
+                title="Pengaturan Toko"
+                description="Atur identitas dan lokasi toko."
+                actions={
+                    <Button
+                        component={Link}
                         href="/admin"
-                        className="inline-flex items-center gap-2 text-sm font-medium text-gray-500 transition hover:text-gray-900"
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        leftSection={<FiArrowLeft size={16} />}
                     >
-                        <FiArrowLeft size={16} />
-
                         Kembali ke Dashboard
-                    </Link>
-                </div>
+                    </Button>
+                }
+            />
 
-                <div className="mb-8">
-                    <h1 className="text-3xl font-bold text-gray-900">
-                        Pengaturan Toko
-                    </h1>
+            <form onSubmit={handleSubmit}>
+                <Stack gap="lg">
+                    {/* INFORMASI TOKO */}
 
-                    <p className="mt-2 text-sm text-gray-500">
-                        Atur identitas dan lokasi
-                        toko.
-                    </p>
-                </div>
-
-                <form
-                    onSubmit={handleSubmit}
-                    className="space-y-6"
-                >
-
-                    {/* =====================
-                        INFORMASI TOKO
-                    ====================== */}
-
-                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-                        <h2 className="text-lg font-bold text-gray-900">
-                            Informasi Toko
-                        </h2>
-
-                        <div className="mt-5 grid gap-5 md:grid-cols-2">
-
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Nama Toko
-                                </label>
-
-                                <input
-                                    type="text"
-                                    value={
-                                        form.storeName
-                                    }
+                    <SectionCard title="Informasi Toko">
+                        <Grid gap="md">
+                            <Grid.Col span={{ base: 12, md: 6 }}>
+                                <TextInput
+                                    label="Nama Toko"
+                                    size="md"
+                                    radius="md"
+                                    value={form.storeName}
                                     onChange={(e) =>
-                                        updateField(
-                                            "storeName",
-                                            e.target.value
-                                        )
+                                        updateField("storeName", e.currentTarget.value)
                                     }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
                                     placeholder="Nama toko"
                                 />
-                            </div>
+                            </Grid.Col>
 
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Nomor Telepon
-                                </label>
-
-                                <input
-                                    type="text"
-                                    value={
-                                        form.phone
-                                    }
+                            <Grid.Col span={{ base: 12, md: 6 }}>
+                                <TextInput
+                                    label="Nomor Telepon"
+                                    size="md"
+                                    radius="md"
+                                    value={form.phone}
                                     onChange={(e) =>
-                                        updateField(
-                                            "phone",
-                                            e.target.value
-                                        )
+                                        updateField("phone", e.currentTarget.value)
                                     }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
                                     placeholder="08xxxxxxxxxx"
                                 />
-                            </div>
+                            </Grid.Col>
 
-                            <div className="md:col-span-2">
-                                <label className="text-sm font-medium text-gray-700">
-                                    Email
-                                </label>
-
-                                <input
+                            <Grid.Col span={12}>
+                                <TextInput
+                                    label="Email"
                                     type="email"
-                                    value={
-                                        form.email
-                                    }
+                                    size="md"
+                                    radius="md"
+                                    value={form.email}
                                     onChange={(e) =>
-                                        updateField(
-                                            "email",
-                                            e.target.value
-                                        )
+                                        updateField("email", e.currentTarget.value)
                                     }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
                                     placeholder="email@toko.com"
                                 />
-                            </div>
-                        </div>
-                    </section>
+                            </Grid.Col>
+                        </Grid>
+                    </SectionCard>
 
-                    {/* =====================
-    TRACKING & PIXEL
-====================== */}
+                    {/* TRACKING & PIXEL */}
 
-                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-                        <h2 className="text-lg font-bold text-gray-900">
-                            Tracking & Pixel
-                        </h2>
+                    <SectionCard
+                        title="Tracking & Pixel"
+                        description="Masukkan TikTok Pixel ID untuk melacak aktivitas pengunjung dan pembelian dari TikTok Ads."
+                    >
+                        <TextInput
+                            label="TikTok Pixel ID"
+                            size="md"
+                            radius="md"
+                            ff="monospace"
+                            value={form.tiktokPixelId}
+                            onChange={(e) =>
+                                updateField("tiktokPixelId", e.currentTarget.value.trim())
+                            }
+                            placeholder="Contoh: DA2N6IBC77U575JEFETG"
+                            description="Contoh Pixel ID: DA2N6IBC77U575JEFETG"
+                        />
+                    </SectionCard>
 
-                        <p className="mt-1 text-sm text-gray-500">
-                            Masukkan TikTok Pixel ID untuk melacak
-                            aktivitas pengunjung dan pembelian dari
-                            TikTok Ads.
-                        </p>
+                    {/* ALAMAT TOKO */}
 
-                        <div className="mt-5">
-                            <label className="text-sm font-medium text-gray-700">
-                                TikTok Pixel ID
-                            </label>
-
-                            <input
-                                type="text"
-                                value={form.tiktokPixelId}
+                    <SectionCard
+                        title="Alamat Toko"
+                        description="Pilih wilayah dari data RajaOngkir."
+                    >
+                        <Stack gap="md">
+                            <Textarea
+                                label="Alamat Lengkap"
+                                size="md"
+                                radius="md"
+                                value={form.address}
                                 onChange={(e) =>
-                                    updateField(
-                                        "tiktokPixelId",
-                                        e.target.value.trim()
-                                    )
+                                    updateField("address", e.currentTarget.value)
                                 }
-                                className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 font-mono text-sm outline-none transition focus:border-rose-500"
-                                placeholder="Contoh: DA2N6IBC77U575JEFETG"
+                                rows={4}
+                                autosize
+                                minRows={3}
+                                maxRows={8}
+                                placeholder="Nama jalan, nomor rumah, RT/RW, patokan..."
                             />
 
-                            <p className="mt-2 text-xs text-gray-500">
-                                Contoh Pixel ID:
-                                {" "}
-                                <span className="font-mono">
-                                    DA2N6IBC77U575JEFETG
-                                </span>
-                            </p>
-                        </div>
-                    </section>
-
-                    {/* =====================
-                        ALAMAT TOKO
-                    ====================== */}
-
-                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-                        <h2 className="text-lg font-bold text-gray-900">
-                            Alamat Toko
-                        </h2>
-
-                        <p className="mt-1 text-sm text-gray-500">
-                            Pilih wilayah dari data
-                            RajaOngkir.
-                        </p>
-
-                        <div className="mt-5 space-y-5">
-
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Alamat Lengkap
-                                </label>
-
-                                <textarea
-                                    value={
-                                        form.address
-                                    }
-                                    onChange={(e) =>
-                                        updateField(
-                                            "address",
-                                            e.target.value
-                                        )
-                                    }
-                                    rows={4}
-                                    className="mt-2 w-full resize-none rounded-xl border border-gray-300 px-4 py-3 outline-none transition focus:border-rose-500"
-                                    placeholder="Nama jalan, nomor rumah, RT/RW, patokan..."
-                                />
-                            </div>
-
-                            <div className="grid gap-5 md:grid-cols-2">
-
+                            <Grid gap="md">
                                 {/* PROVINSI */}
 
-                                <div>
-                                    <label className="text-sm font-medium text-gray-700">
-                                        Provinsi
-                                    </label>
-
-                                    <select
+                                <Grid.Col span={{ base: 12, md: 6 }}>
+                                    <Select
+                                        label="Provinsi"
+                                        size="md"
+                                        radius="md"
+                                        searchable
+                                        allowDeselect
+                                        placeholder="Pilih Provinsi"
                                         value={
-                                            form.provinceId ??
-                                            ""
+                                            form.provinceId ? String(form.provinceId) : null
                                         }
-                                        onChange={(e) =>
-                                            handleProvinceChange(
-                                                e.target.value
-                                            )
+                                        onChange={(value) =>
+                                            handleProvinceChange(value ?? "")
                                         }
-                                        className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500"
-                                    >
-                                        <option value="">
-                                            Pilih Provinsi
-                                        </option>
-
-                                        {provinces.map(
-                                            (item) => (
-                                                <option
-                                                    key={
-                                                        item.id
-                                                    }
-                                                    value={
-                                                        item.id
-                                                    }
-                                                >
-                                                    {
-                                                        item.name
-                                                    }
-                                                </option>
-                                            )
-                                        )}
-                                    </select>
-                                </div>
+                                        data={provinces.map((item) => ({
+                                            value: String(item.id),
+                                            label: item.name,
+                                        }))}
+                                    />
+                                </Grid.Col>
 
                                 {/* KOTA */}
 
-                                <div>
-                                    <label className="text-sm font-medium text-gray-700">
-                                        Kota /
-                                        Kabupaten
-                                    </label>
-
-                                    <select
-                                        value={
-                                            form.cityId ??
-                                            ""
-                                        }
-                                        disabled={
-                                            !form.provinceId ||
+                                <Grid.Col span={{ base: 12, md: 6 }}>
+                                    <Select
+                                        label="Kota / Kabupaten"
+                                        size="md"
+                                        radius="md"
+                                        searchable
+                                        allowDeselect
+                                        placeholder={
                                             loadingCities
-                                        }
-                                        onChange={(e) =>
-                                            handleCityChange(
-                                                e.target.value
-                                            )
-                                        }
-                                        className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500 disabled:bg-gray-100"
-                                    >
-                                        <option value="">
-                                            {loadingCities
                                                 ? "Memuat kota..."
-                                                : "Pilih Kota / Kabupaten"}
-                                        </option>
-
-                                        {cities.map(
-                                            (item) => (
-                                                <option
-                                                    key={
-                                                        item.id
-                                                    }
-                                                    value={
-                                                        item.id
-                                                    }
-                                                >
-                                                    {
-                                                        item.name
-                                                    }
-                                                </option>
-                                            )
-                                        )}
-                                    </select>
-                                </div>
+                                                : "Pilih Kota / Kabupaten"
+                                        }
+                                        value={form.cityId ? String(form.cityId) : null}
+                                        disabled={!form.provinceId || loadingCities}
+                                        onChange={(value) => handleCityChange(value ?? "")}
+                                        data={cities.map((item) => ({
+                                            value: String(item.id),
+                                            label: item.name,
+                                        }))}
+                                    />
+                                </Grid.Col>
 
                                 {/* KECAMATAN */}
 
-                                <div>
-                                    <label className="text-sm font-medium text-gray-700">
-                                        Kecamatan
-                                    </label>
-
-                                    <select
-                                        value={
-                                            form.districtId ??
-                                            ""
-                                        }
-                                        disabled={
-                                            !form.cityId ||
+                                <Grid.Col span={{ base: 12, md: 6 }}>
+                                    <Select
+                                        label="Kecamatan"
+                                        size="md"
+                                        radius="md"
+                                        searchable
+                                        allowDeselect
+                                        placeholder={
                                             loadingDistricts
-                                        }
-                                        onChange={(e) =>
-                                            handleDistrictChange(
-                                                e.target.value
-                                            )
-                                        }
-                                        className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500 disabled:bg-gray-100"
-                                    >
-                                        <option value="">
-                                            {loadingDistricts
                                                 ? "Memuat kecamatan..."
-                                                : "Pilih Kecamatan"}
-                                        </option>
-
-                                        {districts.map(
-                                            (item) => (
-                                                <option
-                                                    key={
-                                                        item.id
-                                                    }
-                                                    value={
-                                                        item.id
-                                                    }
-                                                >
-                                                    {
-                                                        item.name
-                                                    }
-                                                </option>
-                                            )
-                                        )}
-                                    </select>
-                                </div>
+                                                : "Pilih Kecamatan"
+                                        }
+                                        value={
+                                            form.districtId ? String(form.districtId) : null
+                                        }
+                                        disabled={!form.cityId || loadingDistricts}
+                                        onChange={(value) =>
+                                            handleDistrictChange(value ?? "")
+                                        }
+                                        data={districts.map((item) => ({
+                                            value: String(item.id),
+                                            label: item.name,
+                                        }))}
+                                    />
+                                </Grid.Col>
 
                                 {/* KELURAHAN */}
 
-                                <div>
-                                    <label className="text-sm font-medium text-gray-700">
-                                        Kelurahan /
-                                        Desa
-                                    </label>
-
-                                    <select
-                                        value={
-                                            form.subdistrictId ??
-                                            ""
-                                        }
-                                        disabled={
-                                            !form.districtId ||
+                                <Grid.Col span={{ base: 12, md: 6 }}>
+                                    <Select
+                                        label="Kelurahan / Desa"
+                                        size="md"
+                                        radius="md"
+                                        searchable
+                                        allowDeselect
+                                        placeholder={
                                             loadingSubdistricts
-                                        }
-                                        onChange={(e) =>
-                                            handleSubdistrictChange(
-                                                e.target.value
-                                            )
-                                        }
-                                        className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-4 py-3 outline-none transition focus:border-rose-500 disabled:bg-gray-100"
-                                    >
-                                        <option value="">
-                                            {loadingSubdistricts
                                                 ? "Memuat kelurahan..."
-                                                : "Pilih Kelurahan / Desa"}
-                                        </option>
-
-                                        {subdistricts.map(
-                                            (item) => (
-                                                <option
-                                                    key={
-                                                        item.id
-                                                    }
-                                                    value={
-                                                        item.id
-                                                    }
-                                                >
-                                                    {
-                                                        item.name
-                                                    }
-                                                </option>
-                                            )
-                                        )}
-                                    </select>
-                                </div>
-                            </div>
+                                                : "Pilih Kelurahan / Desa"
+                                        }
+                                        value={
+                                            form.subdistrictId
+                                                ? String(form.subdistrictId)
+                                                : null
+                                        }
+                                        disabled={!form.districtId || loadingSubdistricts}
+                                        onChange={(value) =>
+                                            handleSubdistrictChange(value ?? "")
+                                        }
+                                        data={subdistricts.map((item) => ({
+                                            value: String(item.id),
+                                            label: item.name,
+                                        }))}
+                                    />
+                                </Grid.Col>
+                            </Grid>
 
                             {/* KODE POS */}
 
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Kode Pos
-                                </label>
+                            <TextInput
+                                label="Kode Pos"
+                                size="md"
+                                radius="md"
+                                value={form.postalCode}
+                                readOnly
+                                description="Kode pos diisi otomatis berdasarkan kelurahan/desa yang dipilih."
+                            />
 
-                                <input
-                                    type="text"
-                                    value={
-                                        form.postalCode
-                                    }
-                                    readOnly
-                                    className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-gray-700 outline-none"
-                                />
+                            <TextInput
+                                label="RajaOngkir Destination ID"
+                                size="md"
+                                radius="md"
+                                value={form.rajaOngkirDestinationId ?? "-"}
+                                readOnly
+                                placeholder="Akan terisi otomatis"
+                                description="Destination ID dibuat otomatis berdasarkan kelurahan yang dipilih."
+                            />
+                        </Stack>
+                    </SectionCard>
 
-                                <p className="mt-1 text-xs text-gray-500">
-                                    Kode pos diisi otomatis
-                                    berdasarkan kelurahan/desa
-                                    yang dipilih.
-                                </p>
-                            </div>
-                            <div className="mt-4">
-                                <label className="mb-2 block text-sm font-medium text-gray-700">
-                                    RajaOngkir Destination ID
-                                </label>
+                    {/* KOORDINAT */}
 
-                                <input
-                                    type="text"
-                                    value={form.rajaOngkirDestinationId ?? "-"}
-                                    readOnly
-                                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700 outline-none"
-                                    placeholder="Akan terisi otomatis"
-                                />
-
-                                <p className="mt-1 text-xs text-gray-500">
-                                    Destination ID dibuat otomatis berdasarkan
-                                    kelurahan yang dipilih.
-                                </p>
-                            </div>
-                        </div>
-                    </section>
-
-                    {/* =====================
-                        KOORDINAT
-                    ====================== */}
-
-                    <section className="rounded-3xl border border-gray-200 bg-white p-6 shadow-sm">
-                        <h2 className="text-lg font-bold text-gray-900">
-                            Koordinat Toko
-                        </h2>
-
-                        <p className="mt-1 text-sm text-gray-500">
-                            Untuk sementara koordinat
-                            dapat diisi manual. Nanti
-                            kita sambungkan ke GPS dan
-                            map.
-                        </p>
-
-                        <div className="mt-5 grid gap-5 md:grid-cols-2">
-
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Latitude
-                                </label>
-
-                                <input
-                                    type="text"
+                    <SectionCard
+                        title="Koordinat Toko"
+                        description="Untuk sementara koordinat dapat diisi manual. Nanti kita sambungkan ke GPS dan map."
+                    >
+                        <Grid gap="md">
+                            <Grid.Col span={{ base: 12, md: 6 }}>
+                                <TextInput
+                                    label="Latitude"
+                                    size="md"
+                                    radius="md"
                                     value={form.latitude}
                                     onChange={(e) =>
-                                        updateField(
-                                            "latitude",
-                                            e.target.value
-                                        )
+                                        updateField("latitude", e.currentTarget.value)
                                     }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500"
                                     placeholder="-6.2000000"
                                 />
-                            </div>
+                            </Grid.Col>
 
-                            <div>
-                                <label className="text-sm font-medium text-gray-700">
-                                    Longitude
-                                </label>
-
-                                <input
-                                    type="text"
+                            <Grid.Col span={{ base: 12, md: 6 }}>
+                                <TextInput
+                                    label="Longitude"
+                                    size="md"
+                                    radius="md"
                                     value={form.longitude}
                                     onChange={(e) =>
-                                        updateField(
-                                            "longitude",
-                                            e.target.value
-                                        )
+                                        updateField("longitude", e.currentTarget.value)
                                     }
-                                    className="mt-2 w-full rounded-xl border border-gray-300 px-4 py-3 outline-none focus:border-rose-500"
                                     placeholder="106.8166667"
                                 />
-                            </div>
-                        </div>
-                    </section>
+                            </Grid.Col>
+                        </Grid>
+                    </SectionCard>
 
-                    {/* =====================
-                        SAVE
-                    ====================== */}
+                    {/* SAVE */}
 
-                    <div className="flex justify-end">
-                        <button
+                    <Group justify="flex-end">
+                        <Button
                             type="submit"
+                            size="lg"
+                            radius="md"
                             disabled={saving}
-                            className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            loading={saving}
+                            leftSection={<FiSave size={17} />}
                         >
-                            <FiSave size={17} />
-
-                            {saving
-                                ? "Menyimpan..."
-                                : "Simpan Pengaturan"}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </main>
+                            {saving ? "Menyimpan..." : "Simpan Pengaturan"}
+                        </Button>
+                    </Group>
+                </Stack>
+            </form>
+        </Box>
     );
 }

@@ -47,7 +47,13 @@ CREATE TABLE `SpinWheelSpin` (
     `status` ENUM('AVAILABLE', 'USED', 'EXPIRED', 'CANCELLED') NOT NULL DEFAULT 'AVAILABLE',
     `expiresAt` DATETIME(3) NULL,
     `usedAt` DATETIME(3) NULL,
-    `orderId` INTEGER NULL UNIQUE,
+    -- Phase 2.5 (BLK-1): the inline `UNIQUE` was removed from this column.
+    -- It created a second, auto-named unique index (`orderId`) alongside the
+    -- explicit `UNIQUE INDEX SpinWheelSpin_orderId_key` below, so a replayed
+    -- database carried two redundant unique indexes that the real database
+    -- (and schema.prisma) do not have. Uniqueness is still enforced by the
+    -- named index; the column definition is otherwise unchanged.
+    `orderId` INTEGER NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 

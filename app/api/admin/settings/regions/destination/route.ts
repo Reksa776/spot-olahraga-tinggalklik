@@ -17,7 +17,7 @@ export async function GET(
             );
         }
 
-        if ((session.user as any).role !== "ADMIN") {
+        if (session.user.role !== "ADMIN") {
             return NextResponse.json(
                 {
                     message: "Forbidden",

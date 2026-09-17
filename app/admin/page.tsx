@@ -2,52 +2,104 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import {
-    FiBox,
-    FiFileText,
-    FiShoppingBag,
-    FiUsers,
-    FiTrendingUp,
-} from "react-icons/fi";
-import DashboardStats from "@/components/admin/DashboardStats";
-import SalesChart from "@/components/admin/SalesChart";
-import OrderStatusCard from "@/components/admin/OrderStatusCard";
-import PaymentMethodCard from "@/components/admin/PaymentMethodCard";
-import TopProductsCard from "@/components/admin/TopProductsCard";
-import RecentOrdersCard from "@/components/admin/RecentOrdersCard";
-import AdminMenuCard from "@/components/admin/AdminMenuCard";
+import { Badge, Box, Button, Group, Progress, SimpleGrid, Skeleton, Stack, Text } from "@mantine/core";
+import { FiBox, FiFileText, FiShoppingBag, FiTrendingUp, FiUsers } from "react-icons/fi";
 
+import AdminMenuCard from "@/components/admin/AdminMenuCard";
+import DashboardStats, { type DashboardSummary } from "@/components/admin/DashboardStats";
+import StatusBreakdownCard, { type OrderStatusData } from "@/components/admin/StatusBreakdownCard";
+import RecentOrdersCard, { type RecentOrder } from "@/components/admin/RecentOrdersCard";
+import SalesChart, { type DailySale } from "@/components/admin/SalesChart";
+import TopProductsCard from "@/components/admin/TopProductsCard";
+import {
+    ErrorBlock,
+    LoadingBlock,
+    PageHeader,
+    SectionCard,
+    StatCard,
+    StatGrid,
+} from "@/components/dashboard/primitives";
+
+/**
+ * ==========================================
+ * ADMIN OVERVIEW
+ * ==========================================
+ *
+ * MIGRATION NOTES
+ * ---------------
+ * • Data fetching is untouched: the same `/api/admin/dashboard?period=7d` request, the same
+ *   `cache: "no-store"`, the same `json.success` check and the same error copy.
+ * • Every section the previous page rendered is still here, in the same order, reading the same
+ *   fields. Nothing was dropped and nothing was invented.
+ * • The two identical status panels are now one component (`StatusBreakdownCard`) rendered twice —
+ *   previously `OrderStatusCard.tsx` and `PaymentMethodCard.tsx` were the same file twice, printing
+ *   the *order* status list under a "Metode Pembayaran" heading. The second panel keeps its heading
+ *   and now shows the payment-method counts the API actually returns for it.
+ * • `any` became two local interfaces so the payload shape is checked; the API contract is
+ *   unchanged.
+ */
+
+type PaymentMethodData = Record<string, number>;
+
+type FlashSale = {
+    id: number;
+    name: string;
+    soldCount: number;
+    saleStock: number;
+};
+
+type Campaign = {
+    id: number;
+    name: string;
+    type: string;
+    endAt: string;
+};
+
+type DashboardData = {
+    summary: DashboardSummary & {
+        activeFlashSalesCount?: number;
+        activeCampaignsCount?: number;
+        pendingOrders?: number;
+        failedPayments?: number;
+    };
+    dailySales: DailySale[];
+    orderStatus: OrderStatusData;
+    paymentMethod: PaymentMethodData;
+    topProducts: { productId: number; productName: string; quantity: number; revenue: number }[];
+    recentOrders: RecentOrder[];
+    activeFlashSales?: FlashSale[];
+    activeCampaigns?: Campaign[];
+};
+
+/**
+ * The payment-method keys the dashboard API returns (`app/api/admin/dashboard/route.ts`). Listed
+ * explicitly so the panel renders the four real methods instead of the six order-status labels the
+ * previous implementation read off a payload that never had them.
+ */
+const PAYMENT_METHOD_LABELS = ["COD", "BANK_TRANSFER", "E_WALLET", "QRIS"];
 
 export default function AdminPage() {
-    const [data, setData] = useState<any>(null);
+    const [data, setData] = useState<DashboardData | null>(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
         async function loadDashboard() {
             try {
-                const response = await fetch(
-                    "/api/admin/dashboard?period=7d",
-                    {
-                        cache: "no-store",
-                    }
-                );
+                const response = await fetch("/api/admin/dashboard?period=7d", {
+                    cache: "no-store",
+                });
 
-                const result =
-                    await response.json();
+                const result = await response.json();
 
                 if (!response.ok || !result.success) {
-                    throw new Error(
-                        result.message ||
-                        "Gagal mengambil dashboard."
-                    );
+                    throw new Error(result.message || "Gagal mengambil dashboard.");
                 }
 
                 setData(result.data);
-            } catch (error) {
-                console.error(
-                    "LOAD ADMIN DASHBOARD ERROR:",
-                    error
-                );
+            } catch (caught) {
+                console.error("LOAD ADMIN DASHBOARD ERROR:", caught);
+                setError(caught instanceof Error ? caught.message : "Gagal mengambil dashboard.");
             } finally {
                 setLoading(false);
             }
@@ -58,226 +110,225 @@ export default function AdminPage() {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-gray-50">
-                <div className="mx-auto max-w-7xl px-5 py-10">
-                    <div className="animate-pulse">
-                        <div className="h-8 w-64 rounded bg-gray-200" />
-
-                        <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                            {[1, 2, 3, 4].map(
-                                (item) => (
-                                    <div
-                                        key={item}
-                                        className="h-32 rounded-2xl bg-gray-200"
-                                    />
-                                )
-                            )}
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <Stack gap="lg">
+                <Box>
+                    <Skeleton height={28} width={280} radius="sm" />
+                    <Skeleton height={16} width={420} mt="sm" radius="sm" />
+                </Box>
+                <Skeleton height={110} radius="md" />
+                <Skeleton height={110} radius="md" />
+                <LoadingBlock label="Memuat ringkasan toko…" />
+            </Stack>
         );
     }
 
     if (!data) {
         return (
-            <div className="min-h-screen bg-gray-50">
-                <div className="mx-auto max-w-7xl px-5 py-10">
-                    <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-600">
-                        Gagal mengambil data dashboard.
-                    </div>
-                </div>
-            </div>
+            <>
+                <PageHeader eyebrow="Admin Dashboard" title="Ringkasan Toko" />
+                <ErrorBlock
+                    message={error ?? "Gagal mengambil data dashboard."}
+                    action={
+                        <Button size="md" radius="md" onClick={() => window.location.reload()}>
+                            Coba lagi
+                        </Button>
+                    }
+                />
+            </>
         );
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            {/* HEADER */}
-            <div className="border-b border-gray-200 bg-white">
-                <div className="mx-auto max-w-7xl px-5 py-7 sm:px-6">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-                        <div>
-                            <p className="text-sm font-semibold text-rose-600">
-                                Admin Dashboard
-                            </p>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin Dashboard"
+                title="Ringkasan Toko"
+                description="Pantau penjualan, pesanan, produk, dan performa toko."
+                actions={
+                    <Button
+                        component={Link}
+                        href="/admin/reports"
+                        size="md"
+                        radius="md"
+                        color="ink"
+                        leftSection={<FiFileText size={17} />}
+                    >
+                        Laporan Penjualan
+                    </Button>
+                }
+            />
 
-                            <h1 className="mt-1 text-2xl font-bold tracking-tight text-gray-900 sm:text-3xl">
-                                Ringkasan Toko
-                            </h1>
+            {/* QUICK MENU */}
+            <Box>
+                <Text fw={600} size="md" mb={4}>
+                    Menu Cepat
+                </Text>
+                <Text size="sm" c="dimmed" mb="md">
+                    Akses fitur administrasi toko.
+                </Text>
 
-                            <p className="mt-2 text-sm text-gray-500">
-                                Pantau penjualan, pesanan,
-                                produk, dan performa toko.
-                            </p>
-                        </div>
+                <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="md">
+                    <AdminMenuCard
+                        href="/admin/products"
+                        icon={FiBox}
+                        title="Produk"
+                        description="Kelola produk dan variant."
+                    />
+                    <AdminMenuCard
+                        href="/admin/orders"
+                        icon={FiShoppingBag}
+                        title="Pesanan"
+                        description="Lihat dan proses pesanan."
+                    />
+                    <AdminMenuCard
+                        href="/admin/users"
+                        icon={FiUsers}
+                        title="Pengguna"
+                        description="Kelola pengguna toko."
+                    />
+                    <AdminMenuCard
+                        href="/admin/reports"
+                        icon={FiTrendingUp}
+                        title="Reporting"
+                        description="Lihat dan download laporan."
+                    />
+                </SimpleGrid>
+            </Box>
 
-                        <Link
-                            href="/admin/reports"
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
-                        >
-                            <FiFileText size={17} />
-                            Laporan Penjualan
-                        </Link>
-                    </div>
-                </div>
-            </div>
+            <DashboardStats summary={data.summary} />
 
+            <SalesChart data={data.dailySales} />
 
-            {/* CONTENT */}
-            <div className="mx-auto max-w-7xl px-5 py-3 sm:px-6">
-                <section className="my-8">
-                    <div className="mb-4">
-                        <h2 className="text-lg font-bold text-gray-900">
-                            Menu Cepat
-                        </h2>
-
-                        <p className="mt-1 text-sm text-gray-500">
-                            Akses fitur administrasi toko.
-                        </p>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                        <AdminMenuCard
-                            href="/admin/products"
-                            icon={FiBox}
-                            title="Produk"
-                            description="Kelola produk dan variant."
-                        />
-
-                        <AdminMenuCard
-                            href="/admin/orders"
-                            icon={FiShoppingBag}
-                            title="Pesanan"
-                            description="Lihat dan proses pesanan."
-                        />
-
-                        <AdminMenuCard
-                            href="/admin/users"
-                            icon={FiUsers}
-                            title="Pengguna"
-                            description="Kelola pengguna toko."
-                        />
-
-                        <AdminMenuCard
-                            href="/admin/reports"
-                            icon={FiTrendingUp}
-                            title="Reporting"
-                            description="Lihat dan download laporan."
-                        />
-                    </div>
-                </section>
-                <DashboardStats
-                    summary={data.summary}
+            <SimpleGrid cols={{ base: 1, lg: 2 }} spacing="md">
+                <StatusBreakdownCard
+                    title="Status Pesanan"
+                    description="Rekap status pesanan periode aktif."
+                    data={data.orderStatus}
                 />
 
-                <div className="mt-6">
-                    <SalesChart
-                        data={data.dailySales}
-                    />
-                </div>
+                <StatusBreakdownCard
+                    title="Metode Pembayaran"
+                    description="Rekap metode pembayaran periode aktif."
+                    data={data.paymentMethod}
+                    order={PAYMENT_METHOD_LABELS}
+                />
+            </SimpleGrid>
 
-                <div className="mt-6 grid gap-6 lg:grid-cols-2">
-                    <OrderStatusCard
-                        data={data.orderStatus}
-                    />
+            <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="md">
+                <TopProductsCard data={data.topProducts} />
 
-                    <PaymentMethodCard
-                        data={data.paymentMethod}
-                    />
-                </div>
+                <RecentOrdersCard data={data.recentOrders} />
+            </SimpleGrid>
 
-                <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                    <TopProductsCard
-                        data={data.topProducts}
-                    />
+            {/* FLASH SALES & CAMPAIGNS */}
+            <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="md">
+                <SectionCard
+                    title="Flash Sale Aktif"
+                    actions={
+                        <Badge color="brand" variant="light" size="lg" radius="sm">
+                            {data.summary?.activeFlashSalesCount ?? 0}
+                        </Badge>
+                    }
+                >
+                    {data.activeFlashSales && data.activeFlashSales.length > 0 ? (
+                        <Stack gap="sm">
+                            {data.activeFlashSales.slice(0, 5).map((flashSale) => (
+                                <Group key={flashSale.id} justify="space-between" wrap="nowrap" gap="md">
+                                    <Box style={{ minWidth: 0, flex: 1 }}>
+                                        <Text size="sm" fw={500} lineClamp={1}>
+                                            {flashSale.name}
+                                        </Text>
+                                        <Text size="xs" c="dimmed">
+                                            {flashSale.soldCount}/{flashSale.saleStock} terjual
+                                        </Text>
+                                    </Box>
 
-                    <RecentOrdersCard
-                        data={data.recentOrders}
-                    />
-                </div>
+                                    <Progress
+                                        value={
+                                            flashSale.saleStock === 0
+                                                ? 0
+                                                : Math.min(
+                                                      100,
+                                                      (flashSale.soldCount / flashSale.saleStock) * 100
+                                                  )
+                                        }
+                                        color="brand"
+                                        size="sm"
+                                        w={80}
+                                        radius="xl"
+                                    />
+                                </Group>
+                            ))}
+                        </Stack>
+                    ) : (
+                        <Text size="sm" c="dimmed">
+                            Tidak ada flash sale aktif
+                        </Text>
+                    )}
+                </SectionCard>
 
-                {/* FLASH SALES & CAMPAIGNS */}
-                <div className="mt-6 grid gap-6 xl:grid-cols-2">
-                    {/* Active Flash Sales */}
-                    <div className="rounded-2xl border border-gray-200 bg-white p-5">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900">Flash Sale Aktif</h3>
-                            <span className="rounded-full bg-rose-100 px-2.5 py-0.5 text-xs font-semibold text-rose-700">
-                                {data.summary?.activeFlashSalesCount ?? 0}
-                            </span>
-                        </div>
-                        {data.activeFlashSales && data.activeFlashSales.length > 0 ? (
-                            <div className="mt-4 space-y-3">
-                                {data.activeFlashSales.slice(0, 5).map((fs: any) => (
-                                    <div key={fs.id} className="flex items-center justify-between">
-                                        <div className="min-w-0 flex-1">
-                                            <p className="truncate text-sm font-medium text-gray-900">{fs.name}</p>
-                                            <p className="text-xs text-gray-500">{fs.soldCount}/{fs.saleStock} terjual</p>
-                                        </div>
-                                        <div className="ml-3 h-1.5 w-16 overflow-hidden rounded-full bg-gray-100">
-                                            <div
-                                                className="h-full rounded-full bg-rose-500"
-                                                style={{ width: `${Math.min(100, (fs.soldCount / fs.saleStock) * 100)}%` }}
-                                            />
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <p className="mt-4 text-sm text-gray-400">Tidak ada flash sale aktif</p>
-                        )}
-                    </div>
+                <SectionCard
+                    title="Kampanye Aktif"
+                    actions={
+                        <Badge color="blue" variant="light" size="lg" radius="sm">
+                            {data.summary?.activeCampaignsCount ?? 0}
+                        </Badge>
+                    }
+                >
+                    {data.activeCampaigns && data.activeCampaigns.length > 0 ? (
+                        <Stack gap="sm">
+                            {data.activeCampaigns.slice(0, 5).map((campaign) => (
+                                <Group key={campaign.id} justify="space-between" wrap="nowrap" gap="md">
+                                    <Box style={{ minWidth: 0, flex: 1 }}>
+                                        <Text size="sm" fw={500} lineClamp={1}>
+                                            {campaign.name}
+                                        </Text>
+                                        <Text size="xs" c="dimmed">
+                                            {campaign.type}
+                                        </Text>
+                                    </Box>
 
-                    {/* Active Campaigns */}
-                    <div className="rounded-2xl border border-gray-200 bg-white p-5">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900">Kampanye Aktif</h3>
-                            <span className="rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-semibold text-blue-700">
-                                {data.summary?.activeCampaignsCount ?? 0}
-                            </span>
-                        </div>
-                        {data.activeCampaigns && data.activeCampaigns.length > 0 ? (
-                            <div className="mt-4 space-y-3">
-                                {data.activeCampaigns.slice(0, 5).map((c: any) => (
-                                    <div key={c.id} className="flex items-center justify-between">
-                                        <div className="min-w-0 flex-1">
-                                            <p className="truncate text-sm font-medium text-gray-900">{c.name}</p>
-                                            <p className="text-xs text-gray-500">{c.type}</p>
-                                        </div>
-                                        <span className="ml-3 text-xs text-gray-400">
-                                            s/d {new Date(c.endAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short" })}
-                                        </span>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <p className="mt-4 text-sm text-gray-400">Tidak ada kampanye aktif</p>
-                        )}
-                    </div>
-                </div>
+                                    <Text size="xs" c="dimmed" style={{ whiteSpace: "nowrap" }}>
+                                        s/d{" "}
+                                        {new Date(campaign.endAt).toLocaleDateString("id-ID", {
+                                            day: "2-digit",
+                                            month: "short",
+                                        })}
+                                    </Text>
+                                </Group>
+                            ))}
+                        </Stack>
+                    ) : (
+                        <Text size="sm" c="dimmed">
+                            Tidak ada kampanye aktif
+                        </Text>
+                    )}
+                </SectionCard>
+            </SimpleGrid>
 
-                {/* OPERATIONAL SUMMARY */}
-                <div className="mt-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
-                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
-                        <p className="text-xs font-medium text-gray-500">Menunggu Diproses</p>
-                        <p className="mt-2 text-xl font-semibold text-amber-600">{data.summary?.pendingOrders ?? 0}</p>
-                    </div>
-                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
-                        <p className="text-xs font-medium text-gray-500">Pembayaran Gagal</p>
-                        <p className="mt-2 text-xl font-semibold text-red-600">{data.summary?.failedPayments ?? 0}</p>
-                    </div>
-                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
-                        <p className="text-xs font-medium text-gray-500">Flash Sale Aktif</p>
-                        <p className="mt-2 text-xl font-semibold text-rose-600">{data.summary?.activeFlashSalesCount ?? 0}</p>
-                    </div>
-                    <div className="rounded-xl border border-gray-200 bg-white px-4 py-4">
-                        <p className="text-xs font-medium text-gray-500">Kampanye Aktif</p>
-                        <p className="mt-2 text-xl font-semibold text-blue-600">{data.summary?.activeCampaignsCount ?? 0}</p>
-                    </div>
-                </div>
-
-            </div>
-        </div>
+            {/* OPERATIONAL SUMMARY */}
+            <StatGrid>
+                <StatCard
+                    label="Menunggu Diproses"
+                    value={data.summary?.pendingOrders ?? 0}
+                    tone="pending"
+                />
+                <StatCard
+                    label="Pembayaran Gagal"
+                    value={data.summary?.failedPayments ?? 0}
+                    tone="error"
+                />
+                <StatCard
+                    label="Flash Sale Aktif"
+                    value={data.summary?.activeFlashSalesCount ?? 0}
+                    tone="brand"
+                />
+                <StatCard
+                    label="Kampanye Aktif"
+                    value={data.summary?.activeCampaignsCount ?? 0}
+                    tone="info"
+                />
+            </StatGrid>
+        </Stack>
     );
 }

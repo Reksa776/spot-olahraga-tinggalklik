@@ -1,16 +1,53 @@
 "use client";
 
+import { FormEvent, useEffect, useState } from "react";
 import {
-    FormEvent,
-    useEffect,
-    useState,
-} from "react";
-import toast from "react-hot-toast";
-import { useDialog } from "@/components/ui/Dialog";
+    Alert,
+    Box,
+    Button,
+    Divider,
+    Group,
+    Modal,
+    NumberInput,
+    Progress,
+    Select,
+    SimpleGrid,
+    Stack,
+    Switch,
+    Text,
+    Textarea,
+    TextInput,
+} from "@mantine/core";
 
-type VoucherType =
-    | "PERCENTAGE"
-    | "FIXED";
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatCard,
+    StatGrid,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: `readJsonResponse` and both of its error strings, `formatRupiah`,
+ * `formatDate`, `toDateTimeLocal`, `loadVouchers(pageNum)` and its `page`/`limit` params, the
+ * `openCreateModal`/`openEditModal`/`closeModal` resets, `updateForm`, every validation branch in
+ * `handleSubmit` (including the "quota < usedCount" rule that quotes the used count), the
+ * create-vs-edit URL/method branch, the payload shape (`code` upper-cased, `|| null` fallbacks,
+ * `maxDiscount` only for PERCENTAGE), the success copy, the `loadVouchers(page)` refresh, the 700ms
+ * `closeModal` timer, `handleDelete`'s used-count guard, `toggleActive`, the client-side
+ * `filteredVouchers` search, `activeCount` and `totalUsed` derivations and the pagination handler.
+ *
+ * Presentation changes: `PageHeader`, three `StatCard`s, `SectionCard` + `DataTable`, a Mantine
+ * `Progress` for the quota bar, a `Switch` for the active toggle and a Mantine `Modal` for the form.
+ * The two confirmations the shared `useDialog` helper used to raise are now two Mantine `Modal`s —
+ * one informational (voucher already used) and one destructive (confirm delete) — which is what the
+ * brief asks dashboard confirmations to use.
+ */
+
+type VoucherType = "PERCENTAGE" | "FIXED";
 
 type Voucher = {
     id: number;
@@ -55,14 +92,8 @@ const emptyForm: FormState = {
     endDate: "",
 };
 
-function formatRupiah(
-    value: string | number | null | undefined
-) {
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
+function formatRupiah(value: string | number | null | undefined) {
+    if (value === null || value === undefined || value === "") {
         return "-";
     }
 
@@ -95,9 +126,7 @@ function formatDate(value: string | null) {
     }).format(date);
 }
 
-function toDateTimeLocal(
-    value: string | null
-) {
+function toDateTimeLocal(value: string | null) {
     if (!value) return "";
 
     const date = new Date(value);
@@ -106,22 +135,14 @@ function toDateTimeLocal(
         return "";
     }
 
-    const offset =
-        date.getTimezoneOffset();
+    const offset = date.getTimezoneOffset();
 
-    const localDate = new Date(
-        date.getTime() -
-        offset * 60 * 1000
-    );
+    const localDate = new Date(date.getTime() - offset * 60 * 1000);
 
-    return localDate
-        .toISOString()
-        .slice(0, 16);
+    return localDate.toISOString().slice(0, 16);
 }
 
-async function readJsonResponse(
-    response: Response
-) {
+async function readJsonResponse(response: Response) {
     const text = await response.text();
 
     if (!text) {
@@ -133,10 +154,7 @@ async function readJsonResponse(
     try {
         return JSON.parse(text);
     } catch {
-        console.error(
-            "NON JSON API RESPONSE:",
-            text
-        );
+        console.error("NON JSON API RESPONSE:", text);
 
         throw new Error(
             `Server mengembalikan response bukan JSON. Status: ${response.status}`
@@ -145,40 +163,37 @@ async function readJsonResponse(
 }
 
 export default function AdminVouchersPage() {
-    const [vouchers, setVouchers] =
-        useState<Voucher[]>([]);
+    const [vouchers, setVouchers] = useState<Voucher[]>([]);
 
-    const [loading, setLoading] =
-        useState(true);
+    const [loading, setLoading] = useState(true);
 
-    const [saving, setSaving] =
-        useState(false);
+    const [saving, setSaving] = useState(false);
 
-    const [deletingId, setDeletingId] =
-        useState<number | null>(null);
+    const [deletingId, setDeletingId] = useState<number | null>(null);
 
-    const [modalOpen, setModalOpen] =
-        useState(false);
+    const [modalOpen, setModalOpen] = useState(false);
 
-    const [
-        editingVoucher,
-        setEditingVoucher,
-    ] = useState<Voucher | null>(null);
+    const [editingVoucher, setEditingVoucher] = useState<Voucher | null>(null);
 
-    const [form, setForm] =
-        useState<FormState>(emptyForm);
+    const [form, setForm] = useState<FormState>(emptyForm);
 
-    const [search, setSearch] =
-        useState("");
+    const [search, setSearch] = useState("");
 
     const [page, setPage] = useState(1);
-    const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, totalPages: 0 });
+    const [pagination, setPagination] = useState({
+        page: 1,
+        limit: 50,
+        total: 0,
+        totalPages: 0,
+    });
 
-    const [error, setError] =
-        useState("");
+    const [error, setError] = useState("");
 
-    const [success, setSuccess] =
-        useState("");
+    const [success, setSuccess] = useState("");
+
+    const [deleteTarget, setDeleteTarget] = useState<Voucher | null>(null);
+
+    const [blockedTarget, setBlockedTarget] = useState<Voucher | null>(null);
 
     async function loadVouchers(pageNum: number = 1) {
         try {
@@ -189,44 +204,28 @@ export default function AdminVouchersPage() {
             params.set("page", String(pageNum));
             params.set("limit", "50");
 
-            const response = await fetch(
-                `/api/admin/vouchers?${params.toString()}`,
-                {
-                    method: "GET",
-                    cache: "no-store",
-                }
-            );
+            const response = await fetch(`/api/admin/vouchers?${params.toString()}`, {
+                method: "GET",
+                cache: "no-store",
+            });
 
-            const result =
-                await readJsonResponse(
-                    response
-                );
+            const result = await readJsonResponse(response);
 
-            if (
-                !response.ok ||
-                !result.success
-            ) {
-                throw new Error(
-                    result.message ||
-                    "Gagal mengambil data voucher."
-                );
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "Gagal mengambil data voucher.");
             }
 
-            const items = result.data?.items ?? (Array.isArray(result.data) ? result.data : []);
+            const items =
+                result.data?.items ?? (Array.isArray(result.data) ? result.data : []);
             const pag = result.data?.pagination;
 
             setVouchers(items);
             if (pag) setPagination(pag);
         } catch (err) {
-            console.error(
-                "LOAD VOUCHERS ERROR:",
-                err
-            );
+            console.error("LOAD VOUCHERS ERROR:", err);
 
             setError(
-                err instanceof Error
-                    ? err.message
-                    : "Gagal mengambil data voucher."
+                err instanceof Error ? err.message : "Gagal mengambil data voucher."
             );
         } finally {
             setLoading(false);
@@ -247,49 +246,22 @@ export default function AdminVouchersPage() {
         setModalOpen(true);
     }
 
-    function openEditModal(
-        voucher: Voucher
-    ) {
+    function openEditModal(voucher: Voucher) {
         setEditingVoucher(voucher);
 
         setForm({
             code: voucher.code,
-            description:
-                voucher.description || "",
+            description: voucher.description || "",
             type: voucher.type,
-            value: String(
-                voucher.value ?? ""
-            ),
+            value: String(voucher.value ?? ""),
             maxDiscount:
-                voucher.maxDiscount !==
-                    null
-                    ? String(
-                        voucher.maxDiscount
-                    )
-                    : "",
+                voucher.maxDiscount !== null ? String(voucher.maxDiscount) : "",
             minPurchase:
-                voucher.minPurchase !==
-                    null
-                    ? String(
-                        voucher.minPurchase
-                    )
-                    : "",
-            quota:
-                voucher.quota !== null
-                    ? String(
-                        voucher.quota
-                    )
-                    : "",
-            isActive:
-                voucher.isActive,
-            startDate:
-                toDateTimeLocal(
-                    voucher.startDate
-                ),
-            endDate:
-                toDateTimeLocal(
-                    voucher.endDate
-                ),
+                voucher.minPurchase !== null ? String(voucher.minPurchase) : "",
+            quota: voucher.quota !== null ? String(voucher.quota) : "",
+            isActive: voucher.isActive,
+            startDate: toDateTimeLocal(voucher.startDate),
+            endDate: toDateTimeLocal(voucher.endDate),
         });
 
         setError("");
@@ -309,122 +281,63 @@ export default function AdminVouchersPage() {
         setSuccess("");
     }
 
-    function updateForm<
-        K extends keyof FormState
-    >(
-        key: K,
-        value: FormState[K]
-    ) {
+    function updateForm<K extends keyof FormState>(key: K, value: FormState[K]) {
         setForm((current) => ({
             ...current,
             [key]: value,
         }));
     }
 
-    async function handleSubmit(
-        event: FormEvent<HTMLFormElement>
-    ) {
+    async function handleSubmit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
 
         setError("");
         setSuccess("");
 
         if (!form.code.trim()) {
-            setError(
-                "Kode voucher wajib diisi."
-            );
+            setError("Kode voucher wajib diisi.");
             return;
         }
 
-        const numericValue =
-            Number(form.value);
+        const numericValue = Number(form.value);
 
-        if (
-            !Number.isFinite(
-                numericValue
-            ) ||
-            numericValue <= 0
-        ) {
-            setError(
-                "Nilai voucher harus lebih dari 0."
-            );
+        if (!Number.isFinite(numericValue) || numericValue <= 0) {
+            setError("Nilai voucher harus lebih dari 0.");
             return;
         }
 
-        if (
-            form.type ===
-            "PERCENTAGE" &&
-            numericValue > 100
-        ) {
-            setError(
-                "Persentase voucher tidak boleh lebih dari 100%."
-            );
+        if (form.type === "PERCENTAGE" && numericValue > 100) {
+            setError("Persentase voucher tidak boleh lebih dari 100%.");
             return;
         }
 
-        if (
-            form.type ===
-            "PERCENTAGE" &&
-            form.maxDiscount
-        ) {
-            const maxDiscount =
-                Number(
-                    form.maxDiscount
-                );
+        if (form.type === "PERCENTAGE" && form.maxDiscount) {
+            const maxDiscount = Number(form.maxDiscount);
 
-            if (
-                !Number.isFinite(
-                    maxDiscount
-                ) ||
-                maxDiscount <= 0
-            ) {
-                setError(
-                    "Maksimal diskon harus lebih dari 0."
-                );
+            if (!Number.isFinite(maxDiscount) || maxDiscount <= 0) {
+                setError("Maksimal diskon harus lebih dari 0.");
                 return;
             }
         }
 
         if (form.minPurchase) {
-            const minPurchase =
-                Number(
-                    form.minPurchase
-                );
+            const minPurchase = Number(form.minPurchase);
 
-            if (
-                !Number.isFinite(
-                    minPurchase
-                ) ||
-                minPurchase < 0
-            ) {
-                setError(
-                    "Minimum pembelian tidak valid."
-                );
+            if (!Number.isFinite(minPurchase) || minPurchase < 0) {
+                setError("Minimum pembelian tidak valid.");
                 return;
             }
         }
 
         if (form.quota) {
-            const quota =
-                Number(form.quota);
+            const quota = Number(form.quota);
 
-            if (
-                !Number.isInteger(
-                    quota
-                ) ||
-                quota < 0
-            ) {
-                setError(
-                    "Quota harus berupa angka bulat."
-                );
+            if (!Number.isInteger(quota) || quota < 0) {
+                setError("Quota harus berupa angka bulat.");
                 return;
             }
 
-            if (
-                editingVoucher &&
-                quota <
-                editingVoucher.usedCount
-            ) {
+            if (editingVoucher && quota < editingVoucher.usedCount) {
                 setError(
                     `Quota tidak boleh lebih kecil dari ${editingVoucher.usedCount}, karena voucher sudah digunakan sebanyak itu.`
                 );
@@ -435,16 +348,9 @@ export default function AdminVouchersPage() {
         if (
             form.startDate &&
             form.endDate &&
-            new Date(
-                form.endDate
-            ) <
-            new Date(
-                form.startDate
-            )
+            new Date(form.endDate) < new Date(form.startDate)
         ) {
-            setError(
-                "Tanggal berakhir tidak boleh sebelum tanggal mulai."
-            );
+            setError("Tanggal berakhir tidak boleh sebelum tanggal mulai.");
             return;
         }
 
@@ -452,85 +358,48 @@ export default function AdminVouchersPage() {
             setSaving(true);
 
             const payload = {
-                code: form.code
-                    .trim()
-                    .toUpperCase(),
+                code: form.code.trim().toUpperCase(),
 
-                description:
-                    form.description.trim() ||
-                    null,
+                description: form.description.trim() || null,
 
                 type: form.type,
 
                 value: numericValue,
 
                 maxDiscount:
-                    form.type ===
-                        "PERCENTAGE" &&
-                        form.maxDiscount
-                        ? Number(
-                            form.maxDiscount
-                        )
+                    form.type === "PERCENTAGE" && form.maxDiscount
+                        ? Number(form.maxDiscount)
                         : null,
 
-                minPurchase:
-                    form.minPurchase
-                        ? Number(
-                            form.minPurchase
-                        )
-                        : null,
+                minPurchase: form.minPurchase ? Number(form.minPurchase) : null,
 
-                quota: form.quota
-                    ? Number(form.quota)
-                    : null,
+                quota: form.quota ? Number(form.quota) : null,
 
-                isActive:
-                    form.isActive,
+                isActive: form.isActive,
 
-                startDate:
-                    form.startDate ||
-                    null,
+                startDate: form.startDate || null,
 
-                endDate:
-                    form.endDate ||
-                    null,
+                endDate: form.endDate || null,
             };
 
-            const url =
-                editingVoucher
-                    ? `/api/admin/vouchers/${editingVoucher.id}`
-                    : "/api/admin/vouchers";
+            const url = editingVoucher
+                ? `/api/admin/vouchers/${editingVoucher.id}`
+                : "/api/admin/vouchers";
 
-            const method =
-                editingVoucher
-                    ? "PATCH"
-                    : "POST";
+            const method = editingVoucher ? "PATCH" : "POST";
 
-            const response =
-                await fetch(url, {
-                    method,
-                    headers: {
-                        "Content-Type":
-                            "application/json",
-                    },
-                    body: JSON.stringify(
-                        payload
-                    ),
-                });
+            const response = await fetch(url, {
+                method,
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
 
-            const result =
-                await readJsonResponse(
-                    response
-                );
+            const result = await readJsonResponse(response);
 
-            if (
-                !response.ok ||
-                !result.success
-            ) {
-                throw new Error(
-                    result.message ||
-                    "Gagal menyimpan voucher."
-                );
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "Gagal menyimpan voucher.");
             }
 
             setSuccess(
@@ -545,1114 +414,704 @@ export default function AdminVouchersPage() {
                 closeModal();
             }, 700);
         } catch (err) {
-            console.error(
-                "SAVE VOUCHER ERROR:",
-                err
-            );
+            console.error("SAVE VOUCHER ERROR:", err);
 
-            setError(
-                err instanceof Error
-                    ? err.message
-                    : "Terjadi kesalahan."
-            );
+            setError(err instanceof Error ? err.message : "Terjadi kesalahan.");
         } finally {
             setSaving(false);
         }
     }
 
-    const dialog = useDialog();
-
-    async function handleDelete(
-        voucher: Voucher
-    ) {
+    function handleDelete(voucher: Voucher) {
         if (voucher.usedCount > 0) {
-            await dialog.alert({
-                title: "Tidak Bisa Dihapus",
-                message: "Voucher ini sudah pernah digunakan. Nonaktifkan voucher saja.",
-                variant: "warning",
-            });
+            setBlockedTarget(voucher);
             return;
         }
 
-        const confirmed = await dialog.confirm({
-            title: "Hapus Voucher",
-            message: `Hapus voucher "${voucher.code}"?\n\nTindakan ini tidak bisa dibatalkan.`,
-            variant: "danger",
-            confirmText: "Hapus",
-        });
+        setDeleteTarget(voucher);
+    }
 
-        if (!confirmed) return;
+    async function confirmDelete() {
+        const voucher = deleteTarget;
+
+        setDeleteTarget(null);
+
+        if (!voucher) return;
 
         try {
-            setDeletingId(
-                voucher.id
-            );
+            setDeletingId(voucher.id);
 
             setError("");
             setSuccess("");
 
-            const response =
-                await fetch(
-                    `/api/admin/vouchers/${voucher.id}`,
-                    {
-                        method: "DELETE",
-                    }
-                );
+            const response = await fetch(`/api/admin/vouchers/${voucher.id}`, {
+                method: "DELETE",
+            });
 
-            const result =
-                await readJsonResponse(
-                    response
-                );
+            const result = await readJsonResponse(response);
 
-            if (
-                !response.ok ||
-                !result.success
-            ) {
-                throw new Error(
-                    result.message ||
-                    "Gagal menghapus voucher."
-                );
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "Gagal menghapus voucher.");
             }
 
-            setSuccess(
-                "Voucher berhasil dihapus."
-            );
+            setSuccess("Voucher berhasil dihapus.");
 
             await loadVouchers(page);
         } catch (err) {
-            console.error(
-                "DELETE VOUCHER ERROR:",
-                err
-            );
+            console.error("DELETE VOUCHER ERROR:", err);
 
-            setError(
-                err instanceof Error
-                    ? err.message
-                    : "Gagal menghapus voucher."
-            );
+            setError(err instanceof Error ? err.message : "Gagal menghapus voucher.");
         } finally {
             setDeletingId(null);
         }
     }
 
-    async function toggleActive(
-        voucher: Voucher
-    ) {
+    async function toggleActive(voucher: Voucher) {
         try {
             setError("");
             setSuccess("");
 
-            const response =
-                await fetch(
-                    `/api/admin/vouchers/${voucher.id}`,
-                    {
-                        method: "PATCH",
-                        headers: {
-                            "Content-Type":
-                                "application/json",
-                        },
-                        body: JSON.stringify({
-                            isActive:
-                                !voucher.isActive,
-                        }),
-                    }
-                );
+            const response = await fetch(`/api/admin/vouchers/${voucher.id}`, {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    isActive: !voucher.isActive,
+                }),
+            });
 
-            const result =
-                await readJsonResponse(
-                    response
-                );
+            const result = await readJsonResponse(response);
 
-            if (
-                !response.ok ||
-                !result.success
-            ) {
-                throw new Error(
-                    result.message ||
-                    "Gagal mengubah status voucher."
-                );
+            if (!response.ok || !result.success) {
+                throw new Error(result.message || "Gagal mengubah status voucher.");
             }
 
             await loadVouchers(page);
         } catch (err) {
-            console.error(
-                "TOGGLE VOUCHER ERROR:",
-                err
-            );
+            console.error("TOGGLE VOUCHER ERROR:", err);
 
             setError(
-                err instanceof Error
-                    ? err.message
-                    : "Gagal mengubah status voucher."
+                err instanceof Error ? err.message : "Gagal mengubah status voucher."
             );
         }
     }
 
-    const filteredVouchers =
-        vouchers.filter(
-            (voucher) => {
-                const keyword =
-                    search
-                        .toLowerCase()
-                        .trim();
+    const filteredVouchers = vouchers.filter((voucher) => {
+        const keyword = search.toLowerCase().trim();
 
-                if (!keyword) {
-                    return true;
-                }
+        if (!keyword) {
+            return true;
+        }
 
-                return (
-                    voucher.code
-                        .toLowerCase()
-                        .includes(
-                            keyword
-                        ) ||
-                    (
-                        voucher.description ||
-                        ""
-                    )
-                        .toLowerCase()
-                        .includes(
-                            keyword
-                        )
-                );
-            }
+        return (
+            voucher.code.toLowerCase().includes(keyword) ||
+            (voucher.description || "").toLowerCase().includes(keyword)
         );
+    });
 
-    const activeCount =
-        vouchers.filter(
-            (voucher) =>
-                voucher.isActive
-        ).length;
+    const activeCount = vouchers.filter((voucher) => voucher.isActive).length;
 
-    const totalUsed =
-        vouchers.reduce(
-            (total, voucher) =>
-                total +
-                voucher.usedCount,
-            0
-        );
+    const totalUsed = vouchers.reduce((total, voucher) => total + voucher.usedCount, 0);
 
     return (
-        <div className="min-h-full bg-gray-50/70 p-4 md:p-6 lg:p-8">
-            <div className="mx-auto max-w-[1500px] space-y-6">
-
-                {/* HEADER */}
-                <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
-                    <div>
-                        <div className="mb-2 flex items-center gap-2 text-xs text-gray-400">
-                            <span>Admin</span>
-                            <span>/</span>
-                            <span className="text-gray-600">
-                                Voucher
-                            </span>
-                        </div>
-
-                        <h1 className="text-2xl font-bold tracking-tight text-gray-950">
-                            Voucher
-                        </h1>
-
-                        <p className="mt-1 text-sm text-gray-500">
-                            Kelola promo, diskon, dan penggunaan voucher toko.
-                        </p>
-                    </div>
-
-                    <button
-                        type="button"
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin"
+                title="Voucher"
+                description="Kelola promo, diskon, dan penggunaan voucher toko."
+                actions={
+                    <Button
+                        size="md"
+                        radius="md"
+                        leftSection={<span style={{ fontSize: 18, lineHeight: 1 }}>+</span>}
                         onClick={openCreateModal}
-                        className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800 active:scale-[0.98]"
                     >
-                        <span className="text-lg leading-none">
-                            +
-                        </span>
-
                         Tambah Voucher
-                    </button>
-                </div>
+                    </Button>
+                }
+            />
 
-                {/* ALERT */}
-                {error && (
-                    <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        <span className="mt-0.5 font-bold">
-                            !
-                        </span>
+            {error && (
+                <Alert color="red" variant="light" radius="md" title="Terjadi kesalahan">
+                    {error}
+                </Alert>
+            )}
 
-                        <span>{error}</span>
-                    </div>
-                )}
+            {success && (
+                <Alert color="green" variant="light" radius="md" title="Berhasil">
+                    {success}
+                </Alert>
+            )}
 
-                {success && (
-                    <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                        <span className="mt-0.5 font-bold">
-                            ✓
-                        </span>
+            <StatGrid>
+                <StatCard label="Total Voucher" value={vouchers.length} hint="voucher" />
+                <StatCard
+                    label="Voucher Aktif"
+                    value={activeCount}
+                    hint="sedang berjalan"
+                    tone="success"
+                />
+                <StatCard
+                    label="Total Pemakaian"
+                    value={totalUsed}
+                    hint="kali digunakan"
+                    tone="info"
+                />
+            </StatGrid>
 
-                        <span>{success}</span>
-                    </div>
-                )}
+            <SectionCard
+                title="Daftar Voucher"
+                description={`${filteredVouchers.length} dari ${vouchers.length} voucher`}
+                actions={
+                    <TextInput
+                        size="md"
+                        radius="md"
+                        value={search}
+                        onChange={(event) => setSearch(event.currentTarget.value)}
+                        placeholder="Cari voucher..."
+                        aria-label="Cari voucher"
+                        w={{ base: 180, sm: 260 }}
+                    />
+                }
+            >
+                <DataTable
+                    minWidth={1050}
+                    loading={loading}
+                    loadingRows={6}
+                    empty={
+                        <EmptyBlock
+                            title="Belum ada voucher"
+                            description="Buat voucher pertama untuk memberikan promo kepada pelanggan."
+                            action={
+                                <Button size="md" radius="md" onClick={openCreateModal}>
+                                    Tambah voucher
+                                </Button>
+                            }
+                        />
+                    }
+                    columns={[
+                        { header: "Voucher" },
+                        { header: "Diskon" },
+                        { header: "Minimum" },
+                        { header: "Pemakaian" },
+                        { header: "Periode" },
+                        { header: "Status" },
+                        { header: "Aksi", align: "right" },
+                    ]}
+                    rows={filteredVouchers.map((voucher) => {
+                        const quotaProgress =
+                            voucher.quota !== null && voucher.quota > 0
+                                ? Math.min(100, (voucher.usedCount / voucher.quota) * 100)
+                                : 0;
 
-                {/* SUMMARY */}
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                    <div className="border-b border-gray-200 bg-white px-5 py-5 sm:border-b-0 sm:border-r">
-                        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                            Total Voucher
-                        </p>
+                        return {
+                            key: String(voucher.id),
+                            cells: [
+                                <Stack gap={0} key="voucher">
+                                    <Group gap="xs">
+                                        <Text size="sm" fw={700} ff="monospace">
+                                            {voucher.code}
+                                        </Text>
 
-                        <div className="mt-2 flex items-end gap-2">
-                            <span className="text-2xl font-bold tracking-tight text-gray-950">
-                                {vouchers.length}
-                            </span>
+                                        {voucher.usedCount > 0 && (
+                                            <Text size="xs" c="dimmed">
+                                                {voucher.usedCount}x
+                                            </Text>
+                                        )}
+                                    </Group>
 
-                            <span className="mb-1 text-xs text-gray-400">
-                                voucher
-                            </span>
-                        </div>
-                    </div>
-
-                    <div className="border-b border-gray-200 bg-white px-5 py-5 sm:border-b-0 sm:border-r">
-                        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                            Voucher Aktif
-                        </p>
-
-                        <div className="mt-2 flex items-end gap-2">
-                            <span className="text-2xl font-bold tracking-tight text-emerald-600">
-                                {activeCount}
-                            </span>
-
-                            <span className="mb-1 text-xs text-gray-400">
-                                sedang berjalan
-                            </span>
-                        </div>
-                    </div>
-
-                    <div className="bg-white px-5 py-5">
-                        <p className="text-xs font-medium uppercase tracking-wide text-gray-400">
-                            Total Pemakaian
-                        </p>
-
-                        <div className="mt-2 flex items-end gap-2">
-                            <span className="text-2xl font-bold tracking-tight text-gray-950">
-                                {totalUsed}
-                            </span>
-
-                            <span className="mb-1 text-xs text-gray-400">
-                                kali digunakan
-                            </span>
-                        </div>
-                    </div>
-                </div>
-
-                {/* TABLE CONTAINER */}
-                <section className="overflow-hidden border border-gray-200 bg-white">
-
-                    {/* TOOLBAR */}
-                    <div className="flex flex-col gap-4 border-b border-gray-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
-                        <div>
-                            <h2 className="text-sm font-semibold text-gray-950">
-                                Daftar Voucher
-                            </h2>
-
-                            <p className="mt-0.5 text-xs text-gray-400">
-                                {filteredVouchers.length} dari{" "}
-                                {vouchers.length} voucher
-                            </p>
-                        </div>
-
-                        <div className="relative w-full md:w-72">
-                            <svg
-                                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="2"
-                            >
-                                <circle
-                                    cx="11"
-                                    cy="11"
-                                    r="7"
-                                />
-
-                                <path d="m20 20-3.5-3.5" />
-                            </svg>
-
-                            <input
-                                type="text"
-                                value={search}
-                                onChange={(event) =>
-                                    setSearch(
-                                        event.target.value
-                                    )
-                                }
-                                placeholder="Cari voucher..."
-                                className="h-10 w-full border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-400 focus:bg-white"
-                            />
-                        </div>
-                    </div>
-
-                    {/* CONTENT */}
-                    {loading ? (
-                        <div className="flex min-h-[300px] items-center justify-center">
-                            <div className="text-center">
-                                <div className="mx-auto h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-800" />
-
-                                <p className="mt-3 text-xs text-gray-400">
-                                    Memuat voucher...
-                                </p>
-                            </div>
-                        </div>
-                    ) : filteredVouchers.length === 0 ? (
-                        <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center">
-                            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 text-gray-500">
-                                <span className="text-xl">
-                                    %
-                                </span>
-                            </div>
-
-                            <p className="mt-4 text-sm font-semibold text-gray-900">
-                                Belum ada voucher
-                            </p>
-
-                            <p className="mt-1 max-w-sm text-xs leading-5 text-gray-400">
-                                Buat voucher pertama untuk memberikan
-                                promo kepada pelanggan.
-                            </p>
-
-                            <button
-                                type="button"
-                                onClick={openCreateModal}
-                                className="mt-4 text-xs font-semibold text-gray-900 underline underline-offset-4 hover:text-gray-500"
-                            >
-                                Tambah voucher
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full min-w-[1050px] text-left">
-                                <thead>
-                                    <tr className="border-b border-gray-200 bg-gray-50/80">
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Voucher
-                                        </th>
-
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Diskon
-                                        </th>
-
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Minimum
-                                        </th>
-
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Pemakaian
-                                        </th>
-
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Periode
-                                        </th>
-
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Status
-                                        </th>
-
-                                        <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                                            Aksi
-                                        </th>
-                                    </tr>
-                                </thead>
-
-                                <tbody className="divide-y divide-gray-100">
-                                    {filteredVouchers.map(
-                                        (voucher) => {
-                                            const quotaProgress =
-                                                voucher.quota !== null &&
-                                                    voucher.quota > 0
-                                                    ? Math.min(
-                                                        100,
-                                                        (voucher.usedCount /
-                                                            voucher.quota) *
-                                                        100
-                                                    )
-                                                    : 0;
-
-                                            return (
-                                                <tr
-                                                    key={voucher.id}
-                                                    className="group transition hover:bg-gray-50/70"
-                                                >
-                                                    {/* VOUCHER */}
-                                                    <td className="px-5 py-4">
-                                                        <div>
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="font-mono text-sm font-bold tracking-wide text-gray-900">
-                                                                    {
-                                                                        voucher.code
-                                                                    }
-                                                                </span>
-
-                                                                {voucher.usedCount >
-                                                                    0 && (
-                                                                        <span className="text-[10px] text-gray-400">
-                                                                            {
-                                                                                voucher.usedCount
-                                                                            }x
-                                                                        </span>
-                                                                    )}
-                                                            </div>
-
-                                                            {voucher.description && (
-                                                                <p className="mt-1 max-w-[230px] truncate text-xs text-gray-400">
-                                                                    {
-                                                                        voucher.description
-                                                                    }
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                    </td>
-
-                                                    {/* DISCOUNT */}
-                                                    <td className="px-5 py-4">
-                                                        <div className="font-semibold text-gray-900">
-                                                            {voucher.type ===
-                                                                "PERCENTAGE"
-                                                                ? `${Number(
-                                                                    voucher.value
-                                                                )}%`
-                                                                : formatRupiah(
-                                                                    voucher.value
-                                                                )}
-                                                        </div>
-
-                                                        {voucher.type ===
-                                                            "PERCENTAGE" &&
-                                                            voucher.maxDiscount !==
-                                                            null && (
-                                                                <p className="mt-1 text-[11px] text-gray-400">
-                                                                    Maks.{" "}
-                                                                    {formatRupiah(
-                                                                        voucher.maxDiscount
-                                                                    )}
-                                                                </p>
-                                                            )}
-                                                    </td>
-
-                                                    {/* MINIMUM */}
-                                                    <td className="px-5 py-4 text-sm text-gray-600">
-                                                        {voucher.minPurchase !==
-                                                            null
-                                                            ? formatRupiah(
-                                                                voucher.minPurchase
-                                                            )
-                                                            : (
-                                                                <span className="text-gray-400">
-                                                                    Tanpa
-                                                                    minimum
-                                                                </span>
-                                                            )}
-                                                    </td>
-
-                                                    {/* USAGE */}
-                                                    <td className="px-5 py-4">
-                                                        <div className="w-28">
-                                                            <div className="flex items-center justify-between text-xs">
-                                                                <span className="font-medium text-gray-700">
-                                                                    {
-                                                                        voucher.usedCount
-                                                                    }
-                                                                </span>
-
-                                                                {voucher.quota !==
-                                                                    null && (
-                                                                        <span className="text-gray-400">
-                                                                            /{" "}
-                                                                            {
-                                                                                voucher.quota
-                                                                            }
-                                                                        </span>
-                                                                    )}
-                                                            </div>
-
-                                                            {voucher.quota !==
-                                                                null && (
-                                                                    <div className="mt-2 h-1 overflow-hidden bg-gray-100">
-                                                                        <div
-                                                                            className={`h-full ${quotaProgress >=
-                                                                                    90
-                                                                                    ? "bg-red-500"
-                                                                                    : quotaProgress >=
-                                                                                        70
-                                                                                        ? "bg-amber-400"
-                                                                                        : "bg-gray-800"
-                                                                                }`}
-                                                                            style={{
-                                                                                width: `${quotaProgress}%`,
-                                                                            }}
-                                                                        />
-                                                                    </div>
-                                                                )}
-                                                        </div>
-                                                    </td>
-
-                                                    {/* PERIOD */}
-                                                    <td className="px-5 py-4">
-                                                        <div className="space-y-1 text-xs">
-                                                            <div className="text-gray-700">
-                                                                {formatDate(
-                                                                    voucher.startDate
-                                                                )}
-                                                            </div>
-
-                                                            <div className="text-gray-400">
-                                                                sampai{" "}
-                                                                {formatDate(
-                                                                    voucher.endDate
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    </td>
-
-                                                    {/* STATUS */}
-                                                    <td className="px-5 py-4">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() =>
-                                                                toggleActive(
-                                                                    voucher
-                                                                )
-                                                            }
-                                                            className="inline-flex items-center gap-2 text-xs font-medium"
-                                                        >
-                                                            <span
-                                                                className={`h-2 w-2 rounded-full ${voucher.isActive
-                                                                        ? "bg-emerald-500"
-                                                                        : "bg-gray-300"
-                                                                    }`}
-                                                            />
-
-                                                            <span
-                                                                className={
-                                                                    voucher.isActive
-                                                                        ? "text-emerald-700"
-                                                                        : "text-gray-400"
-                                                                }
-                                                            >
-                                                                {voucher.isActive
-                                                                    ? "Aktif"
-                                                                    : "Nonaktif"}
-                                                            </span>
-                                                        </button>
-                                                    </td>
-
-                                                    {/* ACTION */}
-                                                    <td className="px-5 py-4">
-                                                        <div className="flex justify-end gap-1">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    openEditModal(
-                                                                        voucher
-                                                                    )
-                                                                }
-                                                                className="px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900"
-                                                            >
-                                                                Edit
-                                                            </button>
-
-                                                            <button
-                                                                type="button"
-                                                                disabled={
-                                                                    deletingId ===
-                                                                    voucher.id
-                                                                }
-                                                                onClick={() =>
-                                                                    handleDelete(
-                                                                        voucher
-                                                                    )
-                                                                }
-                                                                className="px-2.5 py-1.5 text-xs font-medium text-gray-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                                                            >
-                                                                {deletingId ===
-                                                                    voucher.id
-                                                                    ? "..."
-                                                                    : "Hapus"}
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        }
+                                    {voucher.description && (
+                                        <Text size="xs" c="dimmed" lineClamp={1} maw={230}>
+                                            {voucher.description}
+                                        </Text>
                                     )}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                                </Stack>,
 
-                    {pagination.totalPages > 1 && (
-                        <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                            <p className="text-xs text-gray-500">
-                                Halaman {pagination.page} dari {pagination.totalPages} ({pagination.total} voucher)
-                            </p>
-                            <div className="flex gap-2">
-                                <button
-                                    type="button"
-                                    disabled={page <= 1}
-                                    onClick={() => { const p = page - 1; setPage(p); loadVouchers(p); }}
-                                    className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                    Sebelumnya
-                                </button>
-                                <button
-                                    type="button"
-                                    disabled={page >= pagination.totalPages}
-                                    onClick={() => { const p = page + 1; setPage(p); loadVouchers(p); }}
-                                    className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                                >
-                                    Selanjutnya
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                </section>
-            </div>
+                                <Box key="discount">
+                                    <Text size="sm" fw={600}>
+                                        {voucher.type === "PERCENTAGE"
+                                            ? `${Number(voucher.value)}%`
+                                            : formatRupiah(voucher.value)}
+                                    </Text>
+
+                                    {voucher.type === "PERCENTAGE" &&
+                                        voucher.maxDiscount !== null && (
+                                            <Text size="xs" c="dimmed">
+                                                Maks. {formatRupiah(voucher.maxDiscount)}
+                                            </Text>
+                                        )}
+                                </Box>,
+
+                                voucher.minPurchase !== null ? (
+                                    <Text size="sm" key="minimum">
+                                        {formatRupiah(voucher.minPurchase)}
+                                    </Text>
+                                ) : (
+                                    <Text size="sm" c="dimmed" key="minimum">
+                                        Tanpa minimum
+                                    </Text>
+                                ),
+
+                                <Box w={112} key="usage">
+                                    <Group justify="space-between" gap="xs">
+                                        <Text size="xs" fw={600}>
+                                            {voucher.usedCount}
+                                        </Text>
+
+                                        {voucher.quota !== null && (
+                                            <Text size="xs" c="dimmed">
+                                                / {voucher.quota}
+                                            </Text>
+                                        )}
+                                    </Group>
+
+                                    {voucher.quota !== null && (
+                                        <Progress
+                                            value={quotaProgress}
+                                            size="xs"
+                                            radius="xl"
+                                            mt={6}
+                                            color={
+                                                quotaProgress >= 90
+                                                    ? "red"
+                                                    : quotaProgress >= 70
+                                                      ? "yellow"
+                                                      : "ink"
+                                            }
+                                        />
+                                    )}
+                                </Box>,
+
+                                <Stack gap={2} key="period">
+                                    <Text size="xs">{formatDate(voucher.startDate)}</Text>
+
+                                    <Text size="xs" c="dimmed">
+                                        sampai {formatDate(voucher.endDate)}
+                                    </Text>
+                                </Stack>,
+
+                                <Switch
+                                    key="status"
+                                    size="md"
+                                    color="green"
+                                    checked={voucher.isActive}
+                                    onChange={() => toggleActive(voucher)}
+                                    label={voucher.isActive ? "Aktif" : "Nonaktif"}
+                                />,
+
+                                <Group justify="flex-end" gap="xs" wrap="nowrap" key="actions">
+                                    <Button
+                                        variant="subtle"
+                                        size="sm"
+                                        radius="md"
+                                        onClick={() => openEditModal(voucher)}
+                                    >
+                                        Edit
+                                    </Button>
+
+                                    <Button
+                                        variant="subtle"
+                                        color="red"
+                                        size="sm"
+                                        radius="md"
+                                        loading={deletingId === voucher.id}
+                                        disabled={deletingId === voucher.id}
+                                        onClick={() => handleDelete(voucher)}
+                                    >
+                                        Hapus
+                                    </Button>
+                                </Group>,
+                            ],
+                        };
+                    })}
+                    footer={
+                        pagination.totalPages > 1 ? (
+                            <Group justify="space-between" align="center">
+                                <Text size="sm" c="dimmed">
+                                    Halaman {pagination.page} dari {pagination.totalPages} (
+                                    {pagination.total} voucher)
+                                </Text>
+
+                                <Group gap="sm">
+                                    <Button
+                                        variant="default"
+                                        size="md"
+                                        radius="md"
+                                        disabled={page <= 1}
+                                        onClick={() => {
+                                            const p = page - 1;
+                                            setPage(p);
+                                            loadVouchers(p);
+                                        }}
+                                    >
+                                        Sebelumnya
+                                    </Button>
+
+                                    <Button
+                                        variant="default"
+                                        size="md"
+                                        radius="md"
+                                        disabled={page >= pagination.totalPages}
+                                        onClick={() => {
+                                            const p = page + 1;
+                                            setPage(p);
+                                            loadVouchers(p);
+                                        }}
+                                    >
+                                        Selanjutnya
+                                    </Button>
+                                </Group>
+                            </Group>
+                        ) : undefined
+                    }
+                />
+            </SectionCard>
 
             {/* =====================================================
-            MODAL
-        ===================================================== */}
-            {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 p-4 backdrop-blur-[2px]">
-                    <div className="max-h-[92vh] w-full max-w-xl overflow-hidden bg-white shadow-2xl">
+                FORM MODAL
+            ===================================================== */}
 
-                        {/* MODAL HEADER */}
-                        <div className="flex items-start justify-between border-b border-gray-200 px-6 py-5">
-                            <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400">
-                                    Voucher
-                                </p>
+            <Modal
+                opened={modalOpen}
+                onClose={closeModal}
+                size="lg"
+                title={editingVoucher ? "Edit voucher" : "Buat voucher baru"}
+                centered
+            >
+                <form onSubmit={handleSubmit}>
+                    <Stack gap="lg">
+                        {error && (
+                            <Alert color="red" variant="light" radius="md">
+                                {error}
+                            </Alert>
+                        )}
 
-                                <h2 className="mt-1 text-lg font-bold tracking-tight text-gray-950">
-                                    {editingVoucher
-                                        ? "Edit voucher"
-                                        : "Buat voucher baru"}
-                                </h2>
-                            </div>
+                        {success && (
+                            <Alert color="green" variant="light" radius="md">
+                                {success}
+                            </Alert>
+                        )}
 
-                            <button
-                                type="button"
-                                onClick={closeModal}
-                                disabled={saving}
-                                className="flex h-8 w-8 items-center justify-center text-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
-                            >
-                                ×
-                            </button>
-                        </div>
+                        {/* BASIC */}
 
-                        {/* FORM */}
-                        <form
-                            onSubmit={handleSubmit}
-                            className="max-h-[calc(92vh-76px)] overflow-y-auto"
+                        <Stack gap="md">
+                            <Box>
+                                <Text size="sm" fw={600}>
+                                    Informasi voucher
+                                </Text>
+
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    Tentukan kode dan informasi dasar promo.
+                                </Text>
+                            </Box>
+
+                            <TextInput
+                                label="Kode voucher"
+                                size="md"
+                                radius="md"
+                                ff="monospace"
+                                styles={{ input: { fontWeight: 600, textTransform: "uppercase" } }}
+                                value={form.code}
+                                disabled={!!editingVoucher}
+                                onChange={(event) =>
+                                    updateForm(
+                                        "code",
+                                        event.currentTarget.value
+                                            .toUpperCase()
+                                            .replace(/\s/g, "")
+                                    )
+                                }
+                                placeholder="Contoh: HEMAT20"
+                                description={
+                                    editingVoucher
+                                        ? "Kode tidak dapat diubah setelah voucher dibuat."
+                                        : undefined
+                                }
+                            />
+
+                            <Textarea
+                                label="Deskripsi"
+                                size="md"
+                                radius="md"
+                                value={form.description}
+                                onChange={(event) =>
+                                    updateForm("description", event.currentTarget.value)
+                                }
+                                placeholder="Contoh: Diskon spesial pelanggan baru"
+                                rows={2}
+                                autosize
+                                minRows={2}
+                                maxRows={4}
+                            />
+                        </Stack>
+
+                        <Divider />
+
+                        {/* DISCOUNT */}
+
+                        <Stack gap="md">
+                            <Box>
+                                <Text size="sm" fw={600}>
+                                    Aturan diskon
+                                </Text>
+
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    Atur jenis dan nominal potongan.
+                                </Text>
+                            </Box>
+
+                            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                                <Select
+                                    label="Tipe"
+                                    size="md"
+                                    radius="md"
+                                    allowDeselect={false}
+                                    value={form.type}
+                                    onChange={(value) =>
+                                        updateForm("type", (value ?? "PERCENTAGE") as VoucherType)
+                                    }
+                                    data={[
+                                        { value: "PERCENTAGE", label: "Persentase (%)" },
+                                        { value: "FIXED", label: "Nominal tetap (Rp)" },
+                                    ]}
+                                />
+
+                                <NumberInput
+                                    label="Nilai diskon"
+                                    size="md"
+                                    radius="md"
+                                    min={0}
+                                    rightSection={form.type === "PERCENTAGE" ? "%" : "IDR"}
+                                    rightSectionWidth={52}
+                                    value={form.value === "" ? "" : Number(form.value)}
+                                    onChange={(value) =>
+                                        updateForm("value", value === "" ? "" : String(value))
+                                    }
+                                    placeholder={form.type === "PERCENTAGE" ? "20" : "50000"}
+                                />
+                            </SimpleGrid>
+
+                            {form.type === "PERCENTAGE" && (
+                                <NumberInput
+                                    label="Maksimal diskon (opsional)"
+                                    size="md"
+                                    radius="md"
+                                    min={0}
+                                    rightSection="IDR"
+                                    rightSectionWidth={52}
+                                    value={form.maxDiscount === "" ? "" : Number(form.maxDiscount)}
+                                    onChange={(value) =>
+                                        updateForm(
+                                            "maxDiscount",
+                                            value === "" ? "" : String(value)
+                                        )
+                                    }
+                                    placeholder="50000"
+                                />
+                            )}
+                        </Stack>
+
+                        <Divider />
+
+                        {/* CONDITIONS */}
+
+                        <Stack gap="md">
+                            <Box>
+                                <Text size="sm" fw={600}>
+                                    Syarat penggunaan
+                                </Text>
+
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    Tentukan minimum transaksi dan batas penggunaan.
+                                </Text>
+                            </Box>
+
+                            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                                <NumberInput
+                                    label="Minimum pembelian (opsional)"
+                                    size="md"
+                                    radius="md"
+                                    min={0}
+                                    rightSection="IDR"
+                                    rightSectionWidth={52}
+                                    value={form.minPurchase === "" ? "" : Number(form.minPurchase)}
+                                    onChange={(value) =>
+                                        updateForm(
+                                            "minPurchase",
+                                            value === "" ? "" : String(value)
+                                        )
+                                    }
+                                    placeholder="100000"
+                                />
+
+                                <NumberInput
+                                    label="Quota (opsional)"
+                                    size="md"
+                                    radius="md"
+                                    min={0}
+                                    allowDecimal={false}
+                                    value={form.quota === "" ? "" : Number(form.quota)}
+                                    onChange={(value) =>
+                                        updateForm("quota", value === "" ? "" : String(value))
+                                    }
+                                    placeholder="100"
+                                    description="Kosongkan jika tidak ada batas penggunaan."
+                                />
+                            </SimpleGrid>
+                        </Stack>
+
+                        <Divider />
+
+                        {/* PERIOD */}
+
+                        <Stack gap="md">
+                            <Box>
+                                <Text size="sm" fw={600}>
+                                    Periode voucher
+                                </Text>
+
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    Kosongkan tanggal jika voucher tidak memiliki batas waktu.
+                                </Text>
+                            </Box>
+
+                            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                                <TextInput
+                                    label="Mulai"
+                                    size="md"
+                                    radius="md"
+                                    type="datetime-local"
+                                    value={form.startDate}
+                                    onChange={(event) =>
+                                        updateForm("startDate", event.currentTarget.value)
+                                    }
+                                />
+
+                                <TextInput
+                                    label="Berakhir"
+                                    size="md"
+                                    radius="md"
+                                    type="datetime-local"
+                                    value={form.endDate}
+                                    onChange={(event) =>
+                                        updateForm("endDate", event.currentTarget.value)
+                                    }
+                                />
+                            </SimpleGrid>
+                        </Stack>
+
+                        <Divider />
+
+                        {/* STATUS */}
+
+                        <Group justify="space-between" align="flex-start" wrap="nowrap">
+                            <Box>
+                                <Text size="sm" fw={600}>
+                                    Status voucher
+                                </Text>
+
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    Customer hanya dapat menggunakan voucher yang aktif.
+                                </Text>
+                            </Box>
+
+                            <Switch
+                                size="md"
+                                color="green"
+                                checked={form.isActive}
+                                onChange={(event) =>
+                                    updateForm("isActive", event.currentTarget.checked)
+                                }
+                                aria-label="Status voucher"
+                            />
+                        </Group>
+                    </Stack>
+
+                    <Group justify="flex-end" gap="sm" mt="xl">
+                        <Button
+                            type="button"
+                            variant="default"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            onClick={closeModal}
                         >
-                            <div className="space-y-6 px-6 py-6">
+                            Batal
+                        </Button>
 
-                                {error && (
-                                    <div className="border-l-2 border-red-500 bg-red-50 px-4 py-3 text-xs text-red-700">
-                                        {error}
-                                    </div>
-                                )}
+                        <Button
+                            type="submit"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            loading={saving}
+                        >
+                            {saving
+                                ? "Menyimpan..."
+                                : editingVoucher
+                                  ? "Simpan perubahan"
+                                  : "Buat voucher"}
+                        </Button>
+                    </Group>
+                </form>
+            </Modal>
 
-                                {success && (
-                                    <div className="border-l-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
-                                        {success}
-                                    </div>
-                                )}
+            {/* USED-COUNT GUARD */}
 
-                                {/* BASIC */}
-                                <div>
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-semibold text-gray-900">
-                                            Informasi voucher
-                                        </h3>
+            <Modal
+                opened={blockedTarget !== null}
+                onClose={() => setBlockedTarget(null)}
+                title="Tidak Bisa Dihapus"
+                centered
+            >
+                <Text size="sm">
+                    Voucher ini sudah pernah digunakan. Nonaktifkan voucher saja.
+                </Text>
 
-                                        <p className="mt-1 text-xs text-gray-400">
-                                            Tentukan kode dan informasi dasar promo.
-                                        </p>
-                                    </div>
+                <Group justify="flex-end" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setBlockedTarget(null)}
+                    >
+                        Mengerti
+                    </Button>
+                </Group>
+            </Modal>
 
-                                    <div className="space-y-4">
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Kode voucher
-                                            </label>
+            {/* DELETE CONFIRMATION */}
 
-                                            <input
-                                                type="text"
-                                                value={form.code}
-                                                disabled={
-                                                    !!editingVoucher
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "code",
-                                                        event.target.value
-                                                            .toUpperCase()
-                                                            .replace(
-                                                                /\s/g,
-                                                                ""
-                                                            )
-                                                    )
-                                                }
-                                                placeholder="Contoh: HEMAT20"
-                                                className="h-11 w-full border border-gray-200 bg-gray-50 px-3 text-sm font-mono font-semibold uppercase outline-none transition placeholder:font-sans placeholder:text-gray-400 focus:border-gray-500 focus:bg-white disabled:cursor-not-allowed disabled:bg-gray-100"
-                                            />
+            <Modal
+                opened={deleteTarget !== null}
+                onClose={() => setDeleteTarget(null)}
+                title="Hapus Voucher"
+                centered
+            >
+                <Text size="sm">
+                    Hapus voucher &quot;{deleteTarget?.code}&quot;?
+                </Text>
 
-                                            {editingVoucher && (
-                                                <p className="mt-1.5 text-[11px] text-gray-400">
-                                                    Kode tidak dapat diubah setelah voucher dibuat.
-                                                </p>
-                                            )}
-                                        </div>
+                <Text size="sm" c="dimmed" mt="sm">
+                    Tindakan ini tidak bisa dibatalkan.
+                </Text>
 
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Deskripsi
-                                                <span className="ml-1 font-normal text-gray-400">
-                                                    opsional
-                                                </span>
-                                            </label>
+                <Group justify="flex-end" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setDeleteTarget(null)}
+                    >
+                        Batal
+                    </Button>
 
-                                            <textarea
-                                                value={
-                                                    form.description
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "description",
-                                                        event.target.value
-                                                    )
-                                                }
-                                                placeholder="Contoh: Diskon spesial pelanggan baru"
-                                                rows={2}
-                                                className="w-full resize-none border border-gray-200 bg-gray-50 px-3 py-3 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-500 focus:bg-white"
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* DISCOUNT */}
-                                <div className="border-t border-gray-100 pt-6">
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-semibold text-gray-900">
-                                            Aturan diskon
-                                        </h3>
-
-                                        <p className="mt-1 text-xs text-gray-400">
-                                            Atur jenis dan nominal potongan.
-                                        </p>
-                                    </div>
-
-                                    <div className="grid gap-4 sm:grid-cols-2">
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Tipe
-                                            </label>
-
-                                            <select
-                                                value={
-                                                    form.type
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "type",
-                                                        event.target
-                                                            .value as VoucherType
-                                                    )
-                                                }
-                                                className="h-11 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none transition focus:border-gray-500 focus:bg-white"
-                                            >
-                                                <option value="PERCENTAGE">
-                                                    Persentase (%)
-                                                </option>
-
-                                                <option value="FIXED">
-                                                    Nominal tetap (Rp)
-                                                </option>
-                                            </select>
-                                        </div>
-
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Nilai diskon
-                                            </label>
-
-                                            <div className="relative">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    step="0.01"
-                                                    value={
-                                                        form.value
-                                                    }
-                                                    onChange={(event) =>
-                                                        updateForm(
-                                                            "value",
-                                                            event.target
-                                                                .value
-                                                        )
-                                                    }
-                                                    placeholder={
-                                                        form.type ===
-                                                            "PERCENTAGE"
-                                                            ? "20"
-                                                            : "50000"
-                                                    }
-                                                    className="h-11 w-full border border-gray-200 bg-gray-50 px-3 pr-12 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-500 focus:bg-white"
-                                                />
-
-                                                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
-                                                    {form.type ===
-                                                        "PERCENTAGE"
-                                                        ? "%"
-                                                        : "IDR"}
-                                                </span>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {form.type ===
-                                        "PERCENTAGE" && (
-                                            <div className="mt-4">
-                                                <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                    Maksimal diskon
-                                                    <span className="ml-1 font-normal text-gray-400">
-                                                        opsional
-                                                    </span>
-                                                </label>
-
-                                                <div className="relative">
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        step="0.01"
-                                                        value={
-                                                            form.maxDiscount
-                                                        }
-                                                        onChange={(event) =>
-                                                            updateForm(
-                                                                "maxDiscount",
-                                                                event.target
-                                                                    .value
-                                                            )
-                                                        }
-                                                        placeholder="50000"
-                                                        className="h-11 w-full border border-gray-200 bg-gray-50 px-3 pr-12 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-500 focus:bg-white"
-                                                    />
-
-                                                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
-                                                        IDR
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        )}
-                                </div>
-
-                                {/* CONDITIONS */}
-                                <div className="border-t border-gray-100 pt-6">
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-semibold text-gray-900">
-                                            Syarat penggunaan
-                                        </h3>
-
-                                        <p className="mt-1 text-xs text-gray-400">
-                                            Tentukan minimum transaksi dan batas penggunaan.
-                                        </p>
-                                    </div>
-
-                                    <div className="grid gap-4 sm:grid-cols-2">
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Minimum pembelian
-                                                <span className="ml-1 font-normal text-gray-400">
-                                                    opsional
-                                                </span>
-                                            </label>
-
-                                            <div className="relative">
-                                                <input
-                                                    type="number"
-                                                    min="0"
-                                                    step="0.01"
-                                                    value={
-                                                        form.minPurchase
-                                                    }
-                                                    onChange={(event) =>
-                                                        updateForm(
-                                                            "minPurchase",
-                                                            event.target
-                                                                .value
-                                                        )
-                                                    }
-                                                    placeholder="100000"
-                                                    className="h-11 w-full border border-gray-200 bg-gray-50 px-3 pr-12 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-500 focus:bg-white"
-                                                />
-
-                                                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">
-                                                    IDR
-                                                </span>
-                                            </div>
-                                        </div>
-
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Quota
-                                                <span className="ml-1 font-normal text-gray-400">
-                                                    opsional
-                                                </span>
-                                            </label>
-
-                                            <input
-                                                type="number"
-                                                min="0"
-                                                step="1"
-                                                value={
-                                                    form.quota
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "quota",
-                                                        event.target
-                                                            .value
-                                                    )
-                                                }
-                                                placeholder="100"
-                                                className="h-11 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none transition placeholder:text-gray-400 focus:border-gray-500 focus:bg-white"
-                                            />
-
-                                            <p className="mt-1.5 text-[11px] text-gray-400">
-                                                Kosongkan jika tidak ada batas penggunaan.
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* PERIOD */}
-                                <div className="border-t border-gray-100 pt-6">
-                                    <div className="mb-4">
-                                        <h3 className="text-sm font-semibold text-gray-900">
-                                            Periode voucher
-                                        </h3>
-
-                                        <p className="mt-1 text-xs text-gray-400">
-                                            Kosongkan tanggal jika voucher tidak memiliki batas waktu.
-                                        </p>
-                                    </div>
-
-                                    <div className="grid gap-4 sm:grid-cols-2">
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Mulai
-                                            </label>
-
-                                            <input
-                                                type="datetime-local"
-                                                value={
-                                                    form.startDate
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "startDate",
-                                                        event.target
-                                                            .value
-                                                    )
-                                                }
-                                                className="h-11 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none transition focus:border-gray-500 focus:bg-white"
-                                            />
-                                        </div>
-
-                                        <div>
-                                            <label className="mb-1.5 block text-xs font-semibold text-gray-700">
-                                                Berakhir
-                                            </label>
-
-                                            <input
-                                                type="datetime-local"
-                                                value={
-                                                    form.endDate
-                                                }
-                                                onChange={(event) =>
-                                                    updateForm(
-                                                        "endDate",
-                                                        event.target
-                                                            .value
-                                                    )
-                                                }
-                                                className="h-11 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none transition focus:border-gray-500 focus:bg-white"
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* STATUS */}
-                                <div className="border-t border-gray-100 pt-6">
-                                    <div className="flex items-center justify-between">
-                                        <div>
-                                            <h3 className="text-sm font-semibold text-gray-900">
-                                                Status voucher
-                                            </h3>
-
-                                            <p className="mt-1 text-xs text-gray-400">
-                                                Customer hanya dapat menggunakan voucher yang aktif.
-                                            </p>
-                                        </div>
-
-                                        <button
-                                            type="button"
-                                            onClick={() =>
-                                                updateForm(
-                                                    "isActive",
-                                                    !form.isActive
-                                                )
-                                            }
-                                            className={`relative h-6 w-11 shrink-0 rounded-full transition ${form.isActive
-                                                    ? "bg-gray-900"
-                                                    : "bg-gray-200"
-                                                }`}
-                                        >
-                                            <span
-                                                className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition ${form.isActive
-                                                        ? "left-[22px]"
-                                                        : "left-0.5"
-                                                    }`}
-                                            />
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* FOOTER */}
-                            <div className="sticky bottom-0 flex flex-col-reverse gap-2 border-t border-gray-200 bg-white px-6 py-4 sm:flex-row sm:justify-end">
-                                <button
-                                    type="button"
-                                    onClick={closeModal}
-                                    disabled={saving}
-                                    className="h-10 border border-gray-200 px-5 text-sm font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-50"
-                                >
-                                    Batal
-                                </button>
-
-                                <button
-                                    type="submit"
-                                    disabled={saving}
-                                    className="h-10 bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                    {saving
-                                        ? "Menyimpan..."
-                                        : editingVoucher
-                                            ? "Simpan perubahan"
-                                            : "Buat voucher"}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
-        </div>
+                    <Button color="red" size="md" radius="md" onClick={confirmDelete}>
+                        Hapus
+                    </Button>
+                </Group>
+            </Modal>
+        </Stack>
     );
 }
-

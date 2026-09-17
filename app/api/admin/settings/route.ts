@@ -8,7 +8,7 @@ async function isAdmin() {
 
     return (
         !!session?.user &&
-        (session.user as any).role === "ADMIN"
+        session.user.role === "ADMIN"
     );
 }
 function nullableNumber(

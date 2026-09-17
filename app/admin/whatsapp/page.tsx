@@ -10,7 +10,7 @@ export default async function AdminWhatsAppPage() {
         redirect("/login");
     }
 
-    const role = (session.user as any).role;
+    const role = session.user.role;
 
     if (role !== "ADMIN") {
         redirect("/home");

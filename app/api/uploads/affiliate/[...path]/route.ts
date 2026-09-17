@@ -141,7 +141,7 @@ export async function GET(
          */
 
         const isAdmin =
-            (session.user as any).role ===
+            session.user.role ===
             "ADMIN";
 
         if (

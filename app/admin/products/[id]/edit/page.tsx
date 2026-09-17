@@ -1,15 +1,43 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import toast from "react-hot-toast";
+import { FiArrowLeft, FiPlus, FiSave, FiTrash2 } from "react-icons/fi";
+
 import {
-    FiArrowLeft,
-    FiPlus,
-    FiTrash2,
-    FiSave,
-} from "react-icons/fi";
+    Alert,
+    Box,
+    Button,
+    Checkbox,
+    Divider,
+    Grid,
+    Group,
+    NumberInput,
+    Skeleton,
+    Stack,
+    Text,
+    Textarea,
+    TextInput,
+} from "@mantine/core";
+
+import { PageHeader, SectionCard } from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: the `GET /api/admin/products/{id}` load with `cache: "no-store"`, the mapping
+ * from the API product into `form`/`variants` (including the `String(...)` conversions and the
+ * `variant.image` field that has no input but must survive a save), `updateVariant`, `addVariant`,
+ * `removeVariant`'s "minimal satu variant" guard and its toast, the `PUT` payload (`Number()`
+ * conversions, `image || null`), the `toast.success` + `router.push` + `router.refresh` sequence,
+ * the `loading` skeleton gate, the `error && !form.name` early-return, and both error copy strings.
+ *
+ * `useCallback` was added around `loadProduct` so the effect can declare it as a dependency without
+ * changing when it runs; the previous version called it from `useEffect(..., [id])` and triggered
+ * the same request at the same time.
+ */
 
 type Variant = {
     id?: number;
@@ -37,14 +65,11 @@ export default function EditProductPage() {
 
     const id = params.id as string;
 
-    const [loading, setLoading] =
-        useState(true);
+    const [loading, setLoading] = useState(true);
 
-    const [saving, setSaving] =
-        useState(false);
+    const [saving, setSaving] = useState(false);
 
-    const [error, setError] =
-        useState("");
+    const [error, setError] = useState("");
 
     const [form, setForm] = useState({
         name: "",
@@ -55,102 +80,66 @@ export default function EditProductPage() {
         bestseller: false,
     });
 
-    const [variants, setVariants] =
-        useState<Variant[]>([]);
+    const [variants, setVariants] = useState<Variant[]>([]);
 
-    useEffect(() => {
-        loadProduct();
-    }, [id]);
-
-    async function loadProduct() {
+    const loadProduct = useCallback(async () => {
         try {
             setLoading(true);
             setError("");
 
-            const response = await fetch(
-                `/api/admin/products/${id}`,
-                {
-                    cache: "no-store",
-                }
-            );
+            const response = await fetch(`/api/admin/products/${id}`, {
+                cache: "no-store",
+            });
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                        "Gagal mengambil produk."
-                );
+                throw new Error(data.message || "Gagal mengambil produk.");
             }
 
-            const product: Product =
-                data.product;
+            const product: Product = data.product;
 
             setForm({
                 name: product.name || "",
                 slug: product.slug || "",
-                description:
-                    product.description || "",
-                category:
-                    product.category || "",
+                description: product.description || "",
+                category: product.category || "",
                 image: product.image || "",
-                bestseller:
-                    Boolean(
-                        product.bestseller
-                    ),
+                bestseller: Boolean(product.bestseller),
             });
 
             setVariants(
-                product.variants.map(
-                    (variant) => ({
-                        id: variant.id,
-                        name:
-                            variant.name || "",
-                        price: String(
-                            variant.price
-                        ),
-                        stock: String(
-                            variant.stock
-                        ),
-                        weight: String(
-                            variant.weight
-                        ),
-                        image:
-                            variant.image || "",
-                    })
-                )
+                product.variants.map((variant) => ({
+                    id: variant.id,
+                    name: variant.name || "",
+                    price: String(variant.price),
+                    stock: String(variant.stock),
+                    weight: String(variant.weight),
+                    image: variant.image || "",
+                }))
             );
-        } catch (error) {
-            console.error(
-                "LOAD PRODUCT ERROR:",
-                error
-            );
+        } catch (caught) {
+            console.error("LOAD PRODUCT ERROR:", caught);
 
-            setError(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal mengambil produk."
-            );
+            setError(caught instanceof Error ? caught.message : "Gagal mengambil produk.");
         } finally {
             setLoading(false);
         }
-    }
+    }, [id]);
 
-    function updateVariant(
-        index: number,
-        field: keyof Variant,
-        value: string
-    ) {
+    useEffect(() => {
+        loadProduct();
+    }, [loadProduct]);
+
+    function updateVariant(index: number, field: keyof Variant, value: string) {
         setVariants((current) =>
-            current.map(
-                (variant, variantIndex) =>
-                    variantIndex === index
-                        ? {
-                              ...variant,
-                              [field]: value,
-                          }
-                        : variant
+            current.map((variant, variantIndex) =>
+                variantIndex === index
+                    ? {
+                          ...variant,
+                          [field]: value,
+                      }
+                    : variant
             )
         );
     }
@@ -175,16 +164,10 @@ export default function EditProductPage() {
             return;
         }
 
-        setVariants((current) =>
-            current.filter(
-                (_, i) => i !== index
-            )
-        );
+        setVariants((current) => current.filter((_, i) => i !== index));
     }
 
-    async function handleSubmit(
-        event: React.FormEvent
-    ) {
+    async function handleSubmit(event: React.FormEvent) {
         event.preventDefault();
 
         try {
@@ -194,67 +177,40 @@ export default function EditProductPage() {
             const payload = {
                 ...form,
 
-                variants: variants.map(
-                    (variant) => ({
-                        id: variant.id,
-                        name: variant.name,
-                        price: Number(
-                            variant.price
-                        ),
-                        stock: Number(
-                            variant.stock
-                        ),
-                        weight: Number(
-                            variant.weight
-                        ),
-                        image:
-                            variant.image ||
-                            null,
-                    })
-                ),
+                variants: variants.map((variant) => ({
+                    id: variant.id,
+                    name: variant.name,
+                    price: Number(variant.price),
+                    stock: Number(variant.stock),
+                    weight: Number(variant.weight),
+                    image: variant.image || null,
+                })),
             };
 
-            const response = await fetch(
-                `/api/admin/products/${id}`,
-                {
-                    method: "PUT",
-                    headers: {
-                        "Content-Type":
-                            "application/json",
-                    },
-                    body: JSON.stringify(
-                        payload
-                    ),
-                }
-            );
+            const response = await fetch(`/api/admin/products/${id}`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify(payload),
+            });
 
-            const data =
-                await response.json();
+            const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                        "Gagal memperbarui produk."
-                );
+                throw new Error(data.message || "Gagal memperbarui produk.");
             }
 
             toast.success(data.message || "Produk berhasil diperbarui.");
 
-            router.push(
-                "/admin/products"
-            );
+            router.push("/admin/products");
 
             router.refresh();
-        } catch (error) {
-            console.error(
-                "UPDATE PRODUCT ERROR:",
-                error
-            );
+        } catch (caught) {
+            console.error("UPDATE PRODUCT ERROR:", caught);
 
             setError(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal memperbarui produk."
+                caught instanceof Error ? caught.message : "Gagal memperbarui produk."
             );
         } finally {
             setSaving(false);
@@ -263,526 +219,328 @@ export default function EditProductPage() {
 
     if (loading) {
         return (
-            <main className="min-h-screen bg-[#f7f7f8] px-4 py-8 sm:px-6">
-                <div className="mx-auto max-w-4xl">
-                    <div className="h-5 w-20 animate-pulse rounded bg-gray-200" />
+            <Box maw={1040}>
+                <Skeleton height={28} width={220} radius="sm" />
+                <Skeleton height={16} width={380} mt="sm" radius="sm" />
 
-                    <div className="mt-5 h-7 w-40 animate-pulse rounded bg-gray-200" />
-
-                    <div className="mt-2 h-4 w-64 animate-pulse rounded bg-gray-100" />
-
-                    <div className="mt-7 space-y-4">
-                        <div className="h-72 animate-pulse rounded-xl border border-gray-200 bg-white" />
-
-                        <div className="h-64 animate-pulse rounded-xl border border-gray-200 bg-white" />
-                    </div>
-                </div>
-            </main>
+                <Stack gap="lg" mt="xl">
+                    <Skeleton height={420} radius="md" />
+                    <Skeleton height={340} radius="md" />
+                </Stack>
+            </Box>
         );
     }
 
     if (error && !form.name) {
         return (
-            <main className="min-h-screen bg-[#f7f7f8] px-4 py-8 sm:px-6">
-                <div className="mx-auto max-w-4xl">
-                    <div className="border-l-4 border-red-500 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        {error}
-                    </div>
+            <Box maw={1040}>
+                <Alert color="red" variant="light" radius="md" title="Gagal memuat produk">
+                    {error}
+                </Alert>
 
-                    <Link
-                        href="/admin/products"
-                        className="mt-5 inline-flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-900"
-                    >
-                        <FiArrowLeft
-                            size={16}
-                        />
-
-                        Kembali ke Produk
-                    </Link>
-                </div>
-            </main>
+                <Button
+                    component={Link}
+                    href="/admin/products"
+                    variant="default"
+                    size="md"
+                    radius="md"
+                    mt="lg"
+                    leftSection={<FiArrowLeft size={16} />}
+                >
+                    Kembali ke Produk
+                </Button>
+            </Box>
         );
     }
 
     return (
-        <main className="min-h-screen bg-[#f7f7f8] px-4 py-7 sm:px-6 lg:px-8">
-            <div className="mx-auto max-w-4xl">
-
-                {/* HEADER */}
-
-                <div className="mb-7">
-                    <Link
+        <Box maw={1040}>
+            <PageHeader
+                eyebrow="Admin"
+                title="Edit Produk"
+                description="Perbarui informasi produk dan variant yang tersedia."
+                actions={
+                    <Button
+                        component={Link}
                         href="/admin/products"
-                        className="inline-flex items-center gap-2 text-sm text-gray-500 transition hover:text-gray-900"
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        leftSection={<FiArrowLeft size={16} />}
                     >
-                        <FiArrowLeft
-                            size={16}
-                        />
-
                         Produk
-                    </Link>
+                    </Button>
+                }
+            />
 
-                    <div className="mt-4">
-                        <h1 className="text-[22px] font-semibold tracking-tight text-gray-900 sm:text-2xl">
-                            Edit Produk
-                        </h1>
-
-                        <p className="mt-1 text-sm text-gray-500">
-                            Perbarui informasi produk
-                            dan variant yang tersedia.
-                        </p>
-                    </div>
-                </div>
-
-                <form
-                    onSubmit={handleSubmit}
-                    className="space-y-4"
-                >
+            <form onSubmit={handleSubmit}>
+                <Stack gap="lg">
                     {/* ERROR */}
 
                     {error && (
-                        <div className="flex items-start gap-3 border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                            <span className="mt-0.5 font-semibold">
-                                !
-                            </span>
-
-                            <span>
-                                {error}
-                            </span>
-                        </div>
+                        <Alert color="red" variant="light" radius="md" title="Terjadi kesalahan">
+                            {error}
+                        </Alert>
                     )}
 
                     {/* PRODUCT INFO */}
 
-                    <section className="border border-gray-200 bg-white">
-                        <div className="border-b border-gray-100 px-5 py-4 sm:px-6">
-                            <h2 className="text-sm font-semibold text-gray-900">
-                                Informasi Produk
-                            </h2>
+                    <SectionCard
+                        title="Informasi Produk"
+                        description="Informasi utama yang digunakan pada halaman produk."
+                    >
+                        <Stack gap="md">
+                            <TextInput
+                                label="Nama Produk"
+                                size="md"
+                                radius="md"
+                                required
+                                value={form.name}
+                                onChange={(event) =>
+                                    setForm({ ...form, name: event.currentTarget.value })
+                                }
+                            />
 
-                            <p className="mt-1 text-xs text-gray-500">
-                                Informasi utama yang
-                                digunakan pada halaman
-                                produk.
-                            </p>
-                        </div>
-
-                        <div className="space-y-5 p-5 sm:p-6">
-
-                            {/* NAME */}
-
-                            <div>
-                                <label className="mb-1.5 block text-xs font-semibold text-gray-600">
-                                    Nama Produk
-                                </label>
-
-                                <input
-                                    value={
-                                        form.name
-                                    }
-                                    onChange={(e) =>
-                                        setForm(
-                                            {
-                                                ...form,
-                                                name: e
-                                                    .target
-                                                    .value,
-                                            }
-                                        )
-                                    }
-                                    required
-                                    className="h-10 w-full border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-gray-900"
-                                />
-                            </div>
-
-                            {/* SLUG + CATEGORY */}
-
-                            <div className="grid gap-5 sm:grid-cols-2">
-                                <div>
-                                    <label className="mb-1.5 block text-xs font-semibold text-gray-600">
-                                        Slug
-                                    </label>
-
-                                    <input
-                                        value={
-                                            form.slug
-                                        }
-                                        onChange={(
-                                            e
-                                        ) =>
-                                            setForm(
-                                                {
-                                                    ...form,
-                                                    slug: e
-                                                        .target
-                                                        .value,
-                                                }
-                                            )
-                                        }
+                            <Grid gap="md">
+                                <Grid.Col span={{ base: 12, sm: 6 }}>
+                                    <TextInput
+                                        label="Slug"
+                                        description="Digunakan pada URL produk."
+                                        size="md"
+                                        radius="md"
                                         required
-                                        className="h-10 w-full border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-gray-900"
+                                        value={form.slug}
+                                        onChange={(event) =>
+                                            setForm({
+                                                ...form,
+                                                slug: event.currentTarget.value,
+                                            })
+                                        }
                                     />
+                                </Grid.Col>
 
-                                    <p className="mt-1.5 text-[11px] text-gray-400">
-                                        Digunakan pada
-                                        URL produk.
-                                    </p>
-                                </div>
-
-                                <div>
-                                    <label className="mb-1.5 block text-xs font-semibold text-gray-600">
-                                        Kategori
-                                    </label>
-
-                                    <input
-                                        value={
-                                            form.category
-                                        }
-                                        onChange={(
-                                            e
-                                        ) =>
-                                            setForm(
-                                                {
-                                                    ...form,
-                                                    category:
-                                                        e
-                                                            .target
-                                                            .value,
-                                                }
-                                            )
-                                        }
+                                <Grid.Col span={{ base: 12, sm: 6 }}>
+                                    <TextInput
+                                        label="Kategori"
+                                        size="md"
+                                        radius="md"
                                         required
-                                        className="h-10 w-full border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition focus:border-gray-900"
+                                        value={form.category}
+                                        onChange={(event) =>
+                                            setForm({
+                                                ...form,
+                                                category: event.currentTarget.value,
+                                            })
+                                        }
                                     />
-                                </div>
-                            </div>
+                                </Grid.Col>
+                            </Grid>
 
-                            {/* IMAGE */}
+                            <TextInput
+                                label="URL / Path Image"
+                                size="md"
+                                radius="md"
+                                value={form.image}
+                                onChange={(event) =>
+                                    setForm({ ...form, image: event.currentTarget.value })
+                                }
+                                placeholder="/uploads/products/..."
+                            />
 
-                            <div>
-                                <label className="mb-1.5 block text-xs font-semibold text-gray-600">
-                                    URL / Path Image
-                                </label>
+                            <Textarea
+                                label="Deskripsi"
+                                size="md"
+                                radius="md"
+                                value={form.description}
+                                onChange={(event) =>
+                                    setForm({
+                                        ...form,
+                                        description: event.currentTarget.value,
+                                    })
+                                }
+                                rows={7}
+                                autosize
+                                minRows={5}
+                                maxRows={14}
+                            />
 
-                                <input
-                                    value={
-                                        form.image
-                                    }
-                                    onChange={(e) =>
-                                        setForm(
-                                            {
-                                                ...form,
-                                                image: e
-                                                    .target
-                                                    .value,
-                                            }
-                                        )
-                                    }
-                                    placeholder="/uploads/products/..."
-                                    className="h-10 w-full border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-gray-900"
-                                />
-                            </div>
+                            <Divider />
 
-                            {/* DESCRIPTION */}
-
-                            <div>
-                                <label className="mb-1.5 block text-xs font-semibold text-gray-600">
-                                    Deskripsi
-                                </label>
-
-                                <textarea
-                                    value={
-                                        form.description
-                                    }
-                                    onChange={(e) =>
-                                        setForm(
-                                            {
-                                                ...form,
-                                                description:
-                                                    e
-                                                        .target
-                                                        .value,
-                                            }
-                                        )
-                                    }
-                                    rows={7}
-                                    className="w-full resize-y border border-gray-300 bg-white px-3 py-2.5 text-sm leading-6 text-gray-900 outline-none transition focus:border-gray-900"
-                                />
-                            </div>
-
-                            {/* BESTSELLER */}
-
-                            <label className="flex cursor-pointer items-start gap-3 border border-gray-200 px-4 py-3.5 transition hover:bg-gray-50">
-                                <input
-                                    type="checkbox"
-                                    checked={
-                                        form.bestseller
-                                    }
-                                    onChange={(e) =>
-                                        setForm(
-                                            {
-                                                ...form,
-                                                bestseller:
-                                                    e
-                                                        .target
-                                                        .checked,
-                                            }
-                                        )
-                                    }
-                                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-rose-600 focus:ring-rose-500"
-                                />
-
-                                <div>
-                                    <p className="text-sm font-medium text-gray-800">
-                                        Tandai sebagai
-                                        Bestseller
-                                    </p>
-
-                                    <p className="mt-0.5 text-xs text-gray-500">
-                                        Produk akan
-                                        ditampilkan sebagai
-                                        produk terlaris.
-                                    </p>
-                                </div>
-                            </label>
-                        </div>
-                    </section>
+                            <Checkbox
+                                size="md"
+                                radius="sm"
+                                checked={form.bestseller}
+                                onChange={(event) =>
+                                    setForm({
+                                        ...form,
+                                        bestseller: event.currentTarget.checked,
+                                    })
+                                }
+                                label="Tandai sebagai Bestseller"
+                                description="Produk akan ditampilkan sebagai produk terlaris."
+                            />
+                        </Stack>
+                    </SectionCard>
 
                     {/* VARIANTS */}
 
-                    <section className="border border-gray-200 bg-white">
-                        <div className="flex flex-col gap-3 border-b border-gray-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                            <div>
-                                <h2 className="text-sm font-semibold text-gray-900">
-                                    Variant
-                                </h2>
-
-                                <p className="mt-1 text-xs text-gray-500">
-                                    Berat digunakan untuk
-                                    perhitungan pengiriman.
-                                </p>
-                            </div>
-
-                            <button
+                    <SectionCard
+                        title="Variant"
+                        description="Berat digunakan untuk perhitungan pengiriman."
+                        actions={
+                            <Button
                                 type="button"
-                                onClick={
-                                    addVariant
-                                }
-                                className="inline-flex h-9 items-center justify-center gap-2 self-start border border-gray-300 bg-white px-3 text-xs font-semibold text-gray-700 transition hover:border-gray-400 hover:bg-gray-50 sm:self-auto"
+                                variant="default"
+                                size="md"
+                                radius="md"
+                                leftSection={<FiPlus size={16} />}
+                                onClick={addVariant}
                             >
-                                <FiPlus
-                                    size={15}
-                                />
-
                                 Tambah Variant
-                            </button>
-                        </div>
+                            </Button>
+                        }
+                    >
+                        <Stack gap="md">
+                            {variants.map((variant, index) => (
+                                <Box key={variant.id ?? `new-${index}`}>
+                                    {index > 0 ? <Divider mb="md" /> : null}
 
-                        <div className="p-5 sm:p-6">
-                            <div className="space-y-3">
-                                {variants.map(
-                                    (
-                                        variant,
-                                        index
-                                    ) => (
-                                        <div
-                                            key={
-                                                variant.id ??
-                                                `new-${index}`
-                                            }
-                                            className="border border-gray-200"
+                                    <Group justify="space-between" align="center" mb="sm">
+                                        <Group gap="xs">
+                                            <Text size="sm" fw={600}>
+                                                Variant {index + 1}
+                                            </Text>
+
+                                            {variant.id && (
+                                                <Text size="xs" c="dimmed">
+                                                    ID #{variant.id}
+                                                </Text>
+                                            )}
+                                        </Group>
+
+                                        <Button
+                                            type="button"
+                                            variant="subtle"
+                                            color="red"
+                                            size="compact-md"
+                                            radius="md"
+                                            leftSection={<FiTrash2 size={15} />}
+                                            onClick={() => removeVariant(index)}
                                         >
-                                            <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50/60 px-4 py-3">
-                                                <div className="flex items-center gap-2">
-                                                    <span className="text-xs font-semibold text-gray-900">
-                                                        Variant{" "}
-                                                        {index +
-                                                            1}
-                                                    </span>
+                                            Hapus
+                                        </Button>
+                                    </Group>
 
-                                                    {variant.id && (
-                                                        <span className="text-[10px] text-gray-400">
-                                                            ID #
-                                                            {
-                                                                variant.id
-                                                            }
-                                                        </span>
-                                                    )}
-                                                </div>
+                                    <Grid gap="md">
+                                        <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
+                                            <TextInput
+                                                label="Nama"
+                                                size="md"
+                                                radius="md"
+                                                required
+                                                value={variant.name}
+                                                onChange={(event) =>
+                                                    updateVariant(
+                                                        index,
+                                                        "name",
+                                                        event.currentTarget.value
+                                                    )
+                                                }
+                                            />
+                                        </Grid.Col>
 
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        removeVariant(
-                                                            index
-                                                        )
-                                                    }
-                                                    className="inline-flex h-7 w-7 items-center justify-center text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-                                                    title="Hapus variant"
-                                                >
-                                                    <FiTrash2
-                                                        size={
-                                                            15
-                                                        }
-                                                    />
-                                                </button>
-                                            </div>
+                                        <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
+                                            <NumberInput
+                                                label="Harga"
+                                                size="md"
+                                                radius="md"
+                                                required
+                                                min={1}
+                                                max={9999999999}
+                                                thousandSeparator="."
+                                                decimalSeparator=","
+                                                leftSection="Rp"
+                                                leftSectionWidth={44}
+                                                value={variant.price === "" ? "" : Number(variant.price)}
+                                                onChange={(value) =>
+                                                    updateVariant(
+                                                        index,
+                                                        "price",
+                                                        value === "" ? "" : String(value)
+                                                    )
+                                                }
+                                            />
+                                        </Grid.Col>
 
-                                            <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
-                                                {/* NAME */}
+                                        <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
+                                            <NumberInput
+                                                label="Stok"
+                                                size="md"
+                                                radius="md"
+                                                required
+                                                min={0}
+                                                value={variant.stock === "" ? "" : Number(variant.stock)}
+                                                onChange={(value) =>
+                                                    updateVariant(
+                                                        index,
+                                                        "stock",
+                                                        value === "" ? "" : String(value)
+                                                    )
+                                                }
+                                            />
+                                        </Grid.Col>
 
-                                                <div>
-                                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Nama
-                                                    </label>
-
-                                                    <input
-                                                        value={
-                                                            variant.name
-                                                        }
-                                                        onChange={(
-                                                            e
-                                                        ) =>
-                                                            updateVariant(
-                                                                index,
-                                                                "name",
-                                                                e
-                                                                    .target
-                                                                    .value
-                                                            )
-                                                        }
-                                                        required
-                                                        className="h-10 w-full border border-gray-300 bg-white px-3 text-sm outline-none transition focus:border-gray-900"
-                                                    />
-                                                </div>
-
-                                                {/* PRICE */}
-
-                                                <div>
-                                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Harga
-                                                    </label>
-
-                                                    <input
-                                                        type="number"
-                                                        min="1"
-                                                        max="9999999999"
-                                                        value={
-                                                            variant.price
-                                                        }
-                                                        onChange={(
-                                                            e
-                                                        ) =>
-                                                            updateVariant(
-                                                                index,
-                                                                "price",
-                                                                e
-                                                                    .target
-                                                                    .value
-                                                            )
-                                                        }
-                                                        required
-                                                        className="h-10 w-full border border-gray-300 bg-white px-3 text-sm outline-none transition focus:border-gray-900"
-                                                    />
-                                                </div>
-
-                                                {/* STOCK */}
-
-                                                <div>
-                                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Stok
-                                                    </label>
-
-                                                    <input
-                                                        type="number"
-                                                        min="0"
-                                                        value={
-                                                            variant.stock
-                                                        }
-                                                        onChange={(
-                                                            e
-                                                        ) =>
-                                                            updateVariant(
-                                                                index,
-                                                                "stock",
-                                                                e
-                                                                    .target
-                                                                    .value
-                                                            )
-                                                        }
-                                                        required
-                                                        className="h-10 w-full border border-gray-300 bg-white px-3 text-sm outline-none transition focus:border-gray-900"
-                                                    />
-                                                </div>
-
-                                                {/* WEIGHT */}
-
-                                                <div>
-                                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                                                        Berat
-                                                    </label>
-
-                                                    <div className="relative">
-                                                        <input
-                                                            type="number"
-                                                            min="1"
-                                                            value={
-                                                                variant.weight
-                                                            }
-                                                            onChange={(
-                                                                e
-                                                            ) =>
-                                                                updateVariant(
-                                                                    index,
-                                                                    "weight",
-                                                                    e
-                                                                        .target
-                                                                        .value
-                                                                )
-                                                            }
-                                                            required
-                                                            className="h-10 w-full border border-gray-300 bg-white px-3 pr-14 text-sm outline-none transition focus:border-gray-900"
-                                                        />
-
-                                                        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-gray-400">
-                                                            gram
-                                                        </span>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )
-                                )}
-                            </div>
-                        </div>
-                    </section>
+                                        <Grid.Col span={{ base: 12, sm: 6, lg: 3 }}>
+                                            <NumberInput
+                                                label="Berat"
+                                                size="md"
+                                                radius="md"
+                                                required
+                                                min={1}
+                                                rightSection="gram"
+                                                rightSectionWidth={52}
+                                                value={variant.weight === "" ? "" : Number(variant.weight)}
+                                                onChange={(value) =>
+                                                    updateVariant(
+                                                        index,
+                                                        "weight",
+                                                        value === "" ? "" : String(value)
+                                                    )
+                                                }
+                                            />
+                                        </Grid.Col>
+                                    </Grid>
+                                </Box>
+                            ))}
+                        </Stack>
+                    </SectionCard>
 
                     {/* ACTION */}
 
-                    <div className="flex flex-col-reverse gap-2 border-t border-gray-200 pt-5 sm:flex-row sm:justify-end">
-                        <Link
+                    <Group justify="flex-end" gap="sm">
+                        <Button
+                            component={Link}
                             href="/admin/products"
-                            className="flex h-10 items-center justify-center border border-gray-300 bg-white px-5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+                            variant="default"
+                            size="lg"
+                            radius="md"
                         >
                             Batal
-                        </Link>
+                        </Button>
 
-                        <button
+                        <Button
                             type="submit"
+                            size="lg"
+                            radius="md"
+                            loading={saving}
                             disabled={saving}
-                            className="flex h-10 items-center justify-center gap-2 bg-gray-900 px-5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            leftSection={<FiSave size={16} />}
                         >
-                            <FiSave
-                                size={16}
-                            />
-
-                            {saving
-                                ? "Menyimpan..."
-                                : "Simpan Perubahan"}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </main>
+                            {saving ? "Menyimpan..." : "Simpan Perubahan"}
+                        </Button>
+                    </Group>
+                </Stack>
+            </form>
+        </Box>
     );
 }

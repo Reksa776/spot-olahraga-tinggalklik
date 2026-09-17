@@ -61,13 +61,13 @@ export default function BottomNavbar() {
               <Icon
                 size={20}
                 className={`transition-colors duration-150 ${
-                  active ? "text-rose-600" : "text-gray-400"
+                  active ? "text-brand-600" : "text-gray-400"
                 }`}
               />
 
               <span
                 className={`text-[11px] font-medium transition-colors duration-150 ${
-                  active ? "text-rose-600" : "text-gray-500"
+                  active ? "text-brand-600" : "text-gray-500"
                 }`}
               >
                 {menu.title}

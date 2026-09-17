@@ -1,8 +1,56 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { FiTarget, FiPlus, FiTrash2, FiZap } from "react-icons/fi";
-import { useDialog } from "@/components/ui/Dialog";
+import { FiPlus, FiTarget, FiTrash2 } from "react-icons/fi";
+
+import {
+    Alert,
+    Box,
+    Button,
+    Divider,
+    Group,
+    Modal,
+    NumberInput,
+    Paper,
+    Select,
+    SimpleGrid,
+    Stack,
+    Switch,
+    Text,
+    Textarea,
+    TextInput,
+    UnstyledButton,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: `formatRupiah`, `formatDate`, `toDateTimeLocal`, `rewardTypeLabel`,
+ * `readJsonResponse` and both of its error strings, `loadCampaigns` (endpoint, `result.data?.items ?? []`
+ * fallback, error copy), the `emptyForm` defaults including all five seeded rewards and
+ * `maxSpinsPerUser: "0"`, `openEditModal`'s mapping (`String(...)` coercions and the per-reward copy
+ * via `{ ...r }`), `closeModal`'s `saving` guard, `updateForm`/`updateReward`/`addReward`/
+ * `removeReward`, **every** validation branch and its exact message (including the per-reward name /
+ * value / weight rules), the payload shape (`r.type === "ZONK" ? 0 : r.value`, `id` passthrough,
+ * `null` optionals, ISO dates), the create-vs-edit URL/method branch, the success copy, the
+ * `loadCampaigns()` refresh and the 700ms `closeModal` timer.
+ *
+ * `handleToggleActive` still PATCHes only `{ isActive: !item.isActive }`, and delete is still blocked
+ * once a campaign has spins (`disabled={c.spinCount > 0}`).
+ *
+ * Presentation changes: `PageHeader`, `SectionCard` + `DataTable`, `StatusBadge`, Mantine inputs and
+ * `Paper` reward rows. The shared-`useDialog` confirmation became a dashboard-owned Mantine `Modal`
+ * with the same title (\"Hapus Campaign\"), message and confirm label. `FiZap` was an unused import
+ * and was dropped.
+ */
 
 type Reward = {
     id?: number;
@@ -108,6 +156,7 @@ export default function AdminSpinWheelPage() {
     const [search, setSearch] = useState("");
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
+    const [deleteTarget, setDeleteTarget] = useState<Campaign | null>(null);
 
     async function loadCampaigns() {
         try {
@@ -263,10 +312,7 @@ export default function AdminSpinWheelPage() {
         }
     }
 
-    const dialog = useDialog();
-
     async function handleDelete(item: Campaign) {
-        if (!(await dialog.confirm({ title: "Hapus Campaign", message: `Hapus campaign "${item.name}"?`, variant: "danger", confirmText: "Hapus" }))) return;
         try {
             setError(""); setSuccess("");
             const response = await fetch(`/api/admin/spin-wheel/campaigns/${item.id}`, { method: "DELETE" });
@@ -279,234 +325,465 @@ export default function AdminSpinWheelPage() {
         }
     }
 
+    async function confirmDelete() {
+        const item = deleteTarget;
+        setDeleteTarget(null);
+        if (!item) return;
+        await handleDelete(item);
+    }
+
     const filtered = campaigns.filter((c) => !search.trim() || c.name.toLowerCase().includes(search.toLowerCase()));
 
     return (
-        <div className="min-h-full bg-gray-50/70 p-4 md:p-6 lg:p-8">
-            <div className="mx-auto max-w-[1500px] space-y-6">
-                <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
-                    <div>
-                        <div className="mb-2 flex items-center gap-2 text-xs text-gray-400">
-                            <span>Admin</span><span>/</span><span className="text-gray-600">Spin Wheel</span>
-                        </div>
-                        <h1 className="text-2xl font-bold tracking-tight text-gray-950">Spin Wheel Promo</h1>
-                        <p className="mt-1 text-sm text-gray-500">Kelola kampanye spin wheel promo untuk customer.</p>
-                    </div>
-                    <button type="button" onClick={openCreateModal} className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800">
-                        <FiTarget size={16} /> Tambah Campaign
-                    </button>
-                </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin"
+                title="Spin Wheel Promo"
+                description="Kelola kampanye spin wheel promo untuk customer."
+                actions={
+                    <Button
+                        size="md"
+                        radius="md"
+                        leftSection={<FiTarget size={16} />}
+                        onClick={openCreateModal}
+                    >
+                        Tambah Campaign
+                    </Button>
+                }
+            />
 
-                {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-                {success && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</div>}
-
-                <section className="overflow-hidden border border-gray-200 bg-white">
-                    <div className="flex flex-col gap-4 border-b border-gray-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
-                        <div>
-                            <h2 className="text-sm font-semibold text-gray-950">Daftar Campaign</h2>
-                            <p className="mt-0.5 text-xs text-gray-400">{filtered.length} campaign</p>
-                        </div>
-                        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari campaign..." className="h-10 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-gray-400 focus:bg-white md:w-72" />
-                    </div>
-
-                    {loading ? (
-                        <div className="flex min-h-[300px] items-center justify-center">
-                            <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-800" />
-                        </div>
-                    ) : filtered.length === 0 ? (
-                        <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center">
-                            <FiTarget size={24} className="text-gray-400" />
-                            <p className="mt-4 text-sm font-semibold text-gray-900">Belum ada campaign spin wheel</p>
-                            <button type="button" onClick={openCreateModal} className="mt-4 text-xs font-semibold text-gray-900 underline underline-offset-4">Buat campaign</button>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full min-w-[1000px] text-left">
-                                <thead>
-                                    <tr className="border-b border-gray-200 bg-gray-50/80">
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Nama</th>
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Min. Belanja</th>
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Rewards</th>
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Periode</th>
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Spin</th>
-                                        <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
-                                        <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">Aksi</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100">
-                                    {filtered.map((c) => (
-                                        <tr key={c.id} className="group transition hover:bg-gray-50/70">
-                                            <td className="px-5 py-4">
-                                                <p className="text-sm font-semibold text-gray-900">{c.name}</p>
-                                                <p className="text-xs text-gray-400">/{c.slug}</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <p className="text-sm font-medium text-gray-900">{formatRupiah(c.minimumSpend)}</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <p className="text-sm text-gray-700">{c.rewards.length} reward</p>
-                                                <p className="text-xs text-gray-400">Max {c.maxSpinsPerUser}x spin/user</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <p className="text-xs text-gray-700">{formatDate(c.startAt)}</p>
-                                                <p className="text-xs text-gray-400">s/d {formatDate(c.endAt)}</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <p className="text-sm font-medium text-gray-900">{c.spinCount}</p>
-                                                <p className="text-xs text-gray-400">total spin</p>
-                                            </td>
-                                            <td className="px-5 py-4">
-                                                <button type="button" onClick={() => handleToggleActive(c)} className="inline-flex items-center gap-2 text-xs font-medium">
-                                                    <span className={`h-2 w-2 rounded-full ${c.isActive ? "bg-emerald-500" : "bg-gray-300"}`} />
-                                                    <span className={c.isActive ? "text-emerald-700" : "text-gray-400"}>{c.isActive ? "Aktif" : "Nonaktif"}</span>
-                                                </button>
-                                            </td>
-                                            <td className="px-5 py-4 text-right">
-                                                <div className="flex justify-end gap-1">
-                                                    <button type="button" onClick={() => openEditModal(c)} className="px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-100">Edit</button>
-                                                    <button type="button" disabled={c.spinCount > 0} onClick={() => handleDelete(c)} className="px-2.5 py-1.5 text-xs font-medium text-gray-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-30 disabled:hover:bg-transparent">
-                                                        Hapus
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </section>
-            </div>
-
-            {/* MODAL */}
-            {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 p-4 backdrop-blur-[2px]">
-                    <div className="max-h-[92vh] w-full max-w-2xl overflow-hidden bg-white shadow-2xl">
-                        <div className="flex items-start justify-between border-b border-gray-200 px-6 py-5">
-                            <div>
-                                <p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400">Spin Wheel</p>
-                                <h2 className="mt-1 text-lg font-bold tracking-tight text-gray-950">{editingItem ? "Edit campaign" : "Buat campaign baru"}</h2>
-                            </div>
-                            <button type="button" onClick={closeModal} disabled={saving} className="flex h-8 w-8 items-center justify-center text-lg text-gray-400 transition hover:bg-gray-100 disabled:opacity-50">×</button>
-                        </div>
-                        <form onSubmit={handleSubmit} className="max-h-[calc(92vh-76px)] overflow-y-auto">
-                            <div className="space-y-5 px-6 py-6">
-                                {error && <div className="border-l-2 border-red-500 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</div>}
-
-                                <div>
-                                    <label className="mb-1.5 block text-xs font-semibold text-gray-700">Nama Campaign</label>
-                                    <input type="text" value={form.name} onChange={(e) => updateForm("name", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" placeholder="Contoh: Ramadan Spin Wheel" />
-                                </div>
-
-                                <div>
-                                    <label className="mb-1.5 block text-xs font-semibold text-gray-700">Deskripsi</label>
-                                    <textarea value={form.description} onChange={(e) => updateForm("description", e.target.value)} className="h-20 w-full border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-400" placeholder="Deskripsi campaign (opsional)" />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-semibold text-gray-700">Minimum Belanja (Rp)</label>
-                                        <input type="number" value={form.minimumSpend} onChange={(e) => updateForm("minimumSpend", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" min="0" step="1000" />
-                                        <p className="mt-1 text-[11px] text-gray-400">Total subtotal order yang sudah dibayar</p>
-                                    </div>
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-semibold text-gray-700">Max Spin per User</label>
-                                        <input type="number" value={form.maxSpinsPerUser} onChange={(e) => updateForm("maxSpinsPerUser", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" min="0" />
-                                        <p className="mt-1 text-[11px] text-gray-400">0 = tanpa batas (berdasarkan milestone belanja)</p>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-semibold text-gray-700">Tanggal Mulai</label>
-                                        <input type="datetime-local" value={form.startAt} onChange={(e) => updateForm("startAt", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" />
-                                    </div>
-                                    <div>
-                                        <label className="mb-1.5 block text-xs font-semibold text-gray-700">Tanggal Selesai</label>
-                                        <input type="datetime-local" value={form.endAt} onChange={(e) => updateForm("endAt", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" />
-                                    </div>
-                                </div>
-
-                                <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => updateForm("isActive", !form.isActive)} className={`relative h-6 w-11 rounded-full transition ${form.isActive ? "bg-emerald-500" : "bg-gray-300"}`}>
-                                        <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${form.isActive ? "left-[22px]" : "left-0.5"}`} />
-                                    </button>
-                                    <span className="text-sm text-gray-700">{form.isActive ? "Aktif" : "Nonaktif"}</span>
-                                </div>
-
-                                {/* REWARDS */}
-                                <div className="border-t border-gray-200 pt-5">
-                                    <div className="mb-4 flex items-center justify-between">
-                                        <h3 className="text-sm font-semibold text-gray-900">Rewards ({form.rewards.length})</h3>
-                                        <button type="button" onClick={addReward} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50">
-                                            <FiPlus size={14} /> Tambah Reward
-                                        </button>
-                                    </div>
-
-                                    <div className="space-y-4">
-                                        {form.rewards.map((r, idx) => (
-                                            <div key={idx} className="rounded-lg border border-gray-200 bg-gray-50/50 p-4">
-                                                <div className="mb-3 flex items-center justify-between">
-                                                    <span className="text-xs font-semibold text-gray-500">Reward #{idx + 1}</span>
-                                                    <button type="button" onClick={() => removeReward(idx)} className="text-gray-400 transition hover:text-red-500">
-                                                        <FiTrash2 size={14} />
-                                                    </button>
-                                                </div>
-                                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                                                    <div className="col-span-2 sm:col-span-2">
-                                                        <label className="mb-1 block text-[11px] font-medium text-gray-500">Nama</label>
-                                                        <input type="text" value={r.name} onChange={(e) => updateReward(idx, "name", e.target.value)} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400" placeholder="Diskon 5%" />
-                                                    </div>
-                                                    <div>
-                                                        <label className="mb-1 block text-[11px] font-medium text-gray-500">Tipe</label>
-                                                        <select value={r.type} onChange={(e) => updateReward(idx, "type", e.target.value)} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400">
-                                                            <option value="PERCENTAGE">Persen (%)</option>
-                                                            <option value="FIXED">Fixed (Rp)</option>
-                                                            <option value="FREE_SHIPPING">Gratis Ongkir</option>
-                                                            <option value="CASHBACK">Cashback</option>
-                                                            <option value="ZONK">Coba Lagi</option>
-                                                        </select>
-                                                    </div>
-                                                    <div>
-                                                        <label className="mb-1 block text-[11px] font-medium text-gray-500">Weight</label>
-                                                        <input type="number" value={r.weight} onChange={(e) => updateReward(idx, "weight", Number(e.target.value))} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400" min="1" />
-                                                    </div>
-                                                    {r.type !== "ZONK" && r.type !== "FREE_SHIPPING" && (
-                                                        <>
-                                                            <div>
-                                                                <label className="mb-1 block text-[11px] font-medium text-gray-500">Nilai</label>
-                                                                <input type="number" value={r.value} onChange={(e) => updateReward(idx, "value", Number(e.target.value))} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400" min="0" />
-                                                            </div>
-                                                            <div>
-                                                                <label className="mb-1 block text-[11px] font-medium text-gray-500">Max Diskon</label>
-                                                                <input type="number" value={r.maxDiscount ?? ""} onChange={(e) => updateReward(idx, "maxDiscount", e.target.value ? Number(e.target.value) : null)} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400" min="0" placeholder="Tidak terbatas" />
-                                                            </div>
-                                                        </>
-                                                    )}
-                                                    <div>
-                                                        <label className="mb-1 block text-[11px] font-medium text-gray-500">Total Qty</label>
-                                                        <input type="number" value={r.totalQuantity ?? ""} onChange={(e) => updateReward(idx, "totalQuantity", e.target.value ? Number(e.target.value) : null)} className="h-9 w-full border border-gray-200 bg-white px-2.5 text-xs outline-none focus:border-gray-400" min="0" placeholder="Tidak terbatas" />
-                                                    </div>
-                                                    <div className="flex items-end">
-                                                        <button type="button" onClick={() => updateReward(idx, "isActive", !r.isActive)} className={`flex items-center gap-1.5 text-[11px] font-medium ${r.isActive ? "text-emerald-600" : "text-gray-400"}`}>
-                                                            <span className={`h-2 w-2 rounded-full ${r.isActive ? "bg-emerald-500" : "bg-gray-300"}`} />
-                                                            {r.isActive ? "Aktif" : "Off"}
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4">
-                                <button type="button" onClick={closeModal} disabled={saving} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Batal</button>
-                                <button type="submit" disabled={saving} className="rounded-lg bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:opacity-50">{saving ? "Menyimpan..." : editingItem ? "Simpan" : "Buat Campaign"}</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
+            {error && (
+                <Alert color="red" variant="light" radius="md" title="Terjadi kesalahan">
+                    {error}
+                </Alert>
             )}
-        </div>
+
+            {success && (
+                <Alert color="green" variant="light" radius="md" title="Berhasil">
+                    {success}
+                </Alert>
+            )}
+
+            <SectionCard
+                title="Daftar Campaign"
+                description={`${filtered.length} campaign`}
+                actions={
+                    <TextInput
+                        size="md"
+                        radius="md"
+                        value={search}
+                        onChange={(e) => setSearch(e.currentTarget.value)}
+                        placeholder="Cari campaign..."
+                        aria-label="Cari campaign"
+                        w={{ base: 180, sm: 260 }}
+                    />
+                }
+            >
+                <DataTable
+                    minWidth={1000}
+                    loading={loading}
+                    empty={
+                        <EmptyBlock
+                            icon={<FiTarget size={22} />}
+                            title="Belum ada campaign spin wheel"
+                            description="Buat campaign untuk mengaktifkan spin wheel promo."
+                            action={
+                                <Button size="md" radius="md" onClick={openCreateModal}>
+                                    Buat campaign
+                                </Button>
+                            }
+                        />
+                    }
+                    columns={[
+                        { header: "Nama" },
+                        { header: "Min. Belanja" },
+                        { header: "Rewards" },
+                        { header: "Periode" },
+                        { header: "Spin" },
+                        { header: "Status" },
+                        { header: "Aksi", align: "right" },
+                    ]}
+                    rows={filtered.map((c) => ({
+                        key: String(c.id),
+                        cells: [
+                            <Stack gap={0} key="name">
+                                <Text size="sm" fw={600}>
+                                    {c.name}
+                                </Text>
+
+                                <Text size="xs" c="dimmed">
+                                    /{c.slug}
+                                </Text>
+                            </Stack>,
+
+                            <Text size="sm" fw={500} key="min">
+                                {formatRupiah(c.minimumSpend)}
+                            </Text>,
+
+                            <Stack gap={2} key="rewards">
+                                <Text size="sm">{c.rewards.length} reward</Text>
+
+                                <Text size="xs" c="dimmed">
+                                    Max {c.maxSpinsPerUser}x spin/user
+                                </Text>
+                            </Stack>,
+
+                            <Stack gap={2} key="period">
+                                <Text size="xs">{formatDate(c.startAt)}</Text>
+
+                                <Text size="xs" c="dimmed">
+                                    s/d {formatDate(c.endAt)}
+                                </Text>
+                            </Stack>,
+
+                            <Stack gap={2} key="spin">
+                                <Text size="sm" fw={500}>
+                                    {c.spinCount}
+                                </Text>
+
+                                <Text size="xs" c="dimmed">
+                                    total spin
+                                </Text>
+                            </Stack>,
+
+                            <UnstyledButton
+                                key="status"
+                                onClick={() => handleToggleActive(c)}
+                                aria-label={`Ubah status ${c.name}`}
+                            >
+                                <StatusBadge tone={c.isActive ? "success" : "neutral"}>
+                                    {c.isActive ? "Aktif" : "Nonaktif"}
+                                </StatusBadge>
+                            </UnstyledButton>,
+
+                            <Group justify="flex-end" gap="xs" wrap="nowrap" key="actions">
+                                <Button
+                                    variant="subtle"
+                                    size="sm"
+                                    radius="md"
+                                    onClick={() => openEditModal(c)}
+                                >
+                                    Edit
+                                </Button>
+
+                                <Button
+                                    variant="subtle"
+                                    color="red"
+                                    size="sm"
+                                    radius="md"
+                                    disabled={c.spinCount > 0}
+                                    onClick={() => setDeleteTarget(c)}
+                                >
+                                    Hapus
+                                </Button>
+                            </Group>,
+                        ],
+                    }))}
+                />
+            </SectionCard>
+
+            {/* FORM MODAL */}
+
+            <Modal
+                opened={modalOpen}
+                onClose={closeModal}
+                size="lg"
+                title={editingItem ? "Edit campaign" : "Buat campaign baru"}
+                centered
+            >
+                <form onSubmit={handleSubmit}>
+                    <Stack gap="md">
+                        {error && (
+                            <Alert color="red" variant="light" radius="md">
+                                {error}
+                            </Alert>
+                        )}
+
+                        <TextInput
+                            label="Nama Campaign"
+                            size="md"
+                            radius="md"
+                            placeholder="Contoh: Ramadan Spin Wheel"
+                            value={form.name}
+                            onChange={(e) => updateForm("name", e.currentTarget.value)}
+                        />
+
+                        <Textarea
+                            label="Deskripsi"
+                            size="md"
+                            radius="md"
+                            placeholder="Deskripsi campaign (opsional)"
+                            value={form.description}
+                            onChange={(e) => updateForm("description", e.currentTarget.value)}
+                            minRows={3}
+                            maxRows={5}
+                            autosize
+                        />
+
+                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                            <NumberInput
+                                label="Minimum Belanja (Rp)"
+                                description="Total subtotal order yang sudah dibayar"
+                                size="md"
+                                radius="md"
+                                min={0}
+                                step={1000}
+                                value={form.minimumSpend === "" ? "" : Number(form.minimumSpend)}
+                                onChange={(value) =>
+                                    updateForm("minimumSpend", value === "" ? "" : String(value))
+                                }
+                            />
+
+                            <NumberInput
+                                label="Max Spin per User"
+                                description="0 = tanpa batas (berdasarkan milestone belanja)"
+                                size="md"
+                                radius="md"
+                                min={0}
+                                value={form.maxSpinsPerUser === "" ? "" : Number(form.maxSpinsPerUser)}
+                                onChange={(value) =>
+                                    updateForm("maxSpinsPerUser", value === "" ? "" : String(value))
+                                }
+                            />
+                        </SimpleGrid>
+
+                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                            <TextInput
+                                label="Tanggal Mulai"
+                                size="md"
+                                radius="md"
+                                type="datetime-local"
+                                value={form.startAt}
+                                onChange={(e) => updateForm("startAt", e.currentTarget.value)}
+                            />
+
+                            <TextInput
+                                label="Tanggal Selesai"
+                                size="md"
+                                radius="md"
+                                type="datetime-local"
+                                value={form.endAt}
+                                onChange={(e) => updateForm("endAt", e.currentTarget.value)}
+                            />
+                        </SimpleGrid>
+
+                        <Switch
+                            size="md"
+                            color="green"
+                            checked={form.isActive}
+                            onChange={(e) => updateForm("isActive", e.currentTarget.checked)}
+                            label={form.isActive ? "Aktif" : "Nonaktif"}
+                        />
+
+                        <Divider
+                            label={`Rewards (${form.rewards.length})`}
+                            labelPosition="left"
+                        />
+
+                        <Group justify="flex-end">
+                            <Button
+                                type="button"
+                                variant="default"
+                                size="sm"
+                                radius="md"
+                                leftSection={<FiPlus size={14} />}
+                                onClick={addReward}
+                            >
+                                Tambah Reward
+                            </Button>
+                        </Group>
+
+                        <Stack gap="sm">
+                            {form.rewards.map((r, idx) => (
+                                <Paper key={idx} withBorder radius="md" p="md">
+                                    <Group justify="space-between" align="center" mb="sm">
+                                        <Text size="xs" fw={600} c="dimmed">
+                                            Reward #{idx + 1}
+                                        </Text>
+
+                                        <Button
+                                            type="button"
+                                            variant="subtle"
+                                            color="red"
+                                            size="compact-sm"
+                                            radius="md"
+                                            leftSection={<FiTrash2 size={14} />}
+                                            onClick={() => removeReward(idx)}
+                                        >
+                                            Hapus
+                                        </Button>
+                                    </Group>
+
+                                    <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">
+                                        <Box style={{ gridColumn: "span 2" }}>
+                                            <TextInput
+                                                label="Nama"
+                                                size="sm"
+                                                radius="md"
+                                                placeholder="Diskon 5%"
+                                                value={r.name}
+                                                onChange={(e) =>
+                                                    updateReward(idx, "name", e.currentTarget.value)
+                                                }
+                                            />
+                                        </Box>
+
+                                        <Select
+                                            label="Tipe"
+                                            size="sm"
+                                            radius="md"
+                                            allowDeselect={false}
+                                            value={r.type}
+                                            onChange={(value) =>
+                                                updateReward(idx, "type", value ?? "PERCENTAGE")
+                                            }
+                                            data={[
+                                                { value: "PERCENTAGE", label: "Persen (%)" },
+                                                { value: "FIXED", label: "Fixed (Rp)" },
+                                                { value: "FREE_SHIPPING", label: "Gratis Ongkir" },
+                                                { value: "CASHBACK", label: "Cashback" },
+                                                { value: "ZONK", label: "Coba Lagi" },
+                                            ]}
+                                        />
+
+                                        <NumberInput
+                                            label="Weight"
+                                            size="sm"
+                                            radius="md"
+                                            min={1}
+                                            value={r.weight}
+                                            onChange={(value) =>
+                                                updateReward(
+                                                    idx,
+                                                    "weight",
+                                                    value === "" ? 0 : Number(value)
+                                                )
+                                            }
+                                        />
+
+                                        {r.type !== "ZONK" && r.type !== "FREE_SHIPPING" && (
+                                            <>
+                                                <NumberInput
+                                                    label="Nilai"
+                                                    size="sm"
+                                                    radius="md"
+                                                    min={0}
+                                                    value={r.value}
+                                                    onChange={(value) =>
+                                                        updateReward(
+                                                            idx,
+                                                            "value",
+                                                            value === "" ? 0 : Number(value)
+                                                        )
+                                                    }
+                                                />
+
+                                                <NumberInput
+                                                    label="Max Diskon"
+                                                    size="sm"
+                                                    radius="md"
+                                                    min={0}
+                                                    placeholder="Tidak terbatas"
+                                                    value={r.maxDiscount ?? ""}
+                                                    onChange={(value) =>
+                                                        updateReward(
+                                                            idx,
+                                                            "maxDiscount",
+                                                            value === "" ? null : Number(value)
+                                                        )
+                                                    }
+                                                />
+                                            </>
+                                        )}
+
+                                        <NumberInput
+                                            label="Total Qty"
+                                            size="sm"
+                                            radius="md"
+                                            min={0}
+                                            placeholder="Tidak terbatas"
+                                            value={r.totalQuantity ?? ""}
+                                            onChange={(value) =>
+                                                updateReward(
+                                                    idx,
+                                                    "totalQuantity",
+                                                    value === "" ? null : Number(value)
+                                                )
+                                            }
+                                        />
+
+                                        <Switch
+                                            label={r.isActive ? "Aktif" : "Off"}
+                                            size="sm"
+                                            color="green"
+                                            checked={r.isActive}
+                                            onChange={(e) =>
+                                                updateReward(
+                                                    idx,
+                                                    "isActive",
+                                                    e.currentTarget.checked
+                                                )
+                                            }
+                                            style={{ alignSelf: "end" }}
+                                        />
+                                    </SimpleGrid>
+                                </Paper>
+                            ))}
+                        </Stack>
+                    </Stack>
+
+                    <Group justify="flex-end" gap="sm" mt="xl">
+                        <Button
+                            type="button"
+                            variant="default"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            onClick={closeModal}
+                        >
+                            Batal
+                        </Button>
+
+                        <Button
+                            type="submit"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            loading={saving}
+                        >
+                            {saving ? "Menyimpan..." : editingItem ? "Simpan" : "Buat Campaign"}
+                        </Button>
+                    </Group>
+                </form>
+            </Modal>
+
+            {/* DELETE CONFIRMATION */}
+
+            <Modal
+                opened={deleteTarget !== null}
+                onClose={() => setDeleteTarget(null)}
+                title="Hapus Campaign"
+                centered
+            >
+                <Text size="sm">
+                    Hapus campaign &quot;{deleteTarget?.name}&quot;?
+                </Text>
+
+                <Group justify="flex-end" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setDeleteTarget(null)}
+                    >
+                        Batal
+                    </Button>
+
+                    <Button color="red" size="md" radius="md" onClick={confirmDelete}>
+                        Hapus
+                    </Button>
+                </Group>
+            </Modal>
+        </Stack>
     );
 }

@@ -2,7 +2,38 @@
 
 import { useEffect, useState, useCallback } from "react";
 import toast from "react-hot-toast";
-import { FiSearch, FiChevronLeft, FiChevronRight, FiClock } from "react-icons/fi";
+import { FiClock } from "react-icons/fi";
+
+import {
+    Divider,
+    Group,
+    Pagination,
+    Paper,
+    Select,
+    Skeleton,
+    Stack,
+    Text,
+} from "@mantine/core";
+
+import {
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: `load` and its query-string contract (`page`, `limit=20`, `action` only when
+ * set), the `data.data?.items ?? []` / `pagination` fallbacks, the two `toast.error` branches, the
+ * `useEffect(() => { load(page, actionFilter); }, [page, load])` trigger, the filter-select handler's
+ * `setPage(1)` + reselect, `fmtDate` (the same `id-ID` short-month date), and both label maps —
+ * `ACTION_LABELS` (every action key and its Indonesian label) and `ACTION_COLORS` — which now map to
+ * semantic `StatusBadge` tones instead of tint classes, with the same fallbacks for an unknown
+ * action.
+ */
 
 type AuditLogItem = {
     id: number;
@@ -31,20 +62,20 @@ const ACTION_LABELS: Record<string, string> = {
     AFFILIATE_COMMISSION_AUTO_CANCELLED: "Komisi Auto-Cancel",
 };
 
-const ACTION_COLORS: Record<string, string> = {
-    AFFILIATE_APPROVED: "bg-emerald-50 text-emerald-700",
-    AFFILIATE_REJECTED: "bg-red-50 text-red-700",
-    AFFILIATE_SUSPENDED: "bg-gray-100 text-gray-600",
-    AFFILIATE_RATE_UPDATED: "bg-blue-50 text-blue-700",
-    COMMISSION_APPROVED: "bg-emerald-50 text-emerald-700",
-    COMMISSION_CANCELLED: "bg-red-50 text-red-700",
-    COMMISSION_PAID: "bg-blue-50 text-blue-700",
-    PAYOUT_APPROVED: "bg-emerald-50 text-emerald-700",
-    PAYOUT_REJECTED: "bg-red-50 text-red-700",
-    PAYOUT_PAID: "bg-blue-50 text-blue-700",
-    ORDER_CANCELLED: "bg-red-50 text-red-700",
-    ORDER_REFUNDED: "bg-amber-50 text-amber-700",
-    AFFILIATE_COMMISSION_AUTO_CANCELLED: "bg-orange-50 text-orange-700",
+const ACTION_TONES: Record<string, Tone> = {
+    AFFILIATE_APPROVED: "success",
+    AFFILIATE_REJECTED: "error",
+    AFFILIATE_SUSPENDED: "neutral",
+    AFFILIATE_RATE_UPDATED: "info",
+    COMMISSION_APPROVED: "success",
+    COMMISSION_CANCELLED: "error",
+    COMMISSION_PAID: "info",
+    PAYOUT_APPROVED: "success",
+    PAYOUT_REJECTED: "error",
+    PAYOUT_PAID: "info",
+    ORDER_CANCELLED: "error",
+    ORDER_REFUNDED: "warn",
+    AFFILIATE_COMMISSION_AUTO_CANCELLED: "pending",
 };
 
 function fmtDate(s: string) {
@@ -84,75 +115,110 @@ export default function AdminAuditLogPage() {
     useEffect(() => { load(page, actionFilter); }, [page, load]);
 
     return (
-        <div className="p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Riwayat Aktivitas</h1>
-                <p className="text-sm text-gray-500">Audit trail untuk semua aksi admin pada affiliate system.</p>
-            </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Affiliate"
+                title="Riwayat Aktivitas"
+                description="Audit trail untuk semua aksi admin pada affiliate system."
+            />
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-100 px-5 py-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-xs text-gray-500">Menampilkan {items.length} dari {pagination.total} aktivitas</p>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                            <select value={actionFilter} onChange={(e) => { setActionFilter(e.target.value); setPage(1); }}
-                                className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none">
-                                <option value="">Semua Aksi</option>
-                                {Object.entries(ACTION_LABELS).map(([key, label]) => (
-                                    <option key={key} value={key}>{label}</option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <div className="divide-y divide-gray-100">
+            <SectionCard
+                title="Aktivitas"
+                description={`Menampilkan ${items.length} dari ${pagination.total} aktivitas`}
+                actions={
+                    <Select
+                        size="md"
+                        radius="md"
+                        allowDeselect={false}
+                        value={actionFilter === "" ? "ALL" : actionFilter}
+                        onChange={(value) => {
+                            setActionFilter(value === "ALL" ? "" : (value ?? ""));
+                            setPage(1);
+                        }}
+                        aria-label="Filter aksi"
+                        data={[
+                            { value: "ALL", label: "Semua Aksi" },
+                            ...Object.entries(ACTION_LABELS).map(([key, label]) => ({
+                                value: key,
+                                label,
+                            })),
+                        ]}
+                        w={{ base: 180, sm: 220 }}
+                    />
+                }
+            >
+                <Stack gap={0}>
                     {loading ? (
                         Array.from({ length: 5 }).map((_, i) => (
-                            <div key={i} className="px-5 py-4"><div className="h-4 animate-pulse rounded bg-gray-100" /></div>
+                            <Paper key={i} withBorder={false} p="md" radius="md">
+                                <Skeleton height={16} radius="sm" />
+                            </Paper>
                         ))
                     ) : items.length === 0 ? (
-                        <div className="px-5 py-16 text-center text-sm text-gray-500">Belum ada aktivitas.</div>
-                    ) : items.map((item) => (
-                        <div key={item.id} className="px-5 py-3 hover:bg-gray-50/70">
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                    <p className="text-sm text-gray-900">{item.description}</p>
-                                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                                        <span className={`inline-flex rounded-md px-2 py-0.5 text-[10px] font-semibold ${ACTION_COLORS[item.action] || "bg-gray-100 text-gray-600"}`}>
-                                            {ACTION_LABELS[item.action] || item.action}
-                                        </span>
-                                        <span className="text-[11px] text-gray-400">Admin: {item.adminId}</span>
-                                        {item.entityId && (
-                                            <span className="text-[11px] text-gray-400">{item.entityType} #{item.entityId}</span>
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="flex shrink-0 items-center gap-1 text-[11px] text-gray-400">
-                                    <FiClock size={12} />
-                                    {fmtDate(item.createdAt)}
-                                </div>
-                            </div>
-                        </div>
-                    ))}
-                </div>
+                        <EmptyBlock title="Belum ada aktivitas." />
+                    ) : (
+                        items.map((item, index) => (
+                            <Stack gap={0} key={item.id}>
+                                {index > 0 ? <Divider /> : null}
 
-                {pagination.totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                        <p className="text-xs text-gray-500">Halaman {pagination.page} dari {pagination.totalPages}</p>
-                        <div className="flex gap-1">
-                            <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40">
-                                <FiChevronLeft size={14} />
-                            </button>
-                            <button disabled={page >= pagination.totalPages} onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
-                                className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40">
-                                <FiChevronRight size={14} />
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
+                                <Group
+                                    justify="space-between"
+                                    align="flex-start"
+                                    gap="md"
+                                    wrap="nowrap"
+                                    py="sm"
+                                >
+                                    <Stack gap={6} style={{ minWidth: 0, flex: 1 }}>
+                                        <Text size="sm">{item.description}</Text>
+
+                                        <Group gap="sm" wrap="wrap">
+                                            <StatusBadge
+                                                tone={ACTION_TONES[item.action] ?? "neutral"}
+                                                size="sm"
+                                            >
+                                                {ACTION_LABELS[item.action] || item.action}
+                                            </StatusBadge>
+
+                                            <Text size="xs" c="dimmed">
+                                                Admin: {item.adminId}
+                                            </Text>
+
+                                            {item.entityId ? (
+                                                <Text size="xs" c="dimmed">
+                                                    {item.entityType} #{item.entityId}
+                                                </Text>
+                                            ) : null}
+                                        </Group>
+                                    </Stack>
+
+                                    <Group gap={4} wrap="nowrap" style={{ flexShrink: 0 }}>
+                                        <FiClock size={12} />
+
+                                        <Text size="xs" c="dimmed">
+                                            {fmtDate(item.createdAt)}
+                                        </Text>
+                                    </Group>
+                                </Group>
+                            </Stack>
+                        ))
+                    )}
+                </Stack>
+
+                {pagination.totalPages > 1 ? (
+                    <Group justify="space-between" align="center" mt="md" wrap="wrap">
+                        <Text size="sm" c="dimmed">
+                            Halaman {pagination.page} dari {pagination.totalPages}
+                        </Text>
+
+                        <Pagination
+                            size="md"
+                            total={pagination.totalPages}
+                            value={page}
+                            onChange={setPage}
+                        />
+                    </Group>
+                ) : null}
+            </SectionCard>
+        </Stack>
     );
 }

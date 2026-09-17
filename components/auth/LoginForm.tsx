@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { FaArrowLeft } from "react-icons/fa";
 import Link from "next/link";
+
+import Brand from "@/components/Brand";
 import { useRouter } from "next/navigation";
 import {
     signIn,
@@ -194,7 +196,7 @@ export default function LoginForm() {
 
     if (checkingSession) {
         return (
-            <section className="flex min-h-screen items-center justify-center bg-gradient-to-br from-rose-50 via-white to-rose-100 px-5 py-10">
+            <section className="flex min-h-screen items-center justify-center bg-gradient-to-br from-ink-50 via-white to-brand-50 px-5 py-10">
                 <div className="rounded-2xl bg-white px-8 py-6 text-center shadow-xl">
                     <p className="font-medium text-gray-900">
                         Memeriksa sesi login...
@@ -209,13 +211,13 @@ export default function LoginForm() {
     }
 
     return (
-        <section className="flex min-h-screen items-center justify-center bg-gradient-to-br from-rose-50 via-white to-rose-100 px-5 py-10">
+        <section className="flex min-h-screen items-center justify-center bg-gradient-to-br from-ink-50 via-white to-brand-50 px-5 py-10">
             <div className="w-full max-w-md rounded-3xl bg-white p-8 shadow-2xl">
 
                 {/* BACK */}
                 <Link
                     href="/"
-                    className="mb-6 inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100"
+                    className="mb-6 inline-flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-50"
                 >
                     <FaArrowLeft className="text-xs" />
                     Kembali ke Beranda
@@ -224,16 +226,16 @@ export default function LoginForm() {
                 {/* HEADER */}
                 <div className="mb-8 text-center">
 
-                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-100 text-3xl">
-                        🛍️
+                    <div className="mb-6 flex justify-center">
+                        <Brand />
                     </div>
 
-                    <h1 className="text-3xl font-bold text-gray-900">
+                    <h1 className="text-3xl font-bold text-ink-900">
                         Selamat Datang
                     </h1>
 
                     <p className="mt-2 text-sm text-gray-600">
-                        Login untuk mulai berbelanja.
+                        Masuk untuk melanjutkan ke akun TinggalKlik.Co.
                     </p>
 
                 </div>
@@ -269,7 +271,7 @@ export default function LoginForm() {
                                 placeholder="Masukkan email atau nomor HP"
                                 disabled={loading}
                                 autoComplete="username"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-[15px] text-black placeholder:text-gray-400 focus:border-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-[15px] text-black placeholder:text-gray-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
                             />
 
                         </div>
@@ -305,7 +307,7 @@ export default function LoginForm() {
                                 placeholder="Masukkan password"
                                 disabled={loading}
                                 autoComplete="current-password"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-12 text-[15px] text-black placeholder:text-gray-400 focus:border-rose-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-12 text-[15px] text-black placeholder:text-gray-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-gray-100"
                             />
 
                             <button
@@ -316,7 +318,7 @@ export default function LoginForm() {
                                     )
                                 }
                                 disabled={loading}
-                                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 transition hover:text-rose-600 disabled:cursor-not-allowed"
+                                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 transition hover:text-brand-600 disabled:cursor-not-allowed"
                             >
                                 {showPassword ? (
                                     <FaEyeSlash />
@@ -337,7 +339,7 @@ export default function LoginForm() {
                             <input
                                 type="checkbox"
                                 disabled={loading}
-                                className="h-4 w-4 accent-rose-600"
+                                className="h-4 w-4 accent-brand-600"
                             />
 
                             Ingat Saya
@@ -346,7 +348,7 @@ export default function LoginForm() {
 
                         <Link
                             href="/forgot-password"
-                            className="font-medium text-rose-600 hover:underline"
+                            className="font-medium text-brand-600 hover:underline"
                         >
                             Lupa Password?
                         </Link>
@@ -357,7 +359,7 @@ export default function LoginForm() {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="flex h-12 w-full items-center justify-center rounded-xl bg-rose-600 font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                         {loading
                             ? "Memproses..."
@@ -402,7 +404,7 @@ export default function LoginForm() {
 
                         <Link
                             href="/register"
-                            className="ml-1 font-semibold text-rose-600 hover:underline"
+                            className="ml-1 font-semibold text-brand-600 hover:underline"
                         >
                             Daftar
                         </Link>

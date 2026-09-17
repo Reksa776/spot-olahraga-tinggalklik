@@ -1,0 +1,393 @@
+import { Prisma } from "@prisma/client";
+
+/**
+ * ==========================================
+ * CUSTOMER ORDER PAYLOAD (design §25.5 / §26.x)
+ * ==========================================
+ *
+ * One builder for every customer-facing order response, so the checkout response, the
+ * order detail page and the cancel response cannot drift apart.
+ *
+ * ── WHAT IS NOT IN HERE (brief §24) ──────────────────────────────────────────────
+ * No `organizerId`, no organizer membership, no `PermissionGrant`, no audit rows, no
+ * financial ledger, no `quota` / `sold` / `reserved`, no `picProfileId`. A customer
+ * response contains only what the buyer needs to see their own purchase. The
+ * `TicketType` counters are deliberately absent: `reserved`/`sold` are organizer- and
+ * platform-internal (design §10.5 keeps them out of public payloads), and a buyer's own
+ * quantity is already in `items`.
+ *
+ * ── MONEY IS SERIALIZED AS STRINGS (§36.5) ───────────────────────────────────────
+ * §36.5: "Serialization to JSON | Sent as **strings** (e.g. `"100000.00"`) or as
+ * integers-with-explicit-currency, **never as JSON numbers**, so no client-side float
+ * rounding occurs."
+ *
+ * `D-61` (`DECISION REQUIRED`: string decimals vs integer rupiah) is formally still
+ * open, and the residual choice between the two string encodings is a serialization
+ * detail, not a storage one — `Decimal(14,2)` is what is persisted either way, so
+ * switching to integer rupiah later is an API-contract change with no migration. The
+ * design's own stated rule ("strings ... never numbers") is what is implemented, and
+ * `DECISION REQUIRED — D-61` is reported rather than quietly settled.
+ */
+
+/**
+ * A Prisma `Decimal` rendered exactly as §36.5 requires: a fixed 2-decimal string.
+ *
+ * Formatted by decimal.js, NOT by `Number(value).toFixed(2)`. Brief §16 bans the
+ * round-trip "Decimal → Number → arithmetic → Decimal" for money, and formatting is
+ * part of that: a large amount passes through a binary float on its way to the client's
+ * screen and can come back one rupiah off. `Decimal#toFixed` formats the exact value
+ * that is stored.
+ *
+ * The parameter is deliberately `Decimal | string` and not `number`: accepting a JS
+ * number here would invite exactly the conversion this function exists to avoid.
+ */
+export function moneyString(value: Prisma.Decimal | string): string {
+    return new Prisma.Decimal(value).toFixed(2);
+}
+
+/**
+ * The customer ticket wallet (design §26.5) — one path, used by the order payload and by
+ * the wallet UI so the link cannot drift.
+ */
+export const TICKET_WALLET_URL = "/ticketing/tickets";
+
+/** Alias kept explicit at call sites that render a stored column. */
+export const decimalToString = moneyString;
+
+export type OrderPayloadItem = {
+    ticketTypeId: string | null;
+    name: string;
+    quantity: number;
+    unitPrice: string;
+    subtotal: string;
+};
+
+export type OrderPayloadReservation = {
+    ticketTypeId: string;
+    quantity: number;
+    status: string;
+    expiresAt: string;
+};
+
+/**
+ * One issued ticket, as the order response may show it (design §26.2).
+ *
+ * §26.2 specifies the order detail returns "tickets (with `ticketCode` but **without** the
+ * QR token)". So there is no `qrTokenHash`, no `qrToken` and no QR payload here — a
+ * `ticketCode` is a lookup label, and a scannable credential is returned from exactly one
+ * place (`GET /api/ticketing/tickets/{ticketCode}`, design §26.6).
+ */
+export type OrderPayloadTicket = {
+    ticketCode: string;
+    status: string;
+    sequenceNo: number;
+    ticketTypeId: string;
+};
+
+export type OrderPayload = {
+    orderId: string;
+    orderNumber: string;
+    status: string;
+    paymentStatus: string;
+    currency: string;
+    createdAt: string;
+    /**
+     * The payment window (§12.1). **The server's instant**, which the confirmation
+     * page renders as a countdown (brief §26). The browser timer is presentation only —
+     * reaching zero revalidates against the server and never releases anything.
+     */
+    expiresAt: string | null;
+    totals: {
+        subtotal: string;
+        discount: string;
+        platformFee: string;
+        picFeeTotal: string;
+        total: string;
+        organizerNetAmount: string;
+    };
+    event: {
+        id: string;
+        slug: string;
+        title: string;
+        startAt: string;
+        endAt: string | null;
+        venueName: string | null;
+    };
+    items: OrderPayloadItem[];
+    reservations: OrderPayloadReservation[];
+    /**
+     * The live provider session's URL, or `null`.
+     *
+     * PHASE 7 fills this in. Brief §20: "Phase 7 should replace that only when a valid
+     * gateway payment has been created. The UI must never display a fake or guessed payment
+     * URL." So it is populated from the newest `Payment` row and only while that row is
+     * `PENDING`; an `EXPIRED`/`FAILED` attempt contributes nothing here even though it may
+     * still hold a stale URL in the database.
+     */
+    paymentUrl: string | null;
+    /**
+     * Whether the server would accept a request to start/resume a provider session now.
+     *
+     * Advisory, for the UI only: the payment service re-derives every one of these
+     * conditions from the database and refuses on its own (brief §25: "Frontend must not be
+     * the source of truth"). Expressed here so the order page does not offer a "Pay Now"
+     * button that is guaranteed to fail.
+     */
+    canPay: boolean;
+    /** When the payment was confirmed, or `null`. Buyer-visible and useful on a receipt. */
+    paidAt: string | null;
+    /** True only while the order is `PENDING_PAYMENT` (the §26.4 cancel precondition). */
+    canCancel: boolean;
+    /**
+     * The order's issued tickets. Empty until issuance has run for a paid order.
+     *
+     * PHASE 8. Design §26.2 lists `tickets` in the order-detail contract; Phase 6 omitted
+     * them because no ticket could exist yet. Additive: no Phase 6 field changed.
+     */
+    tickets: OrderPayloadTicket[];
+    /**
+     * The e-ticket wallet (design §26.2's "e-ticket wallet link").
+     *
+     * Always the wallet list rather than a per-order view, because the wallet is what a
+     * buyer needs at the gate and it is scoped to the session, not to this order.
+     */
+    walletUrl: string;
+    /**
+     * Whether the server would materialise this order's tickets right now.
+     *
+     * Advisory, for the UI only — the same contract as `canPay`/`canCancel` above, and the
+     * same warning applies: the issuance service re-derives every condition from the
+     * database and refuses on its own (brief §23: "Frontend must not be the source of
+     * truth"). Expressed here so a paid order does not offer a button that cannot work,
+     * and so the page can explain a blocked order instead of showing a dead end.
+     */
+    canIssueTickets: boolean;
+};
+
+type OrderRow = {
+    id: string;
+    orderNumber: string;
+    status: string;
+    paymentStatus: string;
+    currency: string;
+    createdAt: Date;
+    expiresAt: Date | null;
+    subtotal: Prisma.Decimal;
+    discount: Prisma.Decimal;
+    platformFee: Prisma.Decimal;
+    picFeeTotal: Prisma.Decimal;
+    total: Prisma.Decimal;
+    organizerNetAmount: Prisma.Decimal;
+    event: {
+        id: string;
+        slug: string;
+        title: string;
+        startAt: Date;
+        endAt: Date | null;
+        venue: { name: string } | null;
+    };
+    items: {
+        ticketTypeId: string | null;
+        nameSnapshot: string;
+        priceSnapshot: Prisma.Decimal;
+        quantity: number;
+        subtotal: Prisma.Decimal;
+    }[];
+    reservations: {
+        ticketTypeId: string;
+        quantity: number;
+        status: string;
+        expiresAt: Date;
+    }[];
+    paidAt: Date | null;
+    /** The §11.4 hold flag. Read only to derive `canIssueTickets`; never projected. */
+    fulfilmentBlockedAt: Date | null;
+    /** The order's issued tickets (design §26.2), oldest line and slot first. */
+    tickets: {
+        ticketCode: string;
+        status: string;
+        sequenceNo: number;
+        ticketTypeId: string;
+    }[];
+    /**
+     * The newest payment attempt, if any.
+     *
+     * Only the three fields the customer payload needs. `externalSessionId`, `provider`,
+     * `createdByUserId` and the transaction rows are NOT projected: they are provider and
+     * platform internals (brief §24), and a customer response must not carry them.
+     */
+    payments: {
+        status: string;
+        paymentUrl: string | null;
+        paymentReference: string;
+        expiresAt: Date | null;
+    }[];
+};
+
+/**
+ * The Prisma `select` every customer read uses, kept next to the builder so a new field
+ * cannot be added to one without the other.
+ */
+/**
+ * Ticket ordering for the order payload: grouped by the line they belong to, in slot order,
+ * so "ticket 2 of 3" is stable across reads.
+ *
+ * Declared as a mutable array constant rather than inline: `ORDER_PAYLOAD_SELECT` is
+ * `as const`, and a readonly tuple is not assignable to Prisma's `OrderByInput[]`.
+ */
+const TICKET_ORDER_BY: Prisma.TicketOrderByWithRelationInput[] = [
+    { orderItemId: "asc" },
+    { sequenceNo: "asc" },
+];
+
+export const ORDER_PAYLOAD_SELECT = {
+    id: true,
+    orderNumber: true,
+    status: true,
+    paymentStatus: true,
+    currency: true,
+    createdAt: true,
+    expiresAt: true,
+    subtotal: true,
+    discount: true,
+    platformFee: true,
+    picFeeTotal: true,
+    total: true,
+    organizerNetAmount: true,
+    event: {
+        select: {
+            id: true,
+            slug: true,
+            title: true,
+            startAt: true,
+            endAt: true,
+            venue: { select: { name: true } },
+        },
+    },
+    items: {
+        select: {
+            ticketTypeId: true,
+            nameSnapshot: true,
+            priceSnapshot: true,
+            quantity: true,
+            subtotal: true,
+        },
+        orderBy: { createdAt: "asc" },
+    },
+    reservations: {
+        select: {
+            ticketTypeId: true,
+            quantity: true,
+            status: true,
+            expiresAt: true,
+        },
+        orderBy: { createdAt: "asc" },
+    },
+    paidAt: true,
+    fulfilmentBlockedAt: true,
+    tickets: {
+        select: {
+            ticketCode: true,
+            status: true,
+            sequenceNo: true,
+            ticketTypeId: true,
+        },
+        orderBy: TICKET_ORDER_BY,
+    },
+    payments: {
+        select: {
+            status: true,
+            paymentUrl: true,
+            paymentReference: true,
+            expiresAt: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+    },
+} as const;
+
+export function buildOrderPayload(
+    row: OrderRow,
+    /** Injected so the derived flags are deterministic in tests. */
+    now: Date = new Date()
+): OrderPayload {
+    const latestPayment = row.payments[0] ?? null;
+
+    /**
+     * The payment window is the server's own instant (brief §26: "display the
+     * server-derived expiry timestamp. Do not trust the browser timer").
+     *
+     * A `null` `expiresAt` means no window was recorded, in which case nothing is
+     * presumed to have lapsed — the payment service still re-checks.
+     */
+    const windowOpen =
+        row.expiresAt === null || row.expiresAt.getTime() > now.getTime();
+
+    const payable =
+        row.status === "PENDING_PAYMENT" &&
+        row.paymentStatus !== "PAID" &&
+        windowOpen;
+
+    return {
+        orderId: row.id,
+        orderNumber: row.orderNumber,
+        status: row.status,
+        paymentStatus: row.paymentStatus,
+        currency: row.currency,
+        createdAt: row.createdAt.toISOString(),
+        expiresAt: row.expiresAt?.toISOString() ?? null,
+        totals: {
+            subtotal: moneyString(row.subtotal),
+            discount: moneyString(row.discount),
+            platformFee: moneyString(row.platformFee),
+            picFeeTotal: moneyString(row.picFeeTotal),
+            total: moneyString(row.total),
+            organizerNetAmount: moneyString(row.organizerNetAmount),
+        },
+        event: {
+            id: row.event.id,
+            slug: row.event.slug,
+            title: row.event.title,
+            startAt: row.event.startAt.toISOString(),
+            endAt: row.event.endAt?.toISOString() ?? null,
+            venueName: row.event.venue?.name ?? null,
+        },
+        items: row.items.map((item) => ({
+            ticketTypeId: item.ticketTypeId,
+            name: item.nameSnapshot,
+            quantity: item.quantity,
+            unitPrice: moneyString(item.priceSnapshot),
+            subtotal: moneyString(item.subtotal),
+        })),
+        reservations: row.reservations.map((reservation) => ({
+            ticketTypeId: reservation.ticketTypeId,
+            quantity: reservation.quantity,
+            status: reservation.status,
+            expiresAt: reservation.expiresAt.toISOString(),
+        })),
+        paymentUrl:
+            latestPayment && latestPayment.status === "PENDING"
+                ? latestPayment.paymentUrl
+                : null,
+        canPay: payable,
+        paidAt: row.paidAt?.toISOString() ?? null,
+        canCancel: row.status === "PENDING_PAYMENT",
+        tickets: row.tickets.map((ticket) => ({
+            ticketCode: ticket.ticketCode,
+            status: ticket.status,
+            sequenceNo: ticket.sequenceNo,
+            ticketTypeId: ticket.ticketTypeId,
+        })),
+        walletUrl: TICKET_WALLET_URL,
+        // Deliberately the SAME predicate the issuance service enforces, computed from the
+        // same columns. Kept as a small local expression rather than imported from
+        // `./tickets/issuance` so that this pure builder stays dependency-free — the two
+        // are held in step by a test that asserts they agree on every combination.
+        canIssueTickets:
+            row.status === "PAID" &&
+            row.paymentStatus === "PAID" &&
+            row.paidAt !== null &&
+            row.fulfilmentBlockedAt === null &&
+            row.tickets.length === 0,
+    };
+}

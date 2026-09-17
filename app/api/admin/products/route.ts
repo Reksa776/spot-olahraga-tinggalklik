@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
         if (!session?.user) {
             return NextResponse.json({ success: false, message: "Unauthorized." }, { status: 401 });
         }
-        const role = (session.user as any).role;
+        const role = session.user.role;
         if (role !== "ADMIN") {
             return NextResponse.json({ success: false, message: "Akses ditolak." }, { status: 403 });
         }
@@ -86,7 +86,7 @@ export async function POST(request: Request) {
             );
         }
 
-        const role = (session.user as any).role;
+        const role = session.user.role;
 
         if (role !== "ADMIN") {
             return NextResponse.json(

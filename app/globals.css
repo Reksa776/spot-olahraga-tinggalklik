@@ -5,13 +5,153 @@
   --foreground: #171717;
 }
 
+/**
+ * ==========================================
+ * TINGGALKLIK.Co — DESIGN TOKENS (PHASE 9)
+ * ==========================================
+ *
+ * ADDITIVE ONLY. Two new namespaced scales and one shadow are declared below; no Tailwind
+ * default token is redefined, and no existing utility changes value. That is deliberate:
+ * the retail marketplace pages are still live and share this stylesheet, so overriding
+ * `--color-blue-600` or `--font-sans` here would silently repaint them. Every token below
+ * has a name that cannot collide with the default palette (`ink-*`, `brand-*`).
+ *
+ * There is also nothing to fix in the base typography: Tailwind v4's preflight already sets
+ * the document font to a system sans stack through `--default-font-family`, so the app
+ * renders sans-serif without `next/font`. The stale `--font-geist-sans` override is left
+ * exactly as it was — it only affects the `font-sans` utility, which this phase does not
+ * depend on.
+ *
+ * IDENTITY
+ * --------
+ * `ink`   — deep navy. Headlines, dark surfaces, the footer band, the hero. Carries the
+ *           "premium" half of the brief's direction without using pure black.
+ * `brand` — energetic orange. Primary CTAs, category accents, price emphasis. One accent,
+ *           used sparingly: the discovery surfaces stay mostly white so imagery leads.
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* ── ink — deep navy ───────────────────────────────────────────────────────── */
+  --color-ink-50: #f4f6fb;
+  --color-ink-100: #e7ebf4;
+  --color-ink-200: #c9d2e5;
+  --color-ink-300: #9aa9c8;
+  --color-ink-400: #6c7fa8;
+  --color-ink-500: #4a5c85;
+  --color-ink-600: #35466a;
+  --color-ink-700: #263455;
+  --color-ink-800: #1a2540;
+  --color-ink-900: #101a2e;
+  --color-ink-950: #0a1120;
+
+  /* ── brand — energetic orange ──────────────────────────────────────────────── */
+  --color-brand-50: #fff5ed;
+  --color-brand-100: #ffe7d5;
+  --color-brand-200: #ffcaaa;
+  --color-brand-300: #ffa674;
+  --color-brand-400: #ff8038;
+  --color-brand-500: #f96311;
+  --color-brand-600: #e04e05;
+  --color-brand-700: #b93d07;
+  --color-brand-800: #93320d;
+  --color-brand-900: #782c0e;
+
+  /**
+   * A single restrained elevation used by cards and the sticky bars. Named rather than
+   * inline so the whole platform lifts consistently instead of each page inventing a
+   * shadow.
+   */
+  --shadow-card: 0 1px 2px rgb(16 26 46 / 0.06), 0 8px 24px -12px rgb(16 26 46 / 0.18);
+  --shadow-raised: 0 2px 4px rgb(16 26 46 / 0.08), 0 16px 40px -20px rgb(16 26 46 / 0.28);
 }
 
+/*
+ * ==========================================
+ * ACCENT CONTRACT (PHASE 10)
+ * ==========================================
+ *
+ * `ink` and `brand` are the ONE identity for TinggalKlik.Co. Phase 9 introduced the scale for
+ * the discovery surface; Phase 10 removed the competing accent from every other surface that
+ * carries branding or navigation — the auth screens, the retail storefront chrome, the
+ * platform/organiser back office, the admin sidebar, and the shared dialog primitive — so the
+ * application stops reading as three products sharing one stylesheet.
+ *
+ * THE REMAINING PALETTE IS SEMANTIC, NOT IDENTITY:
+ *
+ *   rose / red — failure and refusal (expired order, failed payment, held tickets,
+ *                destructive actions)
+ *   emerald    — success / paid
+ *   amber      — pending, needs attention
+ *   sky / blue — informational, including the COMPLETED event status and info callouts
+ *   violet     — refunded
+ *   `lib/ticketing/ui/sport-tint.ts` — CATEGORICAL: a sport is tinted to be distinguishable
+ *                from its neighbours, not to express brand, so those hues sit outside this
+ *                contract on purpose.
+ *
+ * Where `rose` is still used, it is one of two things, both deliberate: a legacy retail page
+ * BODY, which this phase does not repaint (the sweep is listed in TICKETING_PHASE10_REPORT.md),
+ * or one of the semantics above. It is never a brand accent any more.
+ *
+ * CANONICAL CLASS STRINGS — so a new surface cannot invent its own accent:
+ *
+ *   primary action  bg-brand-600 text-white hover:bg-brand-700
+ *   neutral action  bg-ink-900   text-white hover:bg-ink-800
+ *   focus ring      focus-visible:outline-2 focus-visible:outline-offset-2
+ *                   focus-visible:outline-brand-600  (outline-ink-900 on neutral chrome)
+ */
+
+/*
+ * Horizontal card rows scroll without a visible scrollbar on desktop, where the same
+ * content is laid out as a grid. `scrollbar-width` is a progressive enhancement, and the
+ * `-webkit-` rule keeps Safari in step; neither affects keyboard or touch scrolling.
+ */
+@utility no-scrollbar {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*
+ * The hero's image treatment. A single diagonal wash in the brand hue over the ink base —
+ * deliberately NOT a multi-stop gradient stack, which the brief calls out as an "AI UI"
+ * tell. Declared as a utility so the colour pair lives in one place.
+ */
+@utility hero-wash {
+  background-image:
+    radial-gradient(120% 120% at 0% 0%, rgb(249 99 17 / 0.22) 0%, transparent 55%),
+    radial-gradient(100% 100% at 100% 100%, rgb(74 92 133 / 0.35) 0%, transparent 60%);
+}
+
+/*
+ * ── PHASE 9: one global footer at a time ───────────────────────────────────────
+ *
+ * The discovery and ticketing pages render their own footer band, and `app/layout.tsx`
+ * renders the retail `<Footer>` for every route in the app. Rather than make the layout
+ * path-aware — which in Next 16 means a `usePathname` client component, and the docs warn
+ * that combination can hydrate mismatched when a Proxy file is present (this project has
+ * `proxy.ts`) — the ticketing shell marks itself with `data-ticketing-shell` and the retail
+ * footer is suppressed by CSS.
+ *
+ * This is deliberately fail-open and zero-JS: on a browser without `:has()` support the
+ * footer simply renders as before, and a retail page (which never contains the marker)
+ * is completely unaffected. The only change made to the retail component is a `data-`
+ * attribute on its root element.
+ */
+body:has([data-ticketing-shell]) footer[data-global-footer] {
+  display: none;
+}
+
+/*
+ * The two rules below are carried over from the pre-Phase 9 stylesheet, unchanged. They are
+ * kept so that this edit stays purely additive: anything already relying on
+ * `bg-background` / `text-foreground` keeps its dark-mode behaviour.
+ */
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;

@@ -3,6 +3,47 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import toast from "react-hot-toast";
 import Link from "next/link";
+import {
+    Button,
+    Group,
+    Pagination,
+    Paper,
+    Select,
+    SimpleGrid,
+    Skeleton,
+    Stack,
+    Text,
+    TextInput,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    PrimaryAction,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
+
+/**
+ * ==========================================
+ * ADMIN ORDERS
+ * ==========================================
+ *
+ * The retail order list plus the bulk-tracking (resi) import tooling.
+ *
+ * PHASE (Mantine body migration): presentation only. Everything below that talks to the server is
+ * byte-for-byte the previous behaviour — `loadOrders` (same `useCallback` dependencies and the same
+ * `page`/`limit`/`search`/`status` query), the `useEffect` trigger, both download flows
+ * (`tracking-template`, `tracking-error-report`, same blob → object-URL → anchor dance), the
+ * `tracking-import` upload with its `FormData`, the input-reset that allows re-selecting the same
+ * file, every `toast.success`/`toast.error` message, and the summary branching. Only the markup,
+ * badges, table, skeleton and pagination are Mantine now.
+ *
+ * Status colours stay SEMANTIC and are mapped once through the shared tone vocabulary instead of
+ * per-page tint classes — the brand colour is never used to mean "paid" or "cancelled".
+ */
 
 type OrderItem = {
     id: number;
@@ -44,7 +85,7 @@ type Order = {
     items: OrderItem[];
 };
 
-type Pagination = {
+type Pagination_ = {
     page: number;
     limit: number;
     total: number;
@@ -78,26 +119,27 @@ function statusLabel(status: string) {
     }
 }
 
-function statusClass(status: string) {
+/** The previous tint map, re-expressed in the shared semantic tones (no brand for status). */
+function statusTone(status: string): Tone {
     switch (status) {
-        case "PENDING": return "bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-200";
-        case "PAID": return "bg-yellow-50 text-yellow-700 ring-1 ring-inset ring-yellow-200";
-        case "PROCESSING": return "bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200";
-        case "SHIPPED": return "bg-indigo-50 text-indigo-700 ring-1 ring-inset ring-indigo-200";
-        case "COMPLETED": return "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200";
-        case "CANCELLED": return "bg-red-50 text-red-700 ring-1 ring-inset ring-red-200";
-        case "REFUND_PENDING": return "bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-200";
-        default: return "bg-gray-50 text-gray-600 ring-1 ring-inset ring-gray-200";
+        case "PENDING": return "warn";
+        case "PAID": return "warn";
+        case "PROCESSING": return "info";
+        case "SHIPPED": return "info";
+        case "COMPLETED": return "success";
+        case "CANCELLED": return "error";
+        case "REFUND_PENDING": return "pending";
+        default: return "neutral";
     }
 }
 
-function paymentStatusClass(status: string) {
+function paymentTone(status: string): Tone {
     switch (status) {
-        case "PAID": return "text-emerald-600";
-        case "PENDING": return "text-amber-600";
+        case "PAID": return "success";
+        case "PENDING": return "warn";
         case "FAILED":
-        case "EXPIRED": return "text-red-600";
-        default: return "text-gray-500";
+        case "EXPIRED": return "error";
+        default: return "neutral";
     }
 }
 
@@ -122,7 +164,7 @@ type ImportResult = {
 
 export default function AdminOrdersPage() {
     const [orders, setOrders] = useState<Order[]>([]);
-    const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 20, total: 0, totalPages: 0 });
+    const [pagination, setPagination] = useState<Pagination_>({ page: 1, limit: 20, total: 0, totalPages: 0 });
     const [loading, setLoading] = useState(true);
     const [search, setSearch] = useState("");
     const [statusFilter, setStatusFilter] = useState("ALL");
@@ -176,16 +218,6 @@ export default function AdminOrdersPage() {
         setStatusFilter(value);
         setPage(1);
         loadOrders(1, search, value);
-    }
-
-    if (loading && orders.length === 0) {
-        return (
-            <div className="p-4 sm:p-6">
-                <div className="h-7 w-32 animate-pulse rounded-md bg-gray-200" />
-                <div className="mt-2 h-4 w-64 animate-pulse rounded bg-gray-100" />
-                <div className="mt-6 h-80 animate-pulse rounded-xl border border-gray-100 bg-white" />
-            </div>
-        );
     }
 
     // ---- Download Template ----
@@ -312,277 +344,335 @@ export default function AdminOrdersPage() {
         }
     }
 
+    if (loading && orders.length === 0) {
+        return (
+            <Stack gap="md">
+                <Skeleton height={32} width={160} radius="md" />
+                <Skeleton height={16} width={320} />
+                <Skeleton height={320} radius="md" />
+            </Stack>
+        );
+    }
+
+    const failedRows = importResult?.results.filter((row) => row.status === "FAILED") ?? [];
+
     return (
-        <div className="p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Pesanan</h1>
-                <p className="text-sm text-gray-500">Kelola pesanan customer dan pantau proses pengirimannya.</p>
-            </div>
+        <Stack gap="lg">
+            <PageHeader
+                title="Pesanan"
+                description="Kelola pesanan customer dan pantau proses pengirimannya."
+            />
 
             {/* ---- IMPORT RESI SECTION ---- */}
-            <div className="mt-4 flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-2">
-                    <span className="text-lg">📦</span>
-                    <div>
-                        <p className="text-sm font-medium text-gray-900">Import Resi Bulk</p>
-                        <p className="text-xs text-gray-500">Download template, isi nomor resi, lalu upload kembali.</p>
-                    </div>
-                </div>
-                <div className="flex gap-2">
-                    <button
-                        type="button"
-                        onClick={handleDownloadTemplate}
-                        disabled={downloadingTemplate}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3.5 py-2 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <span>📥</span>
-                        {downloadingTemplate ? "Mengunduh..." : "Download Template"}
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={importing}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-2 text-xs font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                        <span>{importing ? "⏳" : "📤"}</span>
-                        {importing ? "Memproses..." : "Import Resi Excel"}
-                    </button>
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".xlsx,.xls,.csv"
-                        onChange={handleFileSelect}
-                        className="hidden"
-                    />
-                </div>
-            </div>
+            <Paper withBorder radius="md" p="md">
+                <Group justify="space-between" align="center" gap="md" wrap="wrap">
+                    <Group gap="sm" wrap="nowrap">
+                        <Text fz={22} aria-hidden>
+                            📦
+                        </Text>
+
+                        <Stack gap={0}>
+                            <Text size="sm" fw={600}>
+                                Import Resi Bulk
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                                Download template, isi nomor resi, lalu upload kembali.
+                            </Text>
+                        </Stack>
+                    </Group>
+
+                    <Group gap="sm" wrap="nowrap">
+                        <Button
+                            variant="default"
+                            size="md"
+                            radius="md"
+                            loading={downloadingTemplate}
+                            disabled={downloadingTemplate}
+                            onClick={handleDownloadTemplate}
+                        >
+                            Download Template
+                        </Button>
+
+                        <PrimaryAction
+                            color="ink"
+                            loading={importing}
+                            onClick={() => fileInputRef.current?.click()}
+                        >
+                            {importing ? "Memproses…" : "Import Resi Excel"}
+                        </PrimaryAction>
+
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".xlsx,.xls,.csv"
+                            onChange={handleFileSelect}
+                            style={{ display: "none" }}
+                            aria-label="Berkas import resi"
+                        />
+                    </Group>
+                </Group>
+            </Paper>
 
             {/* ---- IMPORT RESULT PANEL ---- */}
-            {showImportResult && importResult && (
-                <div className="mt-4 rounded-xl border border-gray-200 bg-white">
-                    <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
-                        <div>
-                            <h3 className="text-sm font-semibold text-gray-900">Hasil Import Resi</h3>
-                            <p className="mt-0.5 text-xs text-gray-500">Ringkasan proses import Excel</p>
-                        </div>
-                        <button
-                            type="button"
+            {showImportResult && importResult ? (
+                <SectionCard
+                    title="Hasil Import Resi"
+                    description="Ringkasan proses import Excel"
+                    actions={
+                        <Button
+                            variant="subtle"
+                            color="gray"
+                            size="sm"
+                            aria-label="Tutup hasil import"
                             onClick={() => setShowImportResult(false)}
-                            className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
                         >
-                            ✕
-                        </button>
-                    </div>
+                            Tutup
+                        </Button>
+                    }
+                >
+                    <Stack gap="md">
+                        <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="md">
+                            <Paper bg="gray.1" p="sm" radius="md">
+                                <Text size="xs" c="dimmed" tt="uppercase">
+                                    Total
+                                </Text>
+                                <Text fz={20} fw={700}>
+                                    {importResult.summary.total}
+                                </Text>
+                            </Paper>
 
-                    <div className="px-5 py-4">
-                        {/* Summary */}
-                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                            <div className="rounded-lg bg-gray-50 px-3 py-2.5">
-                                <p className="text-[11px] uppercase tracking-wide text-gray-400">Total</p>
-                                <p className="mt-0.5 text-lg font-semibold text-gray-900">{importResult.summary.total}</p>
-                            </div>
-                            <div className="rounded-lg bg-emerald-50 px-3 py-2.5">
-                                <p className="text-[11px] uppercase tracking-wide text-emerald-600">Berhasil</p>
-                                <p className="mt-0.5 text-lg font-semibold text-emerald-700">{importResult.summary.success}</p>
-                            </div>
-                            <div className="rounded-lg bg-red-50 px-3 py-2.5">
-                                <p className="text-[11px] uppercase tracking-wide text-red-600">Gagal</p>
-                                <p className="mt-0.5 text-lg font-semibold text-red-700">{importResult.summary.failed}</p>
-                            </div>
-                            <div className="rounded-lg bg-amber-50 px-3 py-2.5">
-                                <p className="text-[11px] uppercase tracking-wide text-amber-600">Dilewati</p>
-                                <p className="mt-0.5 text-lg font-semibold text-amber-700">{importResult.summary.skipped}</p>
-                            </div>
-                        </div>
+                            <Paper bg="green.0" p="sm" radius="md">
+                                <Text size="xs" c="green.8" tt="uppercase">
+                                    Berhasil
+                                </Text>
+                                <Text fz={20} fw={700} c="green.8">
+                                    {importResult.summary.success}
+                                </Text>
+                            </Paper>
 
-                        {/* Error Report Button */}
-                        {importResult.summary.failed > 0 && (
-                            <div className="mt-4">
-                                <button
-                                    type="button"
-                                    onClick={() => {
-                                        const errors = importResult.results.filter((r) => r.status === "FAILED");
-                                        handleDownloadErrorReport(errors);
-                                    }}
-                                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3.5 py-2 text-xs font-medium text-red-700 transition hover:bg-red-50"
+                            <Paper bg="red.0" p="sm" radius="md">
+                                <Text size="xs" c="red.8" tt="uppercase">
+                                    Gagal
+                                </Text>
+                                <Text fz={20} fw={700} c="red.8">
+                                    {importResult.summary.failed}
+                                </Text>
+                            </Paper>
+
+                            <Paper bg="yellow.0" p="sm" radius="md">
+                                <Text size="xs" c="yellow.8" tt="uppercase">
+                                    Dilewati
+                                </Text>
+                                <Text fz={20} fw={700} c="yellow.8">
+                                    {importResult.summary.skipped}
+                                </Text>
+                            </Paper>
+                        </SimpleGrid>
+
+                        {importResult.summary.failed > 0 ? (
+                            <Group>
+                                <Button
+                                    variant="light"
+                                    color="red"
+                                    size="md"
+                                    radius="md"
+                                    onClick={() => handleDownloadErrorReport(failedRows)}
                                 >
-                                    <span>📥</span>
                                     Download Error Report
-                                </button>
-                            </div>
-                        )}
+                                </Button>
+                            </Group>
+                        ) : null}
 
-                        {/* Results Table */}
-                        <div className="mt-4 overflow-x-auto">
-                            <table className="w-full min-w-[700px] text-left">
-                                <thead className="border-b border-gray-100 bg-gray-50/70">
-                                    <tr>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Baris</th>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Nomor Pesanan</th>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Nomor Resi</th>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Ekspedisi</th>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Status</th>
-                                        <th className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Keterangan</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-50">
-                                    {importResult.results.map((r, idx) => (
-                                        <tr key={idx} className="transition-colors hover:bg-gray-50/50">
-                                            <td className="px-3 py-2.5 text-xs text-gray-500">{r.row}</td>
-                                            <td className="px-3 py-2.5 text-xs font-medium text-gray-900">{r.orderNumber}</td>
-                                            <td className="px-3 py-2.5 text-xs text-gray-700">{r.trackingNumber}</td>
-                                            <td className="px-3 py-2.5 text-xs text-gray-700">{r.courier}</td>
-                                            <td className="px-3 py-2.5">
-                                                <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${
-                                                    r.status === "SUCCESS"
-                                                        ? "bg-emerald-50 text-emerald-700"
-                                                        : r.status === "SKIPPED"
-                                                            ? "bg-amber-50 text-amber-700"
-                                                            : "bg-red-50 text-red-700"
-                                                }`}>
-                                                    {r.status === "SUCCESS" ? "✅ Berhasil" : r.status === "SKIPPED" ? "⏭️ Dilewati" : "❌ Gagal"}
-                                                </span>
-                                            </td>
-                                            <td className="px-3 py-2.5 text-xs text-gray-500">{r.reason}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            )}
+                        <DataTable
+                            minWidth={760}
+                            columns={[
+                                { header: "Baris", align: "right" },
+                                { header: "Nomor Pesanan" },
+                                { header: "Nomor Resi" },
+                                { header: "Ekspedisi" },
+                                { header: "Status" },
+                                { header: "Keterangan" },
+                            ]}
+                            rows={importResult.results.map((r, index) => ({
+                                key: `${r.row}-${index}`,
+                                cells: [
+                                    <Text size="xs" c="dimmed" key="row">
+                                        {r.row}
+                                    </Text>,
+                                    <Text size="xs" fw={600} key="order">
+                                        {r.orderNumber}
+                                    </Text>,
+                                    <Text size="xs" key="tracking">
+                                        {r.trackingNumber}
+                                    </Text>,
+                                    <Text size="xs" key="courier">
+                                        {r.courier}
+                                    </Text>,
+                                    <StatusBadge
+                                        key="status"
+                                        tone={
+                                            r.status === "SUCCESS"
+                                                ? "success"
+                                                : r.status === "SKIPPED"
+                                                  ? "warn"
+                                                  : "error"
+                                        }
+                                    >
+                                        {r.status === "SUCCESS"
+                                            ? "Berhasil"
+                                            : r.status === "SKIPPED"
+                                              ? "Dilewati"
+                                              : "Gagal"}
+                                    </StatusBadge>,
+                                    <Text size="xs" c="dimmed" key="reason">
+                                        {r.reason}
+                                    </Text>,
+                                ],
+                            }))}
+                        />
+                    </Stack>
+                </SectionCard>
+            ) : null}
 
-            <div className="mt-4 overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-100 px-5 py-4">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                        <div>
-                            <h2 className="text-sm font-semibold text-gray-900">Semua Pesanan</h2>
-                            <p className="mt-0.5 text-xs text-gray-500">
-                                Menampilkan {orders.length} dari {pagination.total} pesanan
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => { setSearch(""); setStatusFilter("ALL"); setPage(1); loadOrders(1, "", "ALL"); }}
-                            className="self-start text-xs font-medium text-gray-500 hover:text-gray-900 lg:self-auto"
-                        >
-                            Reset filter
-                        </button>
-                    </div>
-
-                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-                        <form onSubmit={handleSearch} className="relative flex-1 lg:max-w-sm">
-                            <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">⌕</span>
-                            <input
-                                type="text"
+            <SectionCard
+                title="Semua Pesanan"
+                description={`Menampilkan ${orders.length} dari ${pagination.total} pesanan`}
+                actions={
+                    <Button
+                        variant="subtle"
+                        color="gray"
+                        size="sm"
+                        onClick={() => {
+                            setSearch("");
+                            setStatusFilter("ALL");
+                            setPage(1);
+                            loadOrders(1, "", "ALL");
+                        }}
+                    >
+                        Reset filter
+                    </Button>
+                }
+            >
+                <Stack gap="md">
+                    <Group gap="md" align="flex-end" wrap="wrap">
+                        <form onSubmit={handleSearch} style={{ flex: 1, minWidth: 220 }}>
+                            <TextInput
                                 value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                placeholder="Cari nomor pesanan, nama..."
-                                className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-9 pr-3 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-gray-400"
+                                onChange={(e) => setSearch(e.currentTarget.value)}
+                                placeholder="Cari nomor pesanan, nama…"
+                                aria-label="Cari pesanan"
+                                size="md"
                             />
                         </form>
-                        <select
+
+                        <Select
                             value={statusFilter}
-                            onChange={(e) => handleStatusFilter(e.target.value)}
-                            className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 outline-none focus:border-gray-400"
-                        >
-                            <option value="ALL">Semua status</option>
-                            <option value="PENDING">Pending</option>
-                            <option value="PROCESSING">Diproses</option>
-                            <option value="SHIPPED">Dikirim</option>
-                            <option value="COMPLETED">Selesai</option>
-                            <option value="CANCELLED">Dibatalkan</option>
-                        </select>
-                    </div>
-                </div>
+                            onChange={(value) => handleStatusFilter(value ?? "ALL")}
+                            data={[
+                                { value: "ALL", label: "Semua status" },
+                                { value: "PENDING", label: "Pending" },
+                                { value: "PROCESSING", label: "Diproses" },
+                                { value: "SHIPPED", label: "Dikirim" },
+                                { value: "COMPLETED", label: "Selesai" },
+                                { value: "CANCELLED", label: "Dibatalkan" },
+                            ]}
+                            size="md"
+                            w={{ base: "100%", sm: 200 }}
+                            aria-label="Filter status pesanan"
+                        />
+                    </Group>
 
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[900px] text-left">
-                        <thead className="border-b border-gray-100 bg-gray-50/70">
-                            <tr>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Pesanan</th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Customer</th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Total</th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Status</th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Pembayaran</th>
-                                <th className="px-5 py-3.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500">Tanggal</th>
-                                <th className="px-5 py-3.5 text-right text-[11px] font-semibold uppercase tracking-wide text-gray-500">Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {orders.map((order) => (
-                                <tr key={order.id} className="group transition-colors hover:bg-gray-50/70">
-                                    <td className="px-5 py-4">
-                                        <p className="text-sm font-semibold text-gray-900">{order.orderNumber}</p>
-                                        <p className="mt-1 text-[11px] text-gray-400">{order.items.length} item</p>
-                                    </td>
-                                    <td className="px-5 py-4">
-                                        <p className="truncate text-sm font-medium text-gray-900">{order.user?.name ?? order.recipientName}</p>
-                                        <p className="mt-0.5 truncate text-xs text-gray-500">{order.user?.phone ?? order.phone}</p>
-                                    </td>
-                                    <td className="px-5 py-4">
-                                        <p className="whitespace-nowrap text-sm font-semibold text-gray-900">{rupiah(order.total)}</p>
-                                    </td>
-                                    <td className="px-5 py-4">
-                                        <span className={`inline-flex whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold ${statusClass(order.status)}`}>
-                                            {statusLabel(order.status)}
-                                        </span>
-                                    </td>
-                                    <td className="px-5 py-4">
-                                        <p className="text-xs font-medium text-gray-800">{order.paymentMethod}</p>
-                                        <p className={`mt-0.5 text-xs font-medium ${paymentStatusClass(order.paymentStatus)}`}>{order.paymentStatus}</p>
-                                    </td>
-                                    <td className="px-5 py-4">
-                                        <p className="whitespace-nowrap text-xs text-gray-500">{date(order.createdAt)}</p>
-                                    </td>
-                                    <td className="px-5 py-4 text-right">
-                                        <Link
-                                            href={`/admin/orders/${order.id}`}
-                                            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
-                                        >
-                                            Detail
-                                        </Link>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                    <DataTable
+                        minWidth={940}
+                        loading={loading && orders.length > 0}
+                        empty={
+                            <EmptyBlock
+                                title="Pesanan tidak ditemukan"
+                                description="Coba ubah kata kunci atau filter."
+                            />
+                        }
+                        columns={[
+                            { header: "Pesanan" },
+                            { header: "Customer" },
+                            { header: "Total", align: "right" },
+                            { header: "Status" },
+                            { header: "Pembayaran" },
+                            { header: "Tanggal" },
+                            { header: "Aksi", align: "right" },
+                        ]}
+                        rows={orders.map((order) => ({
+                            key: String(order.id),
+                            cells: [
+                                <Stack gap={2} key="order">
+                                    <Text size="sm" fw={600}>
+                                        {order.orderNumber}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                        {order.items.length} item
+                                    </Text>
+                                </Stack>,
+                                <Stack gap={2} key="customer">
+                                    <Text size="sm" fw={500}>
+                                        {order.user?.name ?? order.recipientName}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                        {order.user?.phone ?? order.phone}
+                                    </Text>
+                                </Stack>,
+                                <Text size="sm" fw={600} key="total" style={{ whiteSpace: "nowrap" }}>
+                                    {rupiah(order.total)}
+                                </Text>,
+                                <StatusBadge key="status" tone={statusTone(order.status)}>
+                                    {statusLabel(order.status)}
+                                </StatusBadge>,
+                                <Stack gap={2} key="payment">
+                                    <Text size="xs" fw={500}>
+                                        {order.paymentMethod}
+                                    </Text>
+                                    <StatusBadge
+                                        size="sm"
+                                        tone={paymentTone(order.paymentStatus)}
+                                    >
+                                        {order.paymentStatus}
+                                    </StatusBadge>
+                                </Stack>,
+                                <Text size="xs" c="dimmed" key="created" style={{ whiteSpace: "nowrap" }}>
+                                    {date(order.createdAt)}
+                                </Text>,
+                                <Button
+                                    key="detail"
+                                    component={Link}
+                                    href={`/admin/orders/${order.id}`}
+                                    variant="default"
+                                    size="sm"
+                                    radius="md"
+                                >
+                                    Detail
+                                </Button>,
+                            ],
+                        }))}
+                        footer={
+                            pagination.totalPages > 1 ? (
+                                <Group justify="space-between" align="center" gap="md" wrap="wrap">
+                                    <Text size="sm" c="dimmed">
+                                        Halaman {pagination.page} dari {pagination.totalPages}
+                                    </Text>
 
-                {orders.length === 0 && (
-                    <div className="border-t border-gray-100 px-6 py-14 text-center">
-                        <p className="text-sm font-medium text-gray-900">Pesanan tidak ditemukan</p>
-                        <p className="mt-1 text-xs text-gray-500">Coba ubah kata kunci atau filter.</p>
-                    </div>
-                )}
-
-                {pagination.totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                        <p className="text-xs text-gray-500">
-                            Halaman {pagination.page} dari {pagination.totalPages}
-                        </p>
-                        <div className="flex gap-2">
-                            <button
-                                type="button"
-                                disabled={page <= 1}
-                                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                Sebelumnya
-                            </button>
-                            <button
-                                type="button"
-                                disabled={page >= pagination.totalPages}
-                                onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
-                                className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                Selanjutnya
-                            </button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
+                                    <Pagination
+                                        total={pagination.totalPages}
+                                        value={pagination.page}
+                                        size="md"
+                                        withEdges
+                                        onChange={(nextPage) =>
+                                            setPage(Math.min(pagination.totalPages, Math.max(1, nextPage)))
+                                        }
+                                    />
+                                </Group>
+                            ) : undefined
+                        }
+                    />
+                </Stack>
+            </SectionCard>
+        </Stack>
     );
 }

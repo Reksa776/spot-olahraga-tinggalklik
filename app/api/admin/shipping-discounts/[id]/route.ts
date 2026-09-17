@@ -5,7 +5,7 @@ import { getShippingDiscount, updateShippingDiscount, deleteShippingDiscount } f
 async function requireAdmin() {
     const session = await auth();
     if (!session?.user?.id) return { error: NextResponse.json({ success: false, message: "Silakan login terlebih dahulu." }, { status: 401 }) };
-    if ((session.user as any).role !== "ADMIN") return { error: NextResponse.json({ success: false, message: "Akses ditolak." }, { status: 403 }) };
+    if (session.user.role !== "ADMIN") return { error: NextResponse.json({ success: false, message: "Akses ditolak." }, { status: 403 }) };
     return { user: session.user };
 }
 

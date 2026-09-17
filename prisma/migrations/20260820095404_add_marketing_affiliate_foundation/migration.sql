@@ -1,5 +1,9 @@
 -- AlterTable
-ALTER TABLE `voucher` ADD COLUMN `campaignId` INTEGER NULL,
+-- Phase 2.5 (BLK-1): table name corrected from `voucher` to `Voucher`.
+-- Every migration in this chain that predates Phase 2 creates PascalCase tables
+-- (no @@map yet); `voucher` was a typo and made fresh-database replay fail at
+-- this statement. The foreign key at the end of this file already used `Voucher`.
+ALTER TABLE `Voucher` ADD COLUMN `campaignId` INTEGER NULL,
     ADD COLUMN `maxUsagePerUser` INTEGER NULL;
 
 -- CreateTable

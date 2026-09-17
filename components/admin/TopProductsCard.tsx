@@ -1,3 +1,7 @@
+import { Box, Group, Stack, Text, ThemeIcon } from "@mantine/core";
+
+import { EmptyBlock, SectionCard } from "@/components/dashboard/primitives";
+
 type TopProduct = {
     productId: number;
     productName: string;
@@ -5,60 +9,58 @@ type TopProduct = {
     revenue: number;
 };
 
+/**
+ * "Produk Terlaris".
+ *
+ * The ranking badge, the truncation behaviour, the empty state and the `toLocaleString("id-ID")`
+ * revenue formatting are all preserved from the Tailwind version. The empty state is upgraded from
+ * a bare paragraph to the shared `EmptyBlock` so it matches every other empty panel in the back
+ * office — the previous version rendered an empty bordered card with one grey line of text.
+ */
 export default function TopProductsCard({
     data,
 }: {
     data: TopProduct[];
 }) {
     return (
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h2 className="text-lg font-bold text-gray-900">
-                        Produk Terlaris
-                    </h2>
+        <SectionCard title="Produk Terlaris" description="Produk dengan penjualan tertinggi.">
+            {data.length === 0 ? (
+                <EmptyBlock title="Belum ada data produk" description="Penjualan akan muncul di sini setelah ada transaksi." />
+            ) : (
+                <Stack gap={0}>
+                    {data.map((product, index) => (
+                        <Group
+                            key={product.productId}
+                            gap="md"
+                            wrap="nowrap"
+                            py="sm"
+                            style={{
+                                borderTop: index === 0 ? undefined : "1px solid var(--mantine-color-gray-2)",
+                            }}
+                        >
+                            <ThemeIcon color="brand" variant="light" radius="xl" size="lg">
+                                <Text size="sm" fw={700}>
+                                    {index + 1}
+                                </Text>
+                            </ThemeIcon>
 
-                    <p className="mt-1 text-sm text-gray-500">
-                        Produk dengan penjualan tertinggi.
-                    </p>
-                </div>
-            </div>
+                            <Box style={{ minWidth: 0, flex: 1 }}>
+                                <Text size="sm" fw={600} lineClamp={1}>
+                                    {product.productName}
+                                </Text>
 
-            <div className="mt-5 divide-y divide-gray-100">
-                {data.map((product, index) => (
-                    <div
-                        key={product.productId}
-                        className="flex gap-4 py-4"
-                    >
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-50 text-sm font-bold text-rose-600">
-                            {index + 1}
-                        </div>
+                                <Text size="xs" c="dimmed" mt={2}>
+                                    {product.quantity} unit terjual
+                                </Text>
+                            </Box>
 
-                        <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-gray-900">
-                                {product.productName}
-                            </p>
-
-                            <p className="mt-1 text-xs text-gray-500">
-                                {product.quantity} unit terjual
-                            </p>
-                        </div>
-
-                        <p className="shrink-0 text-sm font-bold text-gray-900">
-                            Rp{" "}
-                            {product.revenue.toLocaleString(
-                                "id-ID"
-                            )}
-                        </p>
-                    </div>
-                ))}
-
-                {data.length === 0 && (
-                    <p className="py-6 text-center text-sm text-gray-400">
-                        Belum ada data produk.
-                    </p>
-                )}
-            </div>
-        </div>
+                            <Text size="sm" fw={700} style={{ whiteSpace: "nowrap" }}>
+                                Rp {product.revenue.toLocaleString("id-ID")}
+                            </Text>
+                        </Group>
+                    ))}
+                </Stack>
+            )}
+        </SectionCard>
     );
 }

@@ -4,6 +4,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import Brand from "@/components/Brand";
+
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
@@ -282,12 +284,12 @@ export default function RegisterForm() {
      * ========================================== */
     if (checkingSession) {
         return (
-            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-rose-50 via-white to-white px-5 py-10">
+            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
                 <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 text-center shadow-xl">
-                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-100">
+                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-100">
                         <span className="text-3xl">🔐</span>
                     </div>
-                    <h1 className="text-2xl font-bold text-gray-900">
+                    <h1 className="text-2xl font-bold text-ink-900">
                         Memeriksa sesi...
                     </h1>
                     <p className="mt-2 text-sm text-gray-500">
@@ -303,12 +305,12 @@ export default function RegisterForm() {
      * ========================================== */
     if (alreadyLoggedIn) {
         return (
-            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-rose-50 via-white to-white px-5 py-10">
+            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
                 <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 text-center shadow-xl">
                     <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-100">
                         <span className="text-3xl">⚠️</span>
                     </div>
-                    <h1 className="text-2xl font-bold text-gray-900">
+                    <h1 className="text-2xl font-bold text-ink-900">
                         Kamu Sudah Login
                     </h1>
                     <p className="mt-3 text-sm leading-6 text-gray-500">
@@ -322,7 +324,7 @@ export default function RegisterForm() {
                             type="button"
                             onClick={handleLogout}
                             disabled={loading}
-                            className="flex h-12 w-full items-center justify-center rounded-xl bg-rose-600 font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {loading ? "Logout..." : "Logout Terlebih Dahulu"}
                         </button>
@@ -346,26 +348,26 @@ export default function RegisterForm() {
     const showManualInput = !referralDetected || referralOverride || referralLoading;
 
     return (
-        <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-rose-50 via-white to-white px-5 py-10">
+        <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
             <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-xl">
                 <Link
                     href="/"
-                    className="mb-6 inline-flex items-center gap-2 rounded-xl border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100"
+                    className="mb-6 inline-flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-50"
                 >
                     <FaArrowLeft className="text-xs" />
                     Kembali ke Beranda
                 </Link>
 
                 <div className="mb-8 text-center">
-                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-rose-100">
-                        <span className="text-3xl">🛍️</span>
+                    <div className="mb-6 flex justify-center">
+                        <Brand />
                     </div>
-                    <h1 className="text-3xl font-bold text-gray-900">
+                    <h1 className="text-3xl font-bold text-ink-900">
                         Buat Akun
                     </h1>
                     <p className="mt-2 text-sm leading-6 text-gray-500">
-                        Daftar sekarang dan nikmati pengalaman
-                        belanja yang lebih mudah, cepat, dan aman.
+                        Daftar sekarang untuk membeli tiket,
+                        mengelola pesanan, dan mengikuti event favoritmu.
                     </p>
                 </div>
 
@@ -383,7 +385,7 @@ export default function RegisterForm() {
                             <input
                                 {...formRegister("name")}
                                 placeholder="Masukkan nama lengkap"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                             />
                         </div>
                         {errors.name && (
@@ -404,7 +406,7 @@ export default function RegisterForm() {
                                 type="email"
                                 {...formRegister("email")}
                                 placeholder="Masukkan email"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                             />
                         </div>
                         {errors.email && (
@@ -424,7 +426,7 @@ export default function RegisterForm() {
                             <input
                                 {...formRegister("phone")}
                                 placeholder="08xxxxxxxxxx"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                             />
                         </div>
                         {errors.phone && (
@@ -445,7 +447,7 @@ export default function RegisterForm() {
                                 type={showPassword ? "text" : "password"}
                                 {...formRegister("password")}
                                 placeholder="Masukkan password"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                             />
                             <button
                                 type="button"
@@ -473,7 +475,7 @@ export default function RegisterForm() {
                                 type={showConfirmPassword ? "text" : "password"}
                                 {...formRegister("confirmPassword")}
                                 placeholder="Ulangi password"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                             />
                             <button
                                 type="button"
@@ -546,7 +548,7 @@ export default function RegisterForm() {
                                         {...formRegister("referralCode")}
                                         placeholder="Masukkan kode referral"
                                         readOnly={referralLoading}
-                                        className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-rose-500 focus:outline-none"
+                                        className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
                                     />
                                 </div>
 
@@ -581,7 +583,7 @@ export default function RegisterForm() {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="flex h-12 w-full items-center justify-center rounded-xl bg-rose-600 font-semibold text-white transition-all duration-200 hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white transition-all duration-200 hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                         {loading ? (
                             <div className="flex items-center gap-2">
@@ -642,7 +644,7 @@ export default function RegisterForm() {
                         Sudah punya akun?{" "}
                         <Link
                             href="/login"
-                            className="ml-1 font-semibold text-rose-600 hover:underline"
+                            className="ml-1 font-semibold text-brand-600 hover:underline"
                         >
                             Masuk
                         </Link>

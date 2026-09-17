@@ -1,6 +1,8 @@
-import Link from "next/link";
+import { Box, Group, Stack, Text } from "@mantine/core";
 
-type RecentOrder = {
+import { EmptyBlock, SectionCard, StatusBadge, TextLink, type Tone } from "@/components/dashboard/primitives";
+
+export type RecentOrder = {
     id: number;
     orderNumber: string;
     recipientName: string;
@@ -16,6 +18,27 @@ type RecentOrder = {
     }[];
 };
 
+/**
+ * "Pesanan Terbaru".
+ *
+ * `formatRupiah` is kept identical (`Rp ` + `toLocaleString("id-ID")`, with the value coerced from
+ * the string the API returns), because changing the money formatting would be a behaviour change
+ * rather than a UI one.
+ *
+ * The status pill becomes `StatusBadge`, which maps the *status* to a semantic tone instead of the
+ * previous fixed grey — an order's state is now readable at a glance, which is the one substantive
+ * presentation improvement here.
+ */
+const STATUS_TONE: Record<string, Tone> = {
+    PENDING: "pending",
+    PAID: "info",
+    PROCESSING: "info",
+    SHIPPED: "brand",
+    COMPLETED: "success",
+    CANCELLED: "error",
+    REFUNDED: "neutral",
+};
+
 function formatRupiah(value: number) {
     return `Rp ${value.toLocaleString("id-ID")}`;
 }
@@ -26,80 +49,54 @@ export default function RecentOrdersCard({
     data: RecentOrder[];
 }) {
     return (
-        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h2 className="text-lg font-bold text-gray-900">
-                        Pesanan Terbaru
-                    </h2>
+        <SectionCard
+            title="Pesanan Terbaru"
+            description="Transaksi terbaru di toko."
+            actions={<TextLink href="/admin/orders">Lihat semua</TextLink>}
+        >
+            {data.length === 0 ? (
+                <EmptyBlock title="Belum ada pesanan" description="Pesanan baru akan tampil di sini." />
+            ) : (
+                <Stack gap={0}>
+                    {data.map((order, index) => (
+                        <Group
+                            key={order.id}
+                            justify="space-between"
+                            align="flex-start"
+                            gap="md"
+                            wrap="nowrap"
+                            py="sm"
+                            style={{
+                                borderTop: index === 0 ? undefined : "1px solid var(--mantine-color-gray-2)",
+                            }}
+                        >
+                            <Box style={{ minWidth: 0 }}>
+                                <Text fw={600}>{order.orderNumber}</Text>
 
-                    <p className="mt-1 text-sm text-gray-500">
-                        Transaksi terbaru di toko.
-                    </p>
-                </div>
-
-                <Link
-                    href="/admin/orders"
-                    className="text-sm font-semibold text-rose-600 hover:text-rose-700"
-                >
-                    Lihat semua
-                </Link>
-            </div>
-
-            <div className="mt-5 divide-y divide-gray-100">
-                {data.map((order) => (
-                    <div
-                        key={order.id}
-                        className="py-4"
-                    >
-                        <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0">
-                                <p className="font-semibold text-gray-900">
-                                    {order.orderNumber}
-                                </p>
-
-                                <p className="mt-1 text-sm text-gray-500">
+                                <Text size="sm" c="dimmed" mt={2}>
                                     {order.recipientName}
-                                </p>
+                                </Text>
 
-                                {order.items[0] && (
-                                    <p className="mt-1 truncate text-xs text-gray-400">
-                                        {
-                                            order.items[0]
-                                                .productName
-                                        }{" "}
-                                        ×{" "}
-                                        {
-                                            order.items[0]
-                                                .quantity
-                                        }
-                                    </p>
-                                )}
-                            </div>
+                                {order.items[0] ? (
+                                    <Text size="xs" c="dimmed" mt={2} lineClamp={1}>
+                                        {order.items[0].productName} × {order.items[0].quantity}
+                                    </Text>
+                                ) : null}
+                            </Box>
 
-                            <div className="shrink-0 text-right">
-                                <p className="text-sm font-bold text-gray-900">
-                                    {formatRupiah(
-                                        Number(
-                                            order.total
-                                        )
-                                    )}
-                                </p>
+                            <Stack gap={6} align="flex-end">
+                                <Text size="sm" fw={700} style={{ whiteSpace: "nowrap" }}>
+                                    {formatRupiah(Number(order.total))}
+                                </Text>
 
-                                <span className="mt-1 inline-flex rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600">
+                                <StatusBadge tone={STATUS_TONE[order.status] ?? "neutral"} size="sm">
                                     {order.status}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                ))}
-
-                {data.length === 0 && (
-                    <p className="py-6 text-center text-sm text-gray-400">
-                        Belum ada pesanan.
-                    </p>
-                )}
-            </div>
-        </div>
+                                </StatusBadge>
+                            </Stack>
+                        </Group>
+                    ))}
+                </Stack>
+            )}
+        </SectionCard>
     );
 }

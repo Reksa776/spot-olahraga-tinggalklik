@@ -3,7 +3,45 @@
 import { useEffect, useState, useCallback } from "react";
 import toast from "react-hot-toast";
 import Link from "next/link";
-import { FiSearch, FiChevronLeft, FiChevronRight, FiEye, FiEdit } from "react-icons/fi";
+import { FiEye, FiSearch } from "react-icons/fi";
+
+import {
+    Button,
+    Group,
+    Pagination,
+    Select,
+    Stack,
+    Text,
+    TextInput,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * This is affiliate financial UI, so nothing numeric was touched. Preserved exactly:
+ * `rupiah()` (including `Number(v).toLocaleString("id-ID")`), `load` and its full query-string
+ * contract (`page`, `limit=20`, and the three CONDITIONAL params — `status` only when not "ALL",
+ * `search` only when non-empty, `sort` only when not the default `createdAt`, `days` only when not
+ * "all"), the `data.data?.items ?? []` / `pagination` fallbacks, the `toast.error` branches
+ * (`data.message` on a non-OK response, "Gagal memuat data." on a throw), the
+ * `useEffect(() => { load(page, statusFilter, search, sort, period); }, [page, load])` trigger, and
+ * the four handlers — each of which resets to page 1 AND re-fetches with the new value, because
+ * `setPage(1)` alone does not re-run the effect when the page is already 1.
+ *
+ * Presentation changes: `DataTable` + `StatusBadge` (same four statuses and the same raw status
+ * labels), Mantine `TextInput`/`Select`, and Mantine `Pagination` in place of the two chevron
+ * buttons. Every displayed value — commission rate, clicks, conversions, conversion rate, sales and
+ * total commission — is formatted by the same functions as before.
+ */
 
 type AffiliateItem = {
     id: number;
@@ -29,15 +67,12 @@ function rupiah(v: number) {
     return `Rp ${Number(v).toLocaleString("id-ID")}`;
 }
 
-function statusClass(s: string) {
-    const m: Record<string, string> = {
-        APPROVED: "bg-emerald-50 text-emerald-700",
-        PENDING: "bg-amber-50 text-amber-700",
-        REJECTED: "bg-red-50 text-red-700",
-        SUSPENDED: "bg-gray-50 text-gray-600",
-    };
-    return m[s] || "bg-gray-50 text-gray-600";
-}
+const STATUS_TONE: Record<string, Tone> = {
+    APPROVED: "success",
+    PENDING: "pending",
+    REJECTED: "error",
+    SUSPENDED: "neutral",
+};
 
 export default function AdminAffiliateManagement() {
     const [items, setItems] = useState<AffiliateItem[]>([]);
@@ -96,104 +131,180 @@ export default function AdminAffiliateManagement() {
     }
 
     return (
-        <div className="p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Affiliate Management</h1>
-                <p className="text-sm text-gray-500">Kelola seluruh affiliate dan performa mereka.</p>
-            </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Affiliate"
+                title="Affiliate Management"
+                description="Kelola seluruh affiliate dan performa mereka."
+            />
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-100 px-5 py-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-xs text-gray-500">Menampilkan {items.length} dari {pagination.total} affiliate</p>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                            <form onSubmit={handleSearch} className="relative">
-                                <FiSearch size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari nama, email, kode..." className="h-9 w-full rounded-lg border border-gray-200 bg-white pl-8 pr-3 text-xs outline-none focus:border-gray-400 sm:w-56" />
-                            </form>
-                            <select value={statusFilter} onChange={(e) => handleStatus(e.target.value)} className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none">
-                                <option value="ALL">Semua Status</option>
-                                <option value="APPROVED">Approved</option>
-                                <option value="PENDING">Pending</option>
-                                <option value="REJECTED">Rejected</option>
-                                <option value="SUSPENDED">Suspended</option>
-                            </select>
-                            <select value={sort} onChange={(e) => handleSort(e.target.value)} className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none">
-                                <option value="createdAt">Terbaru</option>
-                                <option value="sales">Penjualan</option>
-                                <option value="commission">Komisi</option>
-                                <option value="orders">Order</option>
-                                <option value="clicks">Klik</option>
-                                <option value="conversion">Conversion Rate</option>
-                            </select>
-                            <select value={period} onChange={(e) => handlePeriod(e.target.value)} className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none">
-                                <option value="all">Semua Waktu</option>
-                                <option value="7">7 Hari</option>
-                                <option value="30">30 Hari</option>
-                                <option value="90">90 Hari</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
+            <SectionCard
+                title="Daftar Affiliate"
+                description={`Menampilkan ${items.length} dari ${pagination.total} affiliate`}
+            >
+                <Stack gap="md">
+                    <Group gap="sm" align="flex-end" wrap="wrap">
+                        <form onSubmit={handleSearch}>
+                            <TextInput
+                                size="md"
+                                radius="md"
+                                value={search}
+                                onChange={(e) => setSearch(e.currentTarget.value)}
+                                placeholder="Cari nama, email, kode..."
+                                aria-label="Cari affiliate"
+                                leftSection={<FiSearch size={14} />}
+                                w={{ base: 200, sm: 240 }}
+                            />
+                        </form>
 
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1000px] text-left text-xs">
-                        <thead className="border-b border-gray-100 bg-gray-50/70">
-                            <tr>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Affiliator</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Kode</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Rate</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Klik</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Konversi</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Conv. Rate</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Penjualan</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Total Komisi</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Status</th>
-                                <th className="px-4 py-3 text-right font-semibold text-gray-500">Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {loading ? (
-                                Array.from({ length: 5 }).map((_, i) => (
-                                    <tr key={i}><td colSpan={10} className="px-4 py-4"><div className="h-4 animate-pulse rounded bg-gray-100" /></td></tr>
-                                ))
-                            ) : items.length === 0 ? (
-                                <tr><td colSpan={10} className="px-4 py-14 text-center text-sm text-gray-500">Belum ada affiliate.</td></tr>
-                            ) : items.map((a) => (
-                                <tr key={a.id} className="hover:bg-gray-50/70">
-                                    <td className="px-4 py-3">
-                                        <p className="font-medium text-gray-900">{a.name}</p>
-                                        <p className="text-gray-500">{a.email}</p>
-                                    </td>
-                                    <td className="px-4 py-3 font-mono font-semibold text-gray-900">{a.affiliateCode}</td>
-                                    <td className="px-4 py-3 text-gray-700">{a.commissionRate}%</td>
-                                    <td className="px-4 py-3 text-gray-700">{a.clicks.toLocaleString("id-ID")}</td>
-                                    <td className="px-4 py-3 text-gray-700">{a.totalConversions ?? a.orders}</td>
-                                    <td className="px-4 py-3 text-gray-700">{a.conversionRate ?? 0}%</td>
-                                    <td className="px-4 py-3 text-gray-700">{rupiah(a.sales)}</td>
-                                    <td className="px-4 py-3 font-medium text-emerald-600">{rupiah(a.totalCommission)}</td>
-                                    <td className="px-4 py-3"><span className={`inline-flex rounded-md px-2 py-0.5 text-[10px] font-semibold ${statusClass(a.status)}`}>{a.status}</span></td>
-                                    <td className="px-4 py-3 text-right">
-                                        <Link href={`/admin/affiliate/manage/${a.id}`} className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-gray-700 transition hover:bg-gray-50">
-                                            <FiEye size={12} /> Detail
-                                        </Link>
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                        <Select
+                            size="md"
+                            radius="md"
+                            allowDeselect={false}
+                            value={statusFilter}
+                            onChange={(value) => handleStatus(value ?? "ALL")}
+                            aria-label="Filter status"
+                            data={[
+                                { value: "ALL", label: "Semua Status" },
+                                { value: "APPROVED", label: "Approved" },
+                                { value: "PENDING", label: "Pending" },
+                                { value: "REJECTED", label: "Rejected" },
+                                { value: "SUSPENDED", label: "Suspended" },
+                            ]}
+                        />
 
-                {pagination.totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                        <p className="text-xs text-gray-500">Halaman {pagination.page} dari {pagination.totalPages}</p>
-                        <div className="flex gap-1">
-                            <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40"><FiChevronLeft size={14} /></button>
-                            <button disabled={page >= pagination.totalPages} onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))} className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40"><FiChevronRight size={14} /></button>
-                        </div>
-                    </div>
-                )}
-            </div>
-        </div>
+                        <Select
+                            size="md"
+                            radius="md"
+                            allowDeselect={false}
+                            value={sort}
+                            onChange={(value) => handleSort(value ?? "createdAt")}
+                            aria-label="Urutkan"
+                            data={[
+                                { value: "createdAt", label: "Terbaru" },
+                                { value: "sales", label: "Penjualan" },
+                                { value: "commission", label: "Komisi" },
+                                { value: "orders", label: "Order" },
+                                { value: "clicks", label: "Klik" },
+                                { value: "conversion", label: "Conversion Rate" },
+                            ]}
+                        />
+
+                        <Select
+                            size="md"
+                            radius="md"
+                            allowDeselect={false}
+                            value={period}
+                            onChange={(value) => handlePeriod(value ?? "all")}
+                            aria-label="Periode"
+                            data={[
+                                { value: "all", label: "Semua Waktu" },
+                                { value: "7", label: "7 Hari" },
+                                { value: "30", label: "30 Hari" },
+                                { value: "90", label: "90 Hari" },
+                            ]}
+                        />
+                    </Group>
+
+                    <DataTable
+                        minWidth={1100}
+                        loading={loading}
+                        empty={
+                            <EmptyBlock
+                                title="Belum ada affiliate."
+                                description="Affiliate yang mendaftar akan muncul di sini."
+                            />
+                        }
+                        footer={
+                            pagination.totalPages > 1 ? (
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                    <Text size="sm" c="dimmed">
+                                        Halaman {pagination.page} dari {pagination.totalPages}
+                                    </Text>
+
+                                    <Pagination
+                                        size="md"
+                                        total={pagination.totalPages}
+                                        value={page}
+                                        onChange={setPage}
+                                    />
+                                </Group>
+                            ) : undefined
+                        }
+                        columns={[
+                            { header: "Affiliator" },
+                            { header: "Kode" },
+                            { header: "Rate" },
+                            { header: "Klik" },
+                            { header: "Konversi" },
+                            { header: "Conv. Rate" },
+                            { header: "Penjualan" },
+                            { header: "Total Komisi" },
+                            { header: "Status" },
+                            { header: "Aksi", align: "right" },
+                        ]}
+                        rows={items.map((a) => ({
+                            key: String(a.id),
+                            cells: [
+                                <Stack gap={0} key="affiliator">
+                                    <Text size="sm" fw={500}>
+                                        {a.name}
+                                    </Text>
+
+                                    <Text size="xs" c="dimmed">
+                                        {a.email}
+                                    </Text>
+                                </Stack>,
+
+                                <Text key="code" size="sm" fw={600} ff="monospace">
+                                    {a.affiliateCode}
+                                </Text>,
+
+                                <Text key="rate" size="sm">
+                                    {a.commissionRate}%
+                                </Text>,
+
+                                <Text key="clicks" size="sm">
+                                    {a.clicks.toLocaleString("id-ID")}
+                                </Text>,
+
+                                <Text key="conversions" size="sm">
+                                    {a.totalConversions ?? a.orders}
+                                </Text>,
+
+                                <Text key="convrate" size="sm">
+                                    {a.conversionRate ?? 0}%
+                                </Text>,
+
+                                <Text key="sales" size="sm">
+                                    {rupiah(a.sales)}
+                                </Text>,
+
+                                <Text key="commission" size="sm" fw={500} c="green.7">
+                                    {rupiah(a.totalCommission)}
+                                </Text>,
+
+                                <StatusBadge key="status" tone={STATUS_TONE[a.status] ?? "neutral"}>
+                                    {a.status}
+                                </StatusBadge>,
+
+                                <Group justify="flex-end" key="actions">
+                                    <Button
+                                        component={Link}
+                                        href={`/admin/affiliate/manage/${a.id}`}
+                                        variant="default"
+                                        size="sm"
+                                        radius="md"
+                                        leftSection={<FiEye size={12} />}
+                                    >
+                                        Detail
+                                    </Button>
+                                </Group>,
+                            ],
+                        }))}
+                    />
+                </Stack>
+            </SectionCard>
+        </Stack>
     );
 }

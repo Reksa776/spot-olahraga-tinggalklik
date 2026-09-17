@@ -9,7 +9,14 @@ export default async function Footer() {
     const fullAddress = formatFullAddress(setting);
 
     return (
-        <footer className="border-t border-gray-200 bg-white">
+        // `data-global-footer` is a Phase 9 hook, not a visual change: the ticketing shell
+        // marks itself with `data-ticketing-shell` and `app/globals.css` hides THIS footer
+        // for those routes so a page never shows two footers. Retail routes never carry the
+        // marker, so their rendering is byte-identical to before.
+        <footer
+            data-global-footer
+            className="border-t border-gray-200 bg-white"
+        >
             <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
                 <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
                     {/* ========================
@@ -42,7 +49,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/faq"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     FAQ
                                 </Link>
@@ -51,7 +58,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/syarat-ketentuan"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Syarat &amp; Ketentuan
                                 </Link>
@@ -60,7 +67,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/refund-policy"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Kebijakan Refund
                                 </Link>
@@ -69,7 +76,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/kontak"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Hubungi Kami
                                 </Link>
@@ -89,7 +96,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/home"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Beranda
                                 </Link>
@@ -98,7 +105,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/products"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Produk
                                 </Link>
@@ -107,7 +114,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/register"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Daftar
                                 </Link>
@@ -116,7 +123,7 @@ export default async function Footer() {
                             <li>
                                 <Link
                                     href="/login"
-                                    className="text-sm text-gray-500 transition hover:text-rose-600"
+                                    className="text-sm text-gray-500 transition hover:text-brand-600"
                                 >
                                     Masuk
                                 </Link>
@@ -151,7 +158,7 @@ export default async function Footer() {
                                     </span>
                                     <a
                                         href={`mailto:${setting.email}`}
-                                        className="text-sm text-gray-500 transition hover:text-rose-600"
+                                        className="text-sm text-gray-500 transition hover:text-brand-600"
                                     >
                                         {setting.email}
                                     </a>
@@ -165,7 +172,7 @@ export default async function Footer() {
                                     </span>
                                     <a
                                         href={`tel:${setting.phone}`}
-                                        className="text-sm text-gray-500 transition hover:text-rose-600"
+                                        className="text-sm text-gray-500 transition hover:text-brand-600"
                                     >
                                         {setting.phone}
                                     </a>
@@ -189,28 +196,28 @@ export default async function Footer() {
                         <div className="flex gap-4">
                             <Link
                                 href="/faq"
-                                className="text-xs text-gray-400 transition hover:text-rose-600"
+                                className="text-xs text-gray-400 transition hover:text-brand-600"
                             >
                                 FAQ
                             </Link>
 
                             <Link
                                 href="/syarat-ketentuan"
-                                className="text-xs text-gray-400 transition hover:text-rose-600"
+                                className="text-xs text-gray-400 transition hover:text-brand-600"
                             >
                                 Syarat &amp; Ketentuan
                             </Link>
 
                             <Link
                                 href="/refund-policy"
-                                className="text-xs text-gray-400 transition hover:text-rose-600"
+                                className="text-xs text-gray-400 transition hover:text-brand-600"
                             >
                                 Kebijakan Refund
                             </Link>
 
                             <Link
                                 href="/kontak"
-                                className="text-xs text-gray-400 transition hover:text-rose-600"
+                                className="text-xs text-gray-400 transition hover:text-brand-600"
                             >
                                 Kontak
                             </Link>

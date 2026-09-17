@@ -24,7 +24,7 @@ export async function POST() {
 
         const result = await executeSpin(
             session.user.id,
-            (session.user as any).role
+            session.user.role
         );
 
         if (!result.success) {

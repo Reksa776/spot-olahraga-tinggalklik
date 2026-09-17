@@ -2,7 +2,49 @@
 
 import { useEffect, useState, useCallback } from "react";
 import toast from "react-hot-toast";
-import { FiSearch, FiChevronLeft, FiChevronRight, FiCheck, FiX } from "react-icons/fi";
+import { FiCheck, FiSearch, FiX } from "react-icons/fi";
+
+import {
+    Button,
+    Group,
+    Modal,
+    Pagination,
+    Select,
+    Stack,
+    Text,
+    TextInput,
+    Textarea,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * HIGH-RISK AREA — payout money. Every financial value is rendered by the same functions as before:
+ * `rupiah()` (`Rp` + `Number(v).toLocaleString("id-ID")`) and `fmtDate()` (`id-ID` short-month,
+ * 2-digit hour/minute). No amount, total or rounding was touched.
+ *
+ * Preserved exactly: `load` and its query string (`page`, `limit=20`, `status` only when not "ALL",
+ * `search` only when non-empty), the response fallbacks, both `toast.error` branches, the
+ * `useEffect(() => { load(page, statusFilter, search); }, [page, load])` trigger, `handleSearch` /
+ * `handleStatus` (page reset + re-fetch), and `handleAction` in full: the `PATCH` endpoint, the
+ * `body.action` value, the CONDITIONAL `reason` (REJECT only) and `proofFilePath` (CONFIRM_PAID only,
+ * and only when non-empty), `toast.success(r.message)`, the three state resets and the
+ * `load(page, statusFilter, search)` refresh. The action buttons per payout status
+ * (PENDING → Approve/Reject, PROCESSING → Check Status/Confirm Paid, PAID → Settle) and the
+ * `statusLabel` / rejection-reason display are unchanged.
+ *
+ * Presentation changes: `Modal` replaces the hand-rolled overlay with identical titles, copy and
+ * button labels; `statusLabel` keys now map to semantic `StatusBadge` tones.
+ */
 
 type PayoutItem = {
     id: number; affiliateId: number; affiliateName: string; affiliateEmail: string;
@@ -15,13 +57,13 @@ function rupiah(v: number) { return `Rp ${Number(v).toLocaleString("id-ID")}`; }
 function fmtDate(s: string) { return new Date(s).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
 
 const statusLabel: Record<string, string> = { PENDING: "Menunggu", PROCESSING: "Diproses", PAID: "Dibayar", FAILED: "Gagal", REJECTED: "Ditolak", CANCELLED: "Dibatalkan" };
-const statusClass: Record<string, string> = {
-    PENDING: "bg-amber-50 text-amber-700",
-    PROCESSING: "bg-blue-50 text-blue-700",
-    PAID: "bg-emerald-50 text-emerald-700",
-    FAILED: "bg-red-50 text-red-700",
-    REJECTED: "bg-red-50 text-red-700",
-    CANCELLED: "bg-gray-50 text-gray-600",
+const statusTone: Record<string, Tone> = {
+    PENDING: "pending",
+    PROCESSING: "info",
+    PAID: "success",
+    FAILED: "error",
+    REJECTED: "error",
+    CANCELLED: "neutral",
 };
 
 export default function AdminPayoutsPage() {
@@ -79,167 +121,310 @@ export default function AdminPayoutsPage() {
         finally { setSaving(false); }
     }
 
+    function closeModal() {
+        setModal(null);
+        setReason("");
+        setRefNumber("");
+    }
+
     return (
-        <div className="p-4 sm:p-6">
-            <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold tracking-tight text-gray-900 sm:text-2xl">Payout Management</h1>
-                <p className="text-sm text-gray-500">Kelola permintaan pencairan komisi affiliate.</p>
-            </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Affiliate"
+                title="Payout Management"
+                description="Kelola permintaan pencairan komisi affiliate."
+            />
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white">
-                <div className="border-b border-gray-100 px-5 py-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <p className="text-xs text-gray-500">Menampilkan {items.length} dari {pagination.total} payout</p>
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                            <form onSubmit={handleSearch} className="relative">
-                                <FiSearch size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                                <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari nama, kode, rekening..." className="h-9 w-full rounded-lg border border-gray-200 bg-white pl-8 pr-3 text-xs outline-none focus:border-gray-400 sm:w-56" />
-                            </form>
-                            <select value={statusFilter} onChange={(e) => handleStatus(e.target.value)} className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-xs outline-none">
-                                <option value="ALL">Semua Status</option>
-                                <option value="PENDING">Pending</option>
-                                <option value="PROCESSING">Processing</option>
-                                <option value="PAID">Paid</option>
-                                <option value="FAILED">Failed</option>
-                                <option value="REJECTED">Rejected</option>
-                                <option value="CANCELLED">Cancelled</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
+            <SectionCard
+                title="Permintaan Payout"
+                description={`Menampilkan ${items.length} dari ${pagination.total} payout`}
+            >
+                <Stack gap="md">
+                    <Group gap="sm" align="flex-end" wrap="wrap">
+                        <form onSubmit={handleSearch}>
+                            <TextInput
+                                size="md"
+                                radius="md"
+                                value={search}
+                                onChange={(e) => setSearch(e.currentTarget.value)}
+                                placeholder="Cari nama, kode, rekening..."
+                                aria-label="Cari payout"
+                                leftSection={<FiSearch size={14} />}
+                                w={{ base: 200, sm: 260 }}
+                            />
+                        </form>
 
-                <div className="overflow-x-auto">
-                    <table className="w-full min-w-[900px] text-left text-xs">
-                        <thead className="border-b border-gray-100 bg-gray-50/70">
-                            <tr>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Affiliator</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Jumlah</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Bank</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Rekening</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Status</th>
-                                <th className="px-4 py-3 font-semibold text-gray-500">Tanggal</th>
-                                <th className="px-4 py-3 text-right font-semibold text-gray-500">Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-100">
-                            {loading ? (
-                                Array.from({ length: 5 }).map((_, i) => (
-                                    <tr key={i}><td colSpan={7} className="px-4 py-4"><div className="h-4 animate-pulse rounded bg-gray-100" /></td></tr>
-                                ))
-                            ) : items.length === 0 ? (
-                                <tr><td colSpan={7} className="px-4 py-14 text-center text-sm text-gray-500">Belum ada payout request.</td></tr>
-                            ) : items.map((p) => (
-                                <tr key={p.id} className="hover:bg-gray-50/70">
-                                    <td className="px-4 py-3">
-                                        <p className="font-medium text-gray-900">{p.affiliateName}</p>
-                                        <p className="font-mono text-gray-500">{p.affiliateCode}</p>
-                                    </td>
-                                    <td className="px-4 py-3 font-semibold text-gray-900">{rupiah(p.amount)}</td>
-                                    <td className="px-4 py-3 text-gray-700">{p.bankName}</td>
-                                    <td className="px-4 py-3 font-mono text-gray-700">{p.bankAccountNumber}</td>
-                                    <td className="px-4 py-3">
-                                        <span className={`inline-flex rounded-md px-2 py-0.5 text-[10px] font-semibold ${statusClass[p.status] || "bg-gray-50 text-gray-600"}`}>
-                                            {statusLabel[p.status] || p.status}
-                                        </span>
-                                        {p.rejectionReason && <p className="mt-0.5 text-[10px] text-red-500">{p.rejectionReason}</p>}
-                                    </td>
-                                    <td className="px-4 py-3 text-gray-500">{fmtDate(p.requestedAt)}</td>
-                                    <td className="px-4 py-3 text-right">
-                                        {p.status === "PENDING" && (
-                                            <div className="flex justify-end gap-1">
-                                                <button onClick={() => setModal({ payoutId: p.id, action: "APPROVE" })} className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100">
-                                                    <FiCheck size={10} /> Approve & Process
-                                                </button>
-                                                <button onClick={() => setModal({ payoutId: p.id, action: "REJECT" })} className="inline-flex items-center gap-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-[10px] font-medium text-red-700 hover:bg-red-100">
-                                                    <FiX size={10} /> Reject
-                                                </button>
-                                            </div>
-                                        )}
-                                        {p.status === "PROCESSING" && (
-                                            <div className="flex justify-end gap-1">
-                                                <button onClick={() => setModal({ payoutId: p.id, action: "STATUS" })} className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[10px] font-medium text-blue-700 hover:bg-blue-100">
-                                                    <FiCheck size={10} /> Check Status
-                                                </button>
-                                                <button onClick={() => setModal({ payoutId: p.id, action: "CONFIRM_PAID" })} className="inline-flex items-center gap-1 rounded border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100">
-                                                    <FiCheck size={10} /> Confirm Paid
-                                                </button>
-                                            </div>
-                                        )}
-                                        {p.status === "PAID" && (
-                                            <button onClick={() => setModal({ payoutId: p.id, action: "SETTLE" })} className="inline-flex items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-700 hover:bg-gray-100">
-                                                <FiCheck size={10} /> Settle
-                                            </button>
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
+                        <Select
+                            size="md"
+                            radius="md"
+                            allowDeselect={false}
+                            value={statusFilter}
+                            onChange={(value) => handleStatus(value ?? "ALL")}
+                            aria-label="Filter status"
+                            data={[
+                                { value: "ALL", label: "Semua Status" },
+                                { value: "PENDING", label: "Pending" },
+                                { value: "PROCESSING", label: "Processing" },
+                                { value: "PAID", label: "Paid" },
+                                { value: "FAILED", label: "Failed" },
+                                { value: "REJECTED", label: "Rejected" },
+                                { value: "CANCELLED", label: "Cancelled" },
+                            ]}
+                        />
+                    </Group>
 
-                {pagination.totalPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3">
-                        <p className="text-xs text-gray-500">Halaman {pagination.page} dari {pagination.totalPages}</p>
-                        <div className="flex gap-1">
-                            <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40"><FiChevronLeft size={14} /></button>
-                            <button disabled={page >= pagination.totalPages} onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))} className="rounded-lg border border-gray-200 p-1.5 text-gray-600 hover:bg-gray-50 disabled:opacity-40"><FiChevronRight size={14} /></button>
-                        </div>
-                    </div>
-                )}
-            </div>
+                    <DataTable
+                        minWidth={1000}
+                        loading={loading}
+                        empty={
+                            <EmptyBlock
+                                title="Belum ada payout request."
+                                description="Permintaan pencairan komisi affiliator akan muncul di sini."
+                            />
+                        }
+                        footer={
+                            pagination.totalPages > 1 ? (
+                                <Group justify="space-between" align="center" wrap="wrap">
+                                    <Text size="sm" c="dimmed">
+                                        Halaman {pagination.page} dari {pagination.totalPages}
+                                    </Text>
+
+                                    <Pagination
+                                        size="md"
+                                        total={pagination.totalPages}
+                                        value={page}
+                                        onChange={setPage}
+                                    />
+                                </Group>
+                            ) : undefined
+                        }
+                        columns={[
+                            { header: "Affiliator" },
+                            { header: "Jumlah" },
+                            { header: "Bank" },
+                            { header: "Rekening" },
+                            { header: "Status" },
+                            { header: "Tanggal" },
+                            { header: "Aksi", align: "right" },
+                        ]}
+                        rows={items.map((p) => ({
+                            key: String(p.id),
+                            cells: [
+                                <Stack gap={0} key="affiliator">
+                                    <Text size="sm" fw={500}>
+                                        {p.affiliateName}
+                                    </Text>
+
+                                    <Text size="xs" c="dimmed" ff="monospace">
+                                        {p.affiliateCode}
+                                    </Text>
+                                </Stack>,
+
+                                <Text key="amount" size="sm" fw={600}>
+                                    {rupiah(p.amount)}
+                                </Text>,
+
+                                <Text key="bank" size="sm">
+                                    {p.bankName}
+                                </Text>,
+
+                                <Text key="account" size="sm" ff="monospace">
+                                    {p.bankAccountNumber}
+                                </Text>,
+
+                                <Stack gap={2} key="status">
+                                    <StatusBadge tone={statusTone[p.status] ?? "neutral"}>
+                                        {statusLabel[p.status] || p.status}
+                                    </StatusBadge>
+
+                                    {p.rejectionReason ? (
+                                        <Text size="xs" c="red.7">
+                                            {p.rejectionReason}
+                                        </Text>
+                                    ) : null}
+                                </Stack>,
+
+                                <Text key="date" size="sm" c="dimmed">
+                                    {fmtDate(p.requestedAt)}
+                                </Text>,
+
+                                <Group justify="flex-end" gap="xs" wrap="nowrap" key="actions">
+                                    {p.status === "PENDING" && (
+                                        <>
+                                            <Button
+                                                size="compact-sm"
+                                                radius="md"
+                                                color="green"
+                                                variant="light"
+                                                leftSection={<FiCheck size={10} />}
+                                                onClick={() => setModal({ payoutId: p.id, action: "APPROVE" })}
+                                            >
+                                                Approve &amp; Process
+                                            </Button>
+
+                                            <Button
+                                                size="compact-sm"
+                                                radius="md"
+                                                color="red"
+                                                variant="light"
+                                                leftSection={<FiX size={10} />}
+                                                onClick={() => setModal({ payoutId: p.id, action: "REJECT" })}
+                                            >
+                                                Reject
+                                            </Button>
+                                        </>
+                                    )}
+
+                                    {p.status === "PROCESSING" && (
+                                        <>
+                                            <Button
+                                                size="compact-sm"
+                                                radius="md"
+                                                color="blue"
+                                                variant="light"
+                                                leftSection={<FiCheck size={10} />}
+                                                onClick={() => setModal({ payoutId: p.id, action: "STATUS" })}
+                                            >
+                                                Check Status
+                                            </Button>
+
+                                            <Button
+                                                size="compact-sm"
+                                                radius="md"
+                                                color="green"
+                                                variant="light"
+                                                leftSection={<FiCheck size={10} />}
+                                                onClick={() => setModal({ payoutId: p.id, action: "CONFIRM_PAID" })}
+                                            >
+                                                Confirm Paid
+                                            </Button>
+                                        </>
+                                    )}
+
+                                    {p.status === "PAID" && (
+                                        <Button
+                                            size="compact-sm"
+                                            radius="md"
+                                            color="ink"
+                                            variant="light"
+                                            leftSection={<FiCheck size={10} />}
+                                            onClick={() => setModal({ payoutId: p.id, action: "SETTLE" })}
+                                        >
+                                            Settle
+                                        </Button>
+                                    )}
+                                </Group>,
+                            ],
+                        }))}
+                    />
+                </Stack>
+            </SectionCard>
 
             {/* Action Modal */}
-            {modal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-                    <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
-                        <div className="border-b border-gray-100 px-6 py-4">
-                            <h3 className="text-base font-semibold text-gray-900">
-                                {modal.action === "APPROVE" ? "Approve & Process Payout" : modal.action === "REJECT" ? "Reject Payout" : modal.action === "STATUS" ? "Check Provider Status" : modal.action === "CONFIRM_PAID" ? "Confirm Payment Success" : "Retry Settlement"}
-                            </h3>
-                        </div>
-                        <div className="px-6 py-5 space-y-4">
-                            {modal.action === "REJECT" && (
-                                <div>
-                                    <label className="text-sm font-medium text-gray-700">Alasan Penolakan *</label>
-                                    <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} className="mt-2 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-rose-400" placeholder="Contoh: Data rekening tidak valid..." />
-                                </div>
-                            )}
-                            {modal.action === "APPROVE" && (
-                                <p className="text-sm text-gray-600">Konfirmasi approve payout ini? Dana akan dikirim ke rekening affiliator melalui payment provider.</p>
-                            )}
-                            {modal.action === "CONFIRM_PAID" && (
-                                <div className="space-y-3">
-                                    <p className="text-sm text-gray-600">Konfirmasi bahwa pembayaran sudah berhasil? Payout akan berubah ke status PAID dan komisi akan di-settle.</p>
-                                    <div>
-                                        <label className="text-sm font-medium text-gray-700">Bukti Pembayaran (opsional)</label>
-                                        <p className="text-xs text-gray-400">Path file bukti transfer (jika ada)</p>
-                                        <input type="text" value={refNumber} onChange={(e) => setRefNumber(e.target.value)} className="mt-2 w-full rounded-xl border border-gray-200 px-3 py-2.5 text-sm outline-none focus:border-gray-400" placeholder="storage/uploads/affiliate/payout-proof/..." />
-                                    </div>
-                                </div>
-                            )}
-                            {modal.action === "STATUS" && (
-                                <p className="text-sm text-gray-600">Cek status payout ini dengan provider? Jika provider mengkonfirmasi success, payout akan otomatis menjadi PAID.</p>
-                            )}
-                            {modal.action === "SETTLE" && (
-                                <p className="text-sm text-gray-600">Retry commission settlement? Ini tidak mengirim uang lagi, hanya menyelesaikan pencatatan commission.</p>
-                            )}
-                        </div>
-                        <div className="flex gap-3 border-t border-gray-100 px-6 py-4">
-                            <button onClick={() => { setModal(null); setReason(""); setRefNumber(""); }} className="flex-1 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50">Batal</button>
-                            <button onClick={handleAction} disabled={saving || (modal.action === "REJECT" && !reason.trim())}
-                                className={`flex-1 rounded-xl px-4 py-2.5 text-sm font-medium text-white disabled:opacity-50 ${
-                                    modal.action === "APPROVE" ? "bg-emerald-600 hover:bg-emerald-700" :
-                                    modal.action === "STATUS" ? "bg-blue-600 hover:bg-blue-700" :
-                                    modal.action === "CONFIRM_PAID" ? "bg-emerald-600 hover:bg-emerald-700" :
-                                    modal.action === "SETTLE" ? "bg-gray-600 hover:bg-gray-700" :
-                                    "bg-red-600 hover:bg-red-700"
-                                }`}>
-                                {saving ? "Memproses..." : modal.action === "APPROVE" ? "Approve & Process" : modal.action === "STATUS" ? "Check Status" : modal.action === "CONFIRM_PAID" ? "Confirm Paid" : modal.action === "SETTLE" ? "Retry Settlement" : "Reject"}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
+
+            <Modal
+                opened={modal !== null}
+                onClose={closeModal}
+                centered
+                title={
+                    modal?.action === "APPROVE" ? "Approve & Process Payout"
+                    : modal?.action === "REJECT" ? "Reject Payout"
+                    : modal?.action === "STATUS" ? "Check Provider Status"
+                    : modal?.action === "CONFIRM_PAID" ? "Confirm Payment Success"
+                    : "Retry Settlement"
+                }
+            >
+                <Stack gap="md">
+                    {modal?.action === "REJECT" && (
+                        <Textarea
+                            label="Alasan Penolakan *"
+                            size="md"
+                            radius="md"
+                            minRows={3}
+                            maxRows={6}
+                            autosize
+                            value={reason}
+                            onChange={(e) => setReason(e.currentTarget.value)}
+                            placeholder="Contoh: Data rekening tidak valid..."
+                        />
+                    )}
+
+                    {modal?.action === "APPROVE" && (
+                        <Text size="sm">
+                            Konfirmasi approve payout ini? Dana akan dikirim ke rekening affiliator melalui payment provider.
+                        </Text>
+                    )}
+
+                    {modal?.action === "CONFIRM_PAID" && (
+                        <Stack gap="sm">
+                            <Text size="sm">
+                                Konfirmasi bahwa pembayaran sudah berhasil? Payout akan berubah ke status PAID dan komisi akan di-settle.
+                            </Text>
+
+                            <TextInput
+                                label="Bukti Pembayaran (opsional)"
+                                description="Path file bukti transfer (jika ada)"
+                                size="md"
+                                radius="md"
+                                value={refNumber}
+                                onChange={(e) => setRefNumber(e.currentTarget.value)}
+                                placeholder="storage/uploads/affiliate/payout-proof/..."
+                            />
+                        </Stack>
+                    )}
+
+                    {modal?.action === "STATUS" && (
+                        <Text size="sm">
+                            Cek status payout ini dengan provider? Jika provider mengkonfirmasi success, payout akan otomatis menjadi PAID.
+                        </Text>
+                    )}
+
+                    {modal?.action === "SETTLE" && (
+                        <Text size="sm">
+                            Retry commission settlement? Ini tidak mengirim uang lagi, hanya menyelesaikan pencatatan commission.
+                        </Text>
+                    )}
+
+                    <Group grow gap="sm" mt="xs">
+                        <Button
+                            variant="default"
+                            size="md"
+                            radius="md"
+                            onClick={closeModal}
+                        >
+                            Batal
+                        </Button>
+
+                        <Button
+                            size="md"
+                            radius="md"
+                            color={
+                                modal?.action === "APPROVE" || modal?.action === "CONFIRM_PAID"
+                                    ? "green"
+                                    : modal?.action === "STATUS"
+                                      ? "blue"
+                                      : modal?.action === "SETTLE"
+                                        ? "ink"
+                                        : "red"
+                            }
+                            onClick={handleAction}
+                            disabled={saving || (modal?.action === "REJECT" && !reason.trim())}
+                        >
+                            {saving
+                                ? "Memproses..."
+                                : modal?.action === "APPROVE"
+                                  ? "Approve & Process"
+                                  : modal?.action === "STATUS"
+                                    ? "Check Status"
+                                    : modal?.action === "CONFIRM_PAID"
+                                      ? "Confirm Paid"
+                                      : modal?.action === "SETTLE"
+                                        ? "Retry Settlement"
+                                        : "Reject"}
+                        </Button>
+                    </Group>
+                </Stack>
+            </Modal>
+        </Stack>
     );
 }

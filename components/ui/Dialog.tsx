@@ -310,7 +310,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                                     onChange={handleInputChange}
                                     onKeyDown={handleInputKeyDown}
                                     placeholder={state.inputPlaceholder}
-                                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition focus:border-rose-500 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 placeholder-gray-400 transition focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
                                 />
                             </div>
                         )}

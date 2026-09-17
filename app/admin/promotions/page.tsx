@@ -2,8 +2,48 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { FiImage } from "react-icons/fi";
+
+import {
+    Alert,
+    Badge,
+    Button,
+    Group,
+    Modal,
+    NumberInput,
+    Select,
+    SimpleGrid,
+    Stack,
+    Switch,
+    Text,
+    Textarea,
+    TextInput,
+} from "@mantine/core";
+
+import {
+    DataTable,
+    EmptyBlock,
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+} from "@/components/dashboard/primitives";
+
 import ProductImageUpload from "@/components/admin/ProductImageUpload";
-import { useDialog } from "@/components/ui/Dialog";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: `readJsonResponse` and both of its error strings, `formatDate`,
+ * `toDateTimeLocal`, `placementLabel`, `loadPromotions`, `openCreateModal`/`openEditModal`/
+ * `closeModal` (including the `saving` guard and the full form reset), `updateForm`, the single
+ * validation branch and its message, the payload shape (`priority: Number(...) || 0`, `|| null`
+ * fallbacks, ISO dates only when truthy), the create-vs-edit URL/method branch, the success copy,
+ * the `loadPromotions()` refresh, the 700ms `closeModal` timer, `handleDelete`'s endpoint and
+ * confirmation wording, and the client-side `filtered` search.
+ *
+ * Presentation changes: `PageHeader`, `SectionCard` + `DataTable`, `StatusBadge`, Mantine inputs,
+ * and the previously shared-`useDialog` confirmation is now a dashboard-owned Mantine `Modal` —
+ * with the same title ("Hapus Promosi"), the same message and the same confirm label.
+ */
 
 type Promotion = {
     id: number;
@@ -76,6 +116,7 @@ export default function AdminPromotionsPage() {
     const [search, setSearch] = useState("");
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
+    const [deleteTarget, setDeleteTarget] = useState<Promotion | null>(null);
 
     async function loadPromotions() {
         try {
@@ -132,10 +173,7 @@ export default function AdminPromotionsPage() {
         } catch (err) { setError(err instanceof Error ? err.message : "Terjadi kesalahan."); } finally { setSaving(false); }
     }
 
-    const dialog = useDialog();
-
     async function handleDelete(item: Promotion) {
-        if (!(await dialog.confirm({ title: "Hapus Promosi", message: `Hapus promosi "${item.title}"?`, variant: "danger", confirmText: "Hapus" }))) return;
         try {
             setDeletingId(item.id); setError(""); setSuccess("");
             const response = await fetch(`/api/admin/promotions/${item.id}`, { method: "DELETE" });
@@ -145,110 +183,316 @@ export default function AdminPromotionsPage() {
         } catch (err) { setError(err instanceof Error ? err.message : "Gagal menghapus."); } finally { setDeletingId(null); }
     }
 
+    async function confirmDelete() {
+        const item = deleteTarget;
+        setDeleteTarget(null);
+        if (!item) return;
+        await handleDelete(item);
+    }
+
     const filtered = promotions.filter((p) => !search.trim() || p.title.toLowerCase().includes(search.toLowerCase()));
 
     return (
-        <div className="min-h-full bg-gray-50/70 p-4 md:p-6 lg:p-8">
-            <div className="mx-auto max-w-[1500px] space-y-6">
-                <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
-                    <div>
-                        <div className="mb-2 flex items-center gap-2 text-xs text-gray-400"><span>Admin</span><span>/</span><span className="text-gray-600">Promosi</span></div>
-                        <h1 className="text-2xl font-bold tracking-tight text-gray-950">Promosi</h1>
-                        <p className="mt-1 text-sm text-gray-500">Kelola banner dan promosi di berbagai placement toko.</p>
-                    </div>
-                    <button type="button" onClick={openCreateModal} className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-gray-950 px-5 text-sm font-semibold text-white transition hover:bg-gray-800">
-                        <FiImage size={16} /> Tambah Promosi
-                    </button>
-                </div>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin"
+                title="Promosi"
+                description="Kelola banner dan promosi di berbagai placement toko."
+                actions={
+                    <Button
+                        size="md"
+                        radius="md"
+                        leftSection={<FiImage size={16} />}
+                        onClick={openCreateModal}
+                    >
+                        Tambah Promosi
+                    </Button>
+                }
+            />
 
-                {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-                {success && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{success}</div>}
-
-                <section className="overflow-hidden border border-gray-200 bg-white">
-                    <div className="flex flex-col gap-4 border-b border-gray-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
-                        <div><h2 className="text-sm font-semibold text-gray-950">Daftar Promosi</h2><p className="mt-0.5 text-xs text-gray-400">{filtered.length} promosi</p></div>
-                        <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Cari promosi..." className="h-10 w-full border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-gray-400 focus:bg-white md:w-72" />
-                    </div>
-
-                    {loading ? (
-                        <div className="flex min-h-[300px] items-center justify-center"><div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-800" /></div>
-                    ) : filtered.length === 0 ? (
-                        <div className="flex min-h-[320px] flex-col items-center justify-center px-6 text-center">
-                            <FiImage size={24} className="text-gray-400" />
-                            <p className="mt-4 text-sm font-semibold text-gray-900">Belum ada promosi</p>
-                            <button type="button" onClick={openCreateModal} className="mt-4 text-xs font-semibold text-gray-900 underline underline-offset-4">Tambah promosi</button>
-                        </div>
-                    ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full min-w-[800px] text-left">
-                                <thead><tr className="border-b border-gray-200 bg-gray-50/80">
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Judul</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Placement</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Prioritas</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Periode</th>
-                                    <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">Status</th>
-                                    <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wider text-gray-400">Aksi</th>
-                                </tr></thead>
-                                <tbody className="divide-y divide-gray-100">
-                                    {filtered.map((p) => (
-                                        <tr key={p.id} className="group transition hover:bg-gray-50/70">
-                                            <td className="px-5 py-4"><p className="text-sm font-semibold text-gray-900">{p.title}</p>{p.description && <p className="mt-0.5 max-w-[250px] truncate text-xs text-gray-400">{p.description}</p>}</td>
-                                            <td className="px-5 py-4"><span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700">{placementLabel(p.placement)}</span></td>
-                                            <td className="px-5 py-4"><span className="text-sm text-gray-700">{p.priority}</span></td>
-                                            <td className="px-5 py-4"><p className="text-xs text-gray-700">{formatDate(p.startAt)}</p><p className="text-xs text-gray-400">s/d {formatDate(p.endAt)}</p></td>
-                                            <td className="px-5 py-4"><span className={`text-xs font-medium ${p.isActive ? "text-emerald-600" : "text-gray-400"}`}>{p.isActive ? "Aktif" : "Nonaktif"}</span></td>
-                                            <td className="px-5 py-4 text-right"><div className="flex justify-end gap-1">
-                                                <button type="button" onClick={() => openEditModal(p)} className="px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-100">Edit</button>
-                                                <button type="button" disabled={deletingId === p.id} onClick={() => handleDelete(p)} className="px-2.5 py-1.5 text-xs font-medium text-gray-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-50">{deletingId === p.id ? "..." : "Hapus"}</button>
-                                            </div></td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </section>
-            </div>
-
-            {modalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/40 p-4 backdrop-blur-[2px]">
-                    <div className="max-h-[92vh] w-full max-w-xl overflow-hidden bg-white shadow-2xl">
-                        <div className="flex items-start justify-between border-b border-gray-200 px-6 py-5">
-                            <div><p className="text-[11px] font-semibold uppercase tracking-widest text-gray-400">Promosi</p><h2 className="mt-1 text-lg font-bold tracking-tight text-gray-950">{editingItem ? "Edit promosi" : "Buat promosi baru"}</h2></div>
-                            <button type="button" onClick={closeModal} disabled={saving} className="flex h-8 w-8 items-center justify-center text-lg text-gray-400 transition hover:bg-gray-100 disabled:opacity-50">×</button>
-                        </div>
-                        <form onSubmit={handleSubmit} className="max-h-[calc(92vh-76px)] overflow-y-auto">
-                            <div className="space-y-5 px-6 py-6">
-                                {error && <div className="border-l-2 border-red-500 bg-red-50 px-4 py-3 text-xs text-red-700">{error}</div>}
-                                <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Judul</label><input type="text" value={form.title} onChange={(e) => updateForm("title", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" /></div>
-                                <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Deskripsi</label><textarea value={form.description} onChange={(e) => updateForm("description", e.target.value)} className="h-20 w-full border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-gray-400" /></div>
-                                <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Gambar Banner</label><ProductImageUpload value={form.imageUrl} onChange={(url) => updateForm("imageUrl", url)} /></div>
-                                <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Link</label><input type="url" value={form.link} onChange={(e) => updateForm("link", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" placeholder="https://..." /></div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Placement</label>
-                                        <select value={form.placement} onChange={(e) => updateForm("placement", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400">
-                                            <option value="HOMEPAGE">Halaman Utama</option><option value="CAMPAIGN">Kampanye</option><option value="CATEGORY">Kategori</option><option value="PRODUCT">Produk</option>
-                                        </select>
-                                    </div>
-                                    <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Prioritas</label><input type="number" value={form.priority} onChange={(e) => updateForm("priority", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" min="0" /></div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Tanggal mulai</label><input type="datetime-local" value={form.startAt} onChange={(e) => updateForm("startAt", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" /></div>
-                                    <div><label className="mb-1.5 block text-xs font-semibold text-gray-700">Tanggal selesai</label><input type="datetime-local" value={form.endAt} onChange={(e) => updateForm("endAt", e.target.value)} className="h-10 w-full border border-gray-200 bg-white px-3 text-sm outline-none focus:border-gray-400" /></div>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                    <button type="button" onClick={() => updateForm("isActive", !form.isActive)} className={`relative h-6 w-11 rounded-full transition ${form.isActive ? "bg-emerald-500" : "bg-gray-300"}`}><span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition ${form.isActive ? "left-[22px]" : "left-0.5"}`} /></button>
-                                    <span className="text-sm text-gray-700">{form.isActive ? "Aktif" : "Nonaktif"}</span>
-                                </div>
-                            </div>
-                            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4">
-                                <button type="button" onClick={closeModal} disabled={saving} className="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:opacity-50">Batal</button>
-                                <button type="submit" disabled={saving} className="rounded-lg bg-gray-950 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800 disabled:opacity-50">{saving ? "Menyimpan..." : editingItem ? "Simpan" : "Buat Promosi"}</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
+            {error && (
+                <Alert color="red" variant="light" radius="md" title="Terjadi kesalahan">
+                    {error}
+                </Alert>
             )}
-        </div>
+
+            {success && (
+                <Alert color="green" variant="light" radius="md" title="Berhasil">
+                    {success}
+                </Alert>
+            )}
+
+            <SectionCard
+                title="Daftar Promosi"
+                description={`${filtered.length} promosi`}
+                actions={
+                    <TextInput
+                        size="md"
+                        radius="md"
+                        value={search}
+                        onChange={(e) => setSearch(e.currentTarget.value)}
+                        placeholder="Cari promosi..."
+                        aria-label="Cari promosi"
+                        w={{ base: 180, sm: 260 }}
+                    />
+                }
+            >
+                <DataTable
+                    minWidth={900}
+                    loading={loading}
+                    empty={
+                        <EmptyBlock
+                            icon={<FiImage size={22} />}
+                            title="Belum ada promosi"
+                            description="Buat promosi untuk menampilkan banner di toko."
+                            action={
+                                <Button size="md" radius="md" onClick={openCreateModal}>
+                                    Tambah promosi
+                                </Button>
+                            }
+                        />
+                    }
+                    columns={[
+                        { header: "Judul" },
+                        { header: "Placement" },
+                        { header: "Prioritas" },
+                        { header: "Periode" },
+                        { header: "Status" },
+                        { header: "Aksi", align: "right" },
+                    ]}
+                    rows={filtered.map((p) => ({
+                        key: String(p.id),
+                        cells: [
+                            <Stack gap={0} key="title">
+                                <Text size="sm" fw={600}>
+                                    {p.title}
+                                </Text>
+
+                                {p.description ? (
+                                    <Text size="xs" c="dimmed" lineClamp={1} maw={250}>
+                                        {p.description}
+                                    </Text>
+                                ) : null}
+                            </Stack>,
+
+                            <Badge variant="default" size="sm" radius="sm" key="placement">
+                                {placementLabel(p.placement)}
+                            </Badge>,
+
+                            <Text size="sm" key="priority">
+                                {p.priority}
+                            </Text>,
+
+                            <Stack gap={2} key="period">
+                                <Text size="xs">{formatDate(p.startAt)}</Text>
+
+                                <Text size="xs" c="dimmed">
+                                    s/d {formatDate(p.endAt)}
+                                </Text>
+                            </Stack>,
+
+                            <StatusBadge key="status" tone={p.isActive ? "success" : "neutral"}>
+                                {p.isActive ? "Aktif" : "Nonaktif"}
+                            </StatusBadge>,
+
+                            <Group justify="flex-end" gap="xs" wrap="nowrap" key="actions">
+                                <Button
+                                    variant="subtle"
+                                    size="sm"
+                                    radius="md"
+                                    onClick={() => openEditModal(p)}
+                                >
+                                    Edit
+                                </Button>
+
+                                <Button
+                                    variant="subtle"
+                                    color="red"
+                                    size="sm"
+                                    radius="md"
+                                    loading={deletingId === p.id}
+                                    disabled={deletingId === p.id}
+                                    onClick={() => setDeleteTarget(p)}
+                                >
+                                    Hapus
+                                </Button>
+                            </Group>,
+                        ],
+                    }))}
+                />
+            </SectionCard>
+
+            {/* FORM MODAL */}
+
+            <Modal
+                opened={modalOpen}
+                onClose={closeModal}
+                size="lg"
+                title={editingItem ? "Edit promosi" : "Buat promosi baru"}
+                centered
+            >
+                <form onSubmit={handleSubmit}>
+                    <Stack gap="md">
+                        {error && (
+                            <Alert color="red" variant="light" radius="md">
+                                {error}
+                            </Alert>
+                        )}
+
+                        <TextInput
+                            label="Judul"
+                            size="md"
+                            radius="md"
+                            value={form.title}
+                            onChange={(e) => updateForm("title", e.currentTarget.value)}
+                        />
+
+                        <Textarea
+                            label="Deskripsi"
+                            size="md"
+                            radius="md"
+                            value={form.description}
+                            onChange={(e) =>
+                                updateForm("description", e.currentTarget.value)
+                            }
+                            minRows={3}
+                            maxRows={6}
+                            autosize
+                        />
+
+                        <ProductImageUpload
+                            value={form.imageUrl}
+                            onChange={(url) => updateForm("imageUrl", url)}
+                        />
+
+                        <TextInput
+                            label="Link"
+                            size="md"
+                            radius="md"
+                            type="url"
+                            placeholder="https://..."
+                            value={form.link}
+                            onChange={(e) => updateForm("link", e.currentTarget.value)}
+                        />
+
+                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                            <Select
+                                label="Placement"
+                                size="md"
+                                radius="md"
+                                allowDeselect={false}
+                                value={form.placement}
+                                onChange={(value) =>
+                                    updateForm("placement", value ?? "HOMEPAGE")
+                                }
+                                data={[
+                                    { value: "HOMEPAGE", label: "Halaman Utama" },
+                                    { value: "CAMPAIGN", label: "Kampanye" },
+                                    { value: "CATEGORY", label: "Kategori" },
+                                    { value: "PRODUCT", label: "Produk" },
+                                ]}
+                            />
+
+                            <NumberInput
+                                label="Prioritas"
+                                size="md"
+                                radius="md"
+                                min={0}
+                                value={form.priority === "" ? "" : Number(form.priority)}
+                                onChange={(value) =>
+                                    updateForm(
+                                        "priority",
+                                        value === "" ? "" : String(value)
+                                    )
+                                }
+                            />
+                        </SimpleGrid>
+
+                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                            <TextInput
+                                label="Tanggal mulai"
+                                size="md"
+                                radius="md"
+                                type="datetime-local"
+                                value={form.startAt}
+                                onChange={(e) =>
+                                    updateForm("startAt", e.currentTarget.value)
+                                }
+                            />
+
+                            <TextInput
+                                label="Tanggal selesai"
+                                size="md"
+                                radius="md"
+                                type="datetime-local"
+                                value={form.endAt}
+                                onChange={(e) =>
+                                    updateForm("endAt", e.currentTarget.value)
+                                }
+                            />
+                        </SimpleGrid>
+
+                        <Switch
+                            size="md"
+                            color="green"
+                            checked={form.isActive}
+                            onChange={(e) =>
+                                updateForm("isActive", e.currentTarget.checked)
+                            }
+                            label={form.isActive ? "Aktif" : "Nonaktif"}
+                        />
+                    </Stack>
+
+                    <Group justify="flex-end" gap="sm" mt="xl">
+                        <Button
+                            type="button"
+                            variant="default"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            onClick={closeModal}
+                        >
+                            Batal
+                        </Button>
+
+                        <Button
+                            type="submit"
+                            size="md"
+                            radius="md"
+                            disabled={saving}
+                            loading={saving}
+                        >
+                            {saving ? "Menyimpan..." : editingItem ? "Simpan" : "Buat Promosi"}
+                        </Button>
+                    </Group>
+                </form>
+            </Modal>
+
+            {/* DELETE CONFIRMATION */}
+
+            <Modal
+                opened={deleteTarget !== null}
+                onClose={() => setDeleteTarget(null)}
+                title="Hapus Promosi"
+                centered
+            >
+                <Text size="sm">Hapus promosi &quot;{deleteTarget?.title}&quot;?</Text>
+
+                <Group justify="flex-end" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setDeleteTarget(null)}
+                    >
+                        Batal
+                    </Button>
+
+                    <Button color="red" size="md" radius="md" onClick={confirmDelete}>
+                        Hapus
+                    </Button>
+                </Group>
+            </Modal>
+        </Stack>
     );
 }

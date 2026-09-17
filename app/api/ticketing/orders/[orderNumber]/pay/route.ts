@@ -1,0 +1,83 @@
+import type { NextRequest } from "next/server";
+
+import { created, handleApi, ok } from "@/lib/api/response";
+import { parseOrThrow } from "@/lib/api/validation";
+import { requireAuth } from "@/lib/authz";
+import { requireSameOrigin } from "@/lib/csrf";
+import { orderNumberParamSchema } from "@/lib/ticketing/checkout-validation";
+import { createOrderPayment } from "@/lib/ticketing/payment/service";
+import { paymentCreateRequestSchema } from "@/lib/ticketing/payment/validation";
+
+/**
+ * POST /api/ticketing/orders/[orderNumber]/pay — create or resume a payment session.
+ *
+ * Design §26.3 is `POST /api/orders/{orderNumber}/pay`, described as "create or resume
+ * payment ... validate eligibility → re-reserve quota if it was released → create a new
+ * provider session".
+ *
+ * ── WHY THIS PATH, AND WHAT CHANGED FROM §26.3 ───────────────────────────────────
+ * The design's path cannot be used: `/api/orders/**` is the LIVE RETAIL order tree with a
+ * `[id]` dynamic segment, and Next.js rejects two different dynamic segment names at the
+ * same position. Moving retail is forbidden (brief §27), so — following the precedent
+ * Phase 4 set for `/api/admin/**` and Phase 6 for checkout — the ticketing surface lives
+ * under `/api/ticketing/**`.
+ *
+ * The route is nested under the existing Phase 6 order route rather than a parallel
+ * `/api/ticketing/payment/create`, because brief §26 says to "use the existing Phase 6
+ * order route if already sufficient" and not to "create duplicate order routes". Nesting
+ * also makes the ownership predicate structural: the resource being paid is the path's own
+ * order.
+ *
+ * ── WHAT IS DELIBERATELY NOT IMPLEMENTED ─────────────────────────────────────────
+ * The `re-reserve quota if it was released` clause. Re-reserving means reviving an order
+ * that already left `PENDING_PAYMENT`, i.e. repayment, and `D-09` — whether a
+ * cancelled/expired order repays at the original or the current price — is
+ * `DECISION REQUIRED` in the design register and was carried forward unresolved by Phase 6.
+ * Brief §4 forbids implementing repayment while that is open, so the service refuses a
+ * terminal order with a machine-readable pointer to `D-09` instead of guessing a price.
+ *
+ * ── CLIENT-INPUT DISCIPLINE ──────────────────────────────────────────────────────
+ * The body may contain a payment method and channel and nothing else. `paymentCreateRequestSchema`
+ * declares no financial field, so a tampered `amount`/`total`/`currency`/`organizerId`
+ * cannot reach the service (brief §7/§17) — asserted by test.
+ *
+ * `requireSameOrigin` is present because this is state-changing (Phase 3's D-56 control),
+ * and `/api/ticketing/` is already classified as protected in `proxy.ts`, which is defence
+ * in depth over the real control (`requireAuth` + the ownership predicate).
+ */
+
+export const runtime = "nodejs";
+
+export async function POST(
+    request: NextRequest,
+    { params }: { params: Promise<{ orderNumber: string }> }
+) {
+    return handleApi(async () => {
+        const csrf = requireSameOrigin(request);
+        if (csrf.error) {
+            return csrf.error;
+        }
+
+        const scope = await requireAuth();
+        const { orderNumber } = await params;
+
+        // An empty body is valid: every field is optional (all of them are presentation
+        // choices, none of them is financial).
+        const body = await request.json().catch(() => ({}));
+        const input = parseOrThrow(paymentCreateRequestSchema, body ?? {});
+
+        const payload = await createOrderPayment({
+            orderNumber: parseOrThrow(orderNumberParamSchema, orderNumber),
+            actor: scope,
+            request: input,
+            // Required, not optional: the callback URLs are built from it through the
+            // host-allowlisted `lib/app-origin.ts`.
+            httpRequest: request,
+        });
+
+        // 201 when a provider session was actually created, 200 when a live one was
+        // returned (design §30.1 row 2: "Returns the existing `paymentUrl` rather than
+        // creating a second session").
+        return payload.resumed ? ok(payload) : created(payload);
+    });
+}

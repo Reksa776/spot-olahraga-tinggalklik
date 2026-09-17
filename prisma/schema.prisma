@@ -39,6 +39,43 @@ model User {
 
   // Spin Wheel relations
   spinWheelSpins SpinWheelSpin[]
+
+  // ==========================================
+  // TICKETING FOUNDATION RELATIONS (additive)
+  // ==========================================
+  //
+  // Phase 2 — additive database foundation for the Event & Sports
+  // Ticketing domain. Nothing here is read or written by the existing
+  // retail application yet. `platformRole` is intentionally NULLABLE so
+  // no data is backfilled and the legacy `role` column keeps its exact
+  // current semantics; Phase 3 owns the population/backfill.
+
+  platformRole PlatformRole?
+
+  ownedOrganizers        Organizer[]            @relation("OrganizerOwner")
+  organizerMemberships   OrganizerMember[]      @relation("OrganizerMemberUser")
+  invitationsSent        OrganizerMember[]      @relation("OrganizerMemberInvitedBy")
+  membershipsRevoked     OrganizerMember[]      @relation("OrganizerMemberRevokedBy")
+  staffAssignmentsMade   StaffEventAssignment[] @relation("StaffAssignedBy")
+  permissionGrants       PermissionGrant[]      @relation("PermissionGrantUser")
+  permissionGrantsGiven  PermissionGrant[]      @relation("PermissionGrantGrantedBy")
+  permissionGrantsRevoked PermissionGrant[]     @relation("PermissionGrantRevokedBy")
+  eventsCreated          Event[]                @relation("EventCreatedBy")
+  ticketOrders           EventOrder[]           @relation("EventOrderBuyer")
+  ticketsHeld            Ticket[]               @relation("TicketHolder")
+  checkInsPerformed      CheckIn[]              @relation("CheckInStaff")
+  paymentsCreated        Payment[]              @relation("PaymentCreatedBy")
+  picProfile             PICProfile?            @relation("PICProfileUser")
+  picProfilesApproved    PICProfile[]           @relation("PICProfileApprovedBy")
+  picAssignmentsMade     PICEventAssignment[]   @relation("PICAssignmentAssignedBy")
+  attributionsOverridden PICAttribution[]       @relation("PICAttributionOverriddenBy")
+  feeEntriesCreated      PICFeeLedger[]         @relation("PICFeeEntryCreatedBy")
+  settlementsPrepared    Settlement[]           @relation("SettlementPreparedBy")
+  settlementsApproved    Settlement[]           @relation("SettlementApprovedBy")
+  settlementsPaid        Settlement[]           @relation("SettlementPaidBy")
+  idempotencyKeys        IdempotencyKey[]
+  auditLogs              AdminAuditLog[]        @relation("AuditLogActor")
+
   @@map("user")
 }
 
@@ -506,11 +543,41 @@ model Notification {
   order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
   user  User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
+  // ==========================================
+  // TICKETING FOUNDATION (additive, nullable)
+  // ==========================================
+  //
+  // Event & Sports Ticketing notifications (e-ticket delivery, payment
+  // events, PIC fee events). All columns are nullable so the existing
+  // retail notification writer keeps working unchanged. `orderId` keeps
+  // its retail meaning (Order); `eventOrderId` is the ticketing order.
+
+  eventOrderId  String?
+  ticketId      String?
+  eventId       String?
+  organizerId   String?
+  picProfileId  String?
+  recipientType NotificationRecipientType?
+  category      NotificationCategory?
+  templateKey   String?
+  priority      Int?
+
+  eventOrder EventOrder? @relation(fields: [eventOrderId], references: [id], onDelete: SetNull)
+  ticket     Ticket?     @relation(fields: [ticketId], references: [id], onDelete: SetNull)
+  event      Event?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  organizer  Organizer?  @relation(fields: [organizerId], references: [id], onDelete: SetNull)
+  picProfile PICProfile? @relation(fields: [picProfileId], references: [id], onDelete: SetNull)
+
+  deliveries NotificationDelivery[]
+
   @@index([orderId])
   @@index([userId])
   @@index([status])
   @@index([channel])
   @@index([notificationType])
+  @@index([eventOrderId])
+  @@index([ticketId])
+  @@index([organizerId])
   @@map("notification")
 }
 
@@ -1074,10 +1141,43 @@ model AdminAuditLog {
   metadata    Json?
   createdAt   DateTime @default(now())
 
+  // ==========================================
+  // TICKETING FOUNDATION (additive, nullable)
+  // ==========================================
+  //
+  // `adminId` stays required for the existing retail writer. The new
+  // columns remove the "adminId = SYSTEM/PROVIDER" overload by recording
+  // an explicit actor type, and add tenant scope plus before/after state
+  // for future financial auditing.
+  //
+  // `entityId` is Int and cannot be widened without altering the retail
+  // column, so new (cuid-keyed) entities use the additive `entityRef`
+  // column instead.
+
+  actorType        AuditActorType?
+  actorUserId      String?
+  actorRole        String?
+  actorOrganizerId String?
+  organizerId      String?
+  entityRef        String?
+  beforeState      Json?
+  afterState       Json?
+  reason           String?         @db.Text
+  ipAddress        String?
+  userAgent        String?
+  correlationId    String?
+
+  actorOrganizer Organizer? @relation("AuditLogActorOrganizer", fields: [actorOrganizerId], references: [id], onDelete: SetNull)
+  organizer      Organizer? @relation("AuditLogOrganizer", fields: [organizerId], references: [id], onDelete: SetNull)
+  actor          User?      @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
   @@index([adminId])
   @@index([entityType, entityId])
   @@index([action])
   @@index([createdAt])
+  @@index([actorUserId])
+  @@index([organizerId, createdAt])
+  @@index([entityType, entityRef])
   @@map("adminauditlog")
 }
 
@@ -1188,8 +1288,39 @@ model Refund {
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
+  // ==========================================
+  // TICKETING FOUNDATION (additive, nullable)
+  // ==========================================
+  //
+  // The retail refund path (orderId + amount + status) is untouched.
+  // These columns exist so a future ticketing refund can be recorded per
+  // ticket. `orderId` stays NOT NULL UNIQUE for retail; ticketing refunds
+  // reference `eventOrderId`. No retail refund behaviour changes and no
+  // business rule is applied by adding these columns.
+  //
+  // NOTE: the existing RefundStatus enum is deliberately NOT modified
+  // (adding REJECTED would alter the retail column definition). See the
+  // Phase 2 report, section 9.
+
+  refundNumber      String?              @unique
+  organizerId       String?
+  eventOrderId      String?
+  requestedByUserId String?
+  requestedByRole   String?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  feeTreatment      RefundFeeTreatment?
+  idempotencyKey    String?              @unique
+
+  organizer  Organizer?  @relation(fields: [organizerId], references: [id], onDelete: SetNull)
+  eventOrder EventOrder? @relation(fields: [eventOrderId], references: [id], onDelete: SetNull)
+  items      RefundItem[]
+  feeEntries PICFeeLedger[]
+
   @@index([status])
   @@index([createdAt])
+  @@index([organizerId])
+  @@index([eventOrderId])
   @@map("refund")
 }
 
@@ -1198,4 +1329,1292 @@ enum RefundStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+
+// =====================================================================
+// =====================================================================
+//
+//   EVENT & SPORTS TICKETING FOUNDATION  (Phase 2 — additive)
+//
+//   Everything below is NEW. No existing model, column, enum, index or
+//   relation above this line is renamed, dropped or re-typed by it.
+//
+//   Design source of truth: TICKETING_PHASE1_DESIGN.md
+//   Audit baseline:         TICKETING_REBUILD_AUDIT.md
+//
+//   Money: every monetary column is Decimal(14,2) — no Float/Double.
+//   Tenant: every organizer-owned table carries `organizerId`.
+//   Unresolved commercial decisions are NOT encoded as data defaults.
+//
+// =====================================================================
+// =====================================================================
+
+// ---------------------------------------------------------------------
+// TICKETING ENUMS
+// ---------------------------------------------------------------------
+
+/// Platform-wide role, orthogonal to the legacy retail `UserRole`.
+/// NULLABLE on User so the retail `role` column is untouched.
+enum PlatformRole {
+  CUSTOMER
+  ADMIN
+  MANAGER
+  PIC
+}
+
+enum OrganizerStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REJECTED
+  ARCHIVED
+}
+
+enum OrganizerMemberRole {
+  OWNER
+  ADMIN
+  MANAGER
+  FINANCE
+  PIC
+  CHECKIN_STAFF
+}
+
+enum OrganizerMemberStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum EventStatus {
+  DRAFT
+  PENDING_REVIEW
+  PUBLISHED
+  ONGOING
+  COMPLETED
+  CANCELLED
+  ARCHIVED
+}
+
+enum EventVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+/// Quota hold state machine (design §11.4).
+/// HELD -> CONVERTED on payment success, HELD -> RELEASED on cancel,
+/// HELD -> EXPIRED by the reaper.
+enum TicketReservationStatus {
+  HELD
+  CONVERTED
+  RELEASED
+  EXPIRED
+}
+
+/// Ticketing order lifecycle (design §12.1). Named OrderStatus to avoid
+/// colliding with the legacy retail `Order_status` enum.
+enum OrderStatus {
+  PENDING_PAYMENT
+  PAID
+  CANCELLED
+  EXPIRED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+/// Payment attempt lifecycle (design §13.1 / §13.5).
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  EXPIRED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  VIRTUAL_ACCOUNT
+  QRIS
+  E_WALLET
+  CREDIT_CARD
+  RETAIL_OUTLET
+  COD
+  OTHER
+}
+
+enum PaymentTransactionType {
+  PAYMENT
+  REFUND
+  CHARGEBACK
+  FEE
+  ADJUSTMENT
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+}
+
+/// Individual ticket lifecycle (design §19.2).
+enum TicketStatus {
+  RESERVED
+  ISSUED
+  CHECKED_IN
+  VOID
+  REFUNDED
+}
+
+enum CheckInMethod {
+  QR_SCAN
+  MANUAL
+}
+
+/// Every distinguishable outcome, including failures, so rejected scans
+/// are also auditable (design §20.2).
+enum CheckInResult {
+  SUCCESS
+  DUPLICATE
+  ALREADY_CHECKED_IN
+  INVALID_TICKET
+  WRONG_EVENT
+  UNPAID
+  TICKET_NOT_FOUND
+}
+
+enum PICStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+/// Provenance of a PIC attribution (design §14.6).
+enum PICAttributionSource {
+  ORGANIC
+  PIC_LINK
+  PIC_CODE
+  EVENT_PAGE_ATTRIBUTED
+  ADMIN_ASSIGNED
+}
+
+enum PICAttributionMethod {
+  LINK
+  QR
+  MANUAL
+}
+
+/// What the fee rate is applied to (design §15.1).
+enum FeeBasisType {
+  GROSS_BEFORE_DISCOUNT
+  GROSS_AFTER_DISCOUNT
+  NET_AFTER_GATEWAY
+}
+
+/// PERCENTAGE, FIXED or HYBRID — the actual value lives in
+/// `rateBp` / `fixedAmount` and is snapshotted per ledger entry.
+/// No fee percentage is hardcoded anywhere (design §15.3).
+enum PICFeeType {
+  PERCENTAGE
+  FIXED
+  HYBRID
+}
+
+enum PICFeeEntryType {
+  EARLY_ACCRUAL
+  EARNED
+  EARNED_ADJUSTMENT
+  REVERSAL
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum PICFeeStatus {
+  PENDING
+  EARNED
+  PAYABLE
+  APPROVED
+  SETTLED
+  VOID
+}
+
+/// Double-entry sign, so reversals and adjustments are append-only.
+enum LedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum SettlementPayeeType {
+  PIC
+  ORGANIZER
+}
+
+enum SettlementStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  PAID
+  FAILED
+  CANCELLED
+}
+
+/// MANUAL_TRANSFER vs GATEWAY_SPLIT. GATEWAY_SPLIT exists as a value but
+/// MUST NOT be used until iPaymu split-settlement is verified (D-04).
+enum SettlementMethod {
+  MANUAL_TRANSFER
+  GATEWAY_SPLIT
+}
+
+enum RefundFeeTreatment {
+  REVERSED
+  RETAINED
+  ADJUSTED
+}
+
+enum NotificationRecipientType {
+  CUSTOMER
+  PIC
+  ADMIN
+  MANAGER
+  ORGANIZER_STAFF
+}
+
+enum NotificationCategory {
+  ORDER
+  PAYMENT
+  TICKET
+  CHECKIN
+  REFUND
+  PIC_FEE
+  SETTLEMENT
+  SYSTEM
+}
+
+enum NotificationDeliveryChannel {
+  WHATSAPP
+  EMAIL
+  IN_APP
+}
+
+/// Adds SKIPPED (e.g. no opt-in, invalid recipient) to the delivery
+/// states. Deliberately NOT the legacy `Notification_status` enum.
+enum NotificationDeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum IdempotencyStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+/// Replaces the legacy `adminId = "SYSTEM"|"PROVIDER"` overload.
+enum AuditActorType {
+  USER
+  SYSTEM
+  PROVIDER
+  ADMIN
+  PIC
+  MANAGER
+}
+
+// ---------------------------------------------------------------------
+// TENANT / IDENTITY
+// ---------------------------------------------------------------------
+
+/// The tenant. Every organizer-owned row below carries `organizerId`.
+/// `ownerUserId` is the single accountable owner (design §7.3); all other
+/// access flows through OrganizerMember. Kept even though ownership could
+/// be derived from OrganizerMember(OWNER) so that "organizer with no owner"
+/// is structurally impossible.
+model Organizer {
+  id               String          @id @default(cuid())
+  ownerUserId      String
+  name             String
+  slug             String          @unique
+  description      String?         @db.Text
+  logoUrl          String?         @db.Text
+  phone            String?
+  email            String?
+  status           OrganizerStatus @default(PENDING)
+  verifiedAt       DateTime?
+  suspendedAt      DateTime?
+  suspendReason    String?         @db.Text
+  /// Basis points (1 bp = 0.01%). Placeholder rate only — no business
+  /// decision is encoded; per-event/per-PIC rates override these.
+  commissionRateBp Int             @default(0)
+  defaultPicFeeRateBp Int          @default(0)
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  owner               User                  @relation("OrganizerOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  members             OrganizerMember[]
+  staffAssignments    StaffEventAssignment[]
+  permissionGrants    PermissionGrant[]
+  venues              Venue[]
+  events              Event[]
+  ticketOrders        EventOrder[]
+  tickets             Ticket[]
+  checkIns            CheckIn[]
+  payments            Payment[]
+  paymentTransactions PaymentTransaction[]
+  picAssignments      PICEventAssignment[]
+  picAttributions     PICAttribution[]
+  feeEntries          PICFeeLedger[]
+  settlements         Settlement[]
+  refunds             Refund[]
+  notifications       Notification[]
+  auditLogs           AdminAuditLog[]       @relation("AuditLogOrganizer")
+  auditLogsAsActor    AdminAuditLog[]       @relation("AuditLogActorOrganizer")
+
+  @@index([status])
+  @@index([ownerUserId])
+  @@map("organizer")
+}
+
+/// Membership + RBAC role inside one organizer (design §7.3).
+/// Role rules are enforced in the service layer from Phase 3 onward — this
+/// phase only guarantees one membership row per (organizer, user).
+model OrganizerMember {
+  id              String                @id @default(cuid())
+  organizerId     String
+  userId          String
+  role            OrganizerMemberRole
+  status          OrganizerMemberStatus @default(INVITED)
+  invitedByUserId String?
+  invitedAt       DateTime?
+  acceptedAt      DateTime?
+  revokedAt       DateTime?
+  revokedByUserId String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  organizer        Organizer              @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  user             User                   @relation("OrganizerMemberUser", fields: [userId], references: [id], onDelete: Restrict)
+  invitedBy        User?                  @relation("OrganizerMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+  revokedBy        User?                  @relation("OrganizerMemberRevokedBy", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+  staffAssignments StaffEventAssignment[]
+  checkIns         CheckIn[]
+
+  @@unique([organizerId, userId])
+  @@index([userId, status])
+  @@index([organizerId, role])
+  @@map("organizermember")
+}
+
+/// Event-level grant for CHECKIN_STAFF (and future STEWARD) members, so a
+/// staff account is never implicitly granted the whole organizer's events
+/// (design §4.3).
+model StaffEventAssignment {
+  id                String    @id @default(cuid())
+  organizerMemberId String
+  eventId           String
+  organizerId       String
+  assignedByUserId  String?
+  assignedAt        DateTime  @default(now())
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organizerMember OrganizerMember @relation(fields: [organizerMemberId], references: [id], onDelete: Cascade)
+  event           Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  organizer       Organizer       @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  assignedBy      User?           @relation("StaffAssignedBy", fields: [assignedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([organizerMemberId, eventId])
+  @@index([eventId, revokedAt])
+  @@index([organizerId])
+  @@map("staffeventassignment")
+}
+
+/// Explicit allow-list for privileged financial actions (design §6.4).
+/// `organizerId = NULL` means a platform-wide grant.
+model PermissionGrant {
+  id              String    @id @default(cuid())
+  userId          String
+  organizerId     String?
+  /// Stable permission key, e.g. "pic_fee.override" (design §6.2).
+  permission      String
+  grantedByUserId String
+  grantedAt       DateTime  @default(now())
+  revokedAt       DateTime?
+  revokedByUserId String?
+  reason          String?   @db.Text
+  createdAt       DateTime  @default(now())
+
+  user      User        @relation("PermissionGrantUser", fields: [userId], references: [id], onDelete: Cascade)
+  organizer Organizer?  @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  grantedBy User        @relation("PermissionGrantGrantedBy", fields: [grantedByUserId], references: [id], onDelete: Restrict)
+  revokedBy User?       @relation("PermissionGrantRevokedBy", fields: [revokedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, organizerId, permission])
+  @@index([userId, permission])
+  @@map("permissiongrant")
+}
+
+// ---------------------------------------------------------------------
+// CATALOG PREREQUISITES: SPORT + VENUE
+// ---------------------------------------------------------------------
+
+/// Global taxonomy (basketball, badminton, futsal, volleyball, running,
+/// and any future sport — not hardcoded to those examples).
+model Sport {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  iconUrl   String?  @db.Text
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events Event[]
+
+  @@index([isActive, sortOrder])
+  @@map("sport")
+}
+
+/// `organizerId = NULL` = platform-level shared venue; non-null = the
+/// venue belongs to that organizer. This models the unresolved ownership
+/// question (D-12) additively: no business rule is asserted beyond
+/// "a venue may be global or organizer-scoped".
+model Venue {
+  id          String   @id @default(cuid())
+  organizerId String?
+  name        String
+  address     String?  @db.Text
+  city        String?
+  province    String?
+  latitude    Decimal? @db.Decimal(10, 7)
+  longitude   Decimal? @db.Decimal(10, 7)
+  capacity    Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  organizer Organizer? @relation(fields: [organizerId], references: [id], onDelete: SetNull)
+  events    Event[]
+
+  @@index([organizerId])
+  @@index([city, name])
+  @@map("venue")
+}
+
+// ---------------------------------------------------------------------
+// EVENT
+// ---------------------------------------------------------------------
+
+model Event {
+  id              String          @id @default(cuid())
+  organizerId     String
+  sportId         String
+  venueId         String?
+  title           String
+  /// CANONICAL public URL: /events/{slug}. Globally unique (design §10.6).
+  slug            String          @unique
+  /// Optional additional share identifier. Exists for D-03; not required
+  /// and not read by anything yet.
+  shareCode       String?         @unique
+  /// Human-readable reference, e.g. TKL-EVT-2026-000123.
+  eventCode       String          @unique
+  description     String?         @db.Text
+  rules           String?         @db.Text
+  bannerUrl       String?         @db.Text
+  status          EventStatus     @default(DRAFT)
+  visibility      EventVisibility @default(PUBLIC)
+  startAt         DateTime
+  endAt           DateTime?
+  salesStartAt    DateTime?
+  salesEndAt      DateTime?
+  timezone        String          @default("Asia/Jakarta")
+  maxTicketsPerOrder Int?
+  requiresCheckIn    Boolean       @default(true)
+  /// Default applied to newly created ticket types (design §11.6).
+  /// Whether quota is returned on refund is D-08; this is the documented
+  /// design default, not a resolved business decision.
+  returnQuotaOnRefund Boolean      @default(false)
+  /// Refund window. NULL = no explicit refund deadline (D-29 unresolved).
+  refundDeadlineAt   DateTime?
+  contactName     String?
+  contactPhone    String?
+  publishedAt     DateTime?
+  cancelledAt     DateTime?
+  cancelReason    String?         @db.Text
+  archivedAt      DateTime?
+  createdByUserId String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  organizer        Organizer              @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  sport            Sport                  @relation(fields: [sportId], references: [id], onDelete: Restrict)
+  venue            Venue?                 @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  createdBy        User                   @relation("EventCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  images           EventImage[]
+  ticketTypes      TicketType[]
+  orders           EventOrder[]
+  tickets          Ticket[]
+  reservations     TicketReservation[]
+  staffAssignments StaffEventAssignment[]
+  picAssignments   PICEventAssignment[]
+  picAttributions  PICAttribution[]
+  feeEntries       PICFeeLedger[]
+  checkIns         CheckIn[]
+  notifications    Notification[]
+
+  @@index([status, visibility, startAt])
+  @@index([organizerId, status, startAt])
+  @@index([sportId, status, startAt])
+  @@index([venueId])
+  @@map("event")
+}
+
+model EventImage {
+  id        String   @id @default(cuid())
+  eventId   String
+  url       String   @db.Text
+  altText   String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, sortOrder])
+  @@map("eventimage")
+}
+
+// ---------------------------------------------------------------------
+// TICKET TYPE, QUOTA HOLD, ORDER
+// ---------------------------------------------------------------------
+
+/// Sellable ticket category. `quota` is the hard ceiling; `sold` counts
+/// converted units. Quota mutation is NOT implemented in this phase —
+/// Phase 4/6 owns the atomic conditional UPDATE primitive that
+/// lib/checkout.ts already proves works for retail (design §11.6).
+model TicketType {
+  id          String    @id @default(cuid())
+  eventId     String
+  name        String
+  description String?   @db.Text
+  price       Decimal   @db.Decimal(14, 2)
+  currency    String    @default("IDR")
+  quota       Int
+  sold        Int       @default(0)
+  reserved    Int       @default(0)
+  minPerOrder Int       @default(1)
+  maxPerOrder Int?
+  salesStartAt DateTime?
+  salesEndAt   DateTime?
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  /// Optimistic-lock counter, mirroring the existing Flashsale `version`.
+  version     Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  event        Event               @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  orderItems   EventOrderItem[]
+  tickets      Ticket[]
+  reservations TicketReservation[]
+  feeEntries   PICFeeLedger[]
+
+  @@index([eventId, isActive, sortOrder])
+  @@index([eventId, salesStartAt, salesEndAt])
+  @@map("tickettype")
+}
+
+/// DB-visible quota hold. `TicketType.reserved` is the authoritative
+/// counter; these rows exist so expiry is recoverable and every hold is
+/// auditable. Created/expired by later phases, not by this one.
+model TicketReservation {
+  id           String                  @id @default(cuid())
+  orderId      String
+  ticketTypeId String
+  eventId      String
+  quantity     Int
+  status       TicketReservationStatus @default(HELD)
+  expiresAt    DateTime
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  order      EventOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  event      Event      @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@index([status, expiresAt])
+  @@index([orderId])
+  @@index([ticketTypeId, status])
+  @@map("ticketreservation")
+}
+
+/// The ticketing order aggregate. Deliberately a NEW model: the retail
+/// `Order` keeps its Shopify-style BigInt ids, `orderNumber` and enum
+/// untouched, so no retail row is ever reinterpreted.
+model EventOrder {
+  id            String        @id @default(cuid())
+  orderNumber   String        @unique
+  organizerId   String
+  eventId       String
+  userId        String
+  buyerName     String
+  buyerEmail    String?
+  buyerPhone    String?
+  status        OrderStatus   @default(PENDING_PAYMENT)
+  paymentStatus PaymentStatus @default(UNPAID)
+
+  // --- immutable money snapshots (design §17.2) ---
+  subtotal           Decimal @db.Decimal(14, 2)
+  discount           Decimal @default(0) @db.Decimal(14, 2)
+  platformFee        Decimal @default(0) @db.Decimal(14, 2)
+  gatewayFee         Decimal? @db.Decimal(14, 2)
+  picFeeTotal        Decimal @default(0) @db.Decimal(14, 2)
+  total              Decimal @db.Decimal(14, 2)
+  organizerNetAmount Decimal @db.Decimal(14, 2)
+  refundedAmount     Decimal @default(0) @db.Decimal(14, 2)
+  currency           String  @default("IDR")
+
+  // --- attribution (design §14) ---
+  picProfileId String?
+  couponId     String?
+  couponCode   String?
+
+  // --- lifecycle timestamps ---
+  expiresAt           DateTime?
+  paidAt              DateTime?
+  cancelledAt         DateTime?
+  cancelReason        String?   @db.Text
+  /// Set when fulfilment must be held (organizer/admin suspension,
+  /// dispute). No background worker exists in Phase 2, so unattended
+  /// auto-expiry of `expiresAt` is owned by a later phase (design §12.3).
+  fulfilmentBlockedAt DateTime?
+  note                String?   @db.Text
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organizer  Organizer  @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  event      Event      @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  buyer      User       @relation("EventOrderBuyer", fields: [userId], references: [id], onDelete: Restrict)
+  picProfile PICProfile? @relation(fields: [picProfileId], references: [id], onDelete: SetNull)
+
+  items               EventOrderItem[]
+  tickets             Ticket[]
+  reservations        TicketReservation[]
+  payments            Payment[]
+  paymentTransactions PaymentTransaction[]
+  attribution         PICAttribution?
+  feeEntries          PICFeeLedger[]
+  refunds             Refund[]
+  settlementItems     SettlementItem[]
+  webhookEvents       WebhookEvent[]
+  notifications       Notification[]
+
+  @@index([userId, createdAt])
+  @@index([organizerId, status, createdAt])
+  @@index([eventId, status])
+  @@index([status, expiresAt])
+  @@index([paymentStatus])
+  @@index([picProfileId])
+  @@map("eventorder")
+}
+
+/// Immutable purchase-time price snapshot. Historical order value never
+/// re-reads the current TicketType price.
+model EventOrderItem {
+  id            String   @id @default(cuid())
+  orderId       String
+  /// Nullable + SetNull so the snapshot survives even if the ticket type
+  /// is ever removed; name/price snapshots remain authoritative.
+  ticketTypeId  String?
+  nameSnapshot  String
+  priceSnapshot Decimal  @db.Decimal(14, 2)
+  quantity      Int
+  subtotal      Decimal  @db.Decimal(14, 2)
+  createdAt     DateTime @default(now())
+
+  order      EventOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  ticketType TicketType? @relation(fields: [ticketTypeId], references: [id], onDelete: SetNull)
+  tickets    Ticket[]
+  feeEntries PICFeeLedger[]
+  refundItems RefundItem[]
+
+  @@index([orderId])
+  @@index([ticketTypeId])
+  @@map("eventorderitem")
+}
+
+/// ONE ROW PER ADMITTEE. quantity = 3 produces three Ticket rows (design
+/// §11.5 / §19). Issuance, QR generation and e-ticket delivery are later
+/// phases — this phase only guarantees the row shape is ready for them.
+model Ticket {
+  id          String @id @default(cuid())
+  /// Human-readable code printed on the e-ticket.
+  ticketCode  String @unique
+  /// Only the HASH of the QR token is persisted; the raw token is shown
+  /// once at issuance (design §19.3). Generation is Phase 8.
+  qrTokenHash String @unique
+  qrVersion   Int    @default(1)
+
+  orderId     String
+  orderItemId String
+  /// 1..quantity, unique within the order item.
+  sequenceNo  Int
+  ticketTypeId String
+  eventId     String
+  organizerId String
+
+  holderUserId  String?
+  attendeeName  String?
+  attendeeEmail String?
+  attendeePhone String?
+  seatLabel     String?
+
+  status      TicketStatus @default(RESERVED)
+  issuedAt    DateTime?
+  checkedInAt DateTime?
+  refundedAt  DateTime?
+  voidedAt    DateTime?
+  voidReason  String?      @db.Text
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  order      EventOrder     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItem  EventOrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  ticketType TicketType     @relation(fields: [ticketTypeId], references: [id], onDelete: Restrict)
+  event      Event          @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  organizer  Organizer      @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  holder     User?          @relation("TicketHolder", fields: [holderUserId], references: [id], onDelete: SetNull)
+
+  checkIn       CheckIn?
+  refundItem    RefundItem?
+  notifications Notification[]
+
+  @@unique([orderItemId, sequenceNo])
+  @@index([eventId, status])
+  @@index([organizerId, status])
+  @@index([holderUserId, status])
+  @@index([ticketTypeId, status])
+  @@index([eventId, checkedInAt])
+  @@map("ticket")
+}
+
+/// Check-in audit trail. `ticketId` is nullable so NON-success QR scans
+/// (unknown/foreign token) can still be recorded for audit — "every scan
+/// writes a row" (design §20.3). The single-success-admission guarantee
+/// comes from `TicketStatus.CHECKED_IN` plus the conditional update in
+/// CheckInService (Phase 10), and from the `ticketId` unique index below.
+model CheckIn {
+  id                  String        @id @default(cuid())
+  ticketId            String?       @unique
+  eventId             String
+  organizerId         String
+  checkedInAt         DateTime      @default(now())
+  checkedInByUserId   String
+  checkedInByMemberId String?
+  method              CheckInMethod
+  gateLabel           String?
+  deviceId            String?
+  clientScannedAt     DateTime?
+  ipAddress           String?
+  result              CheckInResult
+  note                String?       @db.Text
+  createdAt           DateTime      @default(now())
+
+  ticket            Ticket?          @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  event             Event            @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  organizer         Organizer        @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  checkedInBy       User             @relation("CheckInStaff", fields: [checkedInByUserId], references: [id], onDelete: Restrict)
+  checkedInByMember OrganizerMember? @relation(fields: [checkedInByMemberId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, checkedInAt])
+  @@index([checkedInByUserId, checkedInAt])
+  @@index([organizerId, checkedInAt])
+  @@map("checkin")
+}
+
+// ---------------------------------------------------------------------
+// PAYMENT FOUNDATION + WEBHOOK LEDGER
+// ---------------------------------------------------------------------
+
+/// Logical payment attempt for an EventOrder. NOT wired to the existing
+/// iPaymu flow in this phase; `app/api/payment/ipaymu/notification/route.ts`
+/// is untouched and the retail `Order`/`Transaction` tables stay as-is.
+/// `provider` is a plain string so a second gateway needs no enum change.
+model Payment {
+  id                  String             @id @default(cuid())
+  orderId             String
+  organizerId         String
+  provider            String             @default("ipaymu")
+  providerEnvironment PaymentEnvironment
+  method              PaymentMethod
+  channel             String?
+  amount              Decimal            @db.Decimal(14, 2)
+  currency            String             @default("IDR")
+  status              PaymentStatus      @default(UNPAID)
+  /// Provider-side session/reference id (e.g. iPaymu session id).
+  externalSessionId   String?
+  /// Our own reference sent to the provider; unique so a retried create
+  /// cannot mint two payable references for one attempt.
+  paymentReference    String             @unique
+  paymentUrl          String?            @db.Text
+  expiresAt           DateTime?
+  createdByUserId     String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  order         EventOrder           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  organizer     Organizer            @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  createdBy     User?                @relation("PaymentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  transactions  PaymentTransaction[]
+  webhookEvents WebhookEvent[]
+
+  @@index([orderId, status])
+  @@index([organizerId, status])
+  @@index([status, expiresAt])
+  @@index([externalSessionId])
+  @@map("payment")
+}
+
+/// Append-only provider transaction record (payment, refund, chargeback,
+/// fee). `status` is a plain string because Phase 1 defined no enum for
+/// provider-specific status text (documented in the Phase 2 report).
+model PaymentTransaction {
+  id                    String                 @id @default(cuid())
+  paymentId             String
+  orderId               String
+  organizerId           String
+  provider              String
+  providerTransactionId String?
+  type                  PaymentTransactionType
+  amount                Decimal                @db.Decimal(14, 2)
+  /// Actual gateway fee, when the provider reports it.
+  providerFee           Decimal?               @db.Decimal(14, 2)
+  currency              String                 @default("IDR")
+  status                String
+  /// Redacted summary — never a full raw payload (design §31.3 PII rule).
+  rawSummary            Json?
+  occurredAt            DateTime
+  createdAt             DateTime               @default(now())
+
+  payment   Payment    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  order     EventOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  organizer Organizer  @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+
+  @@index([providerTransactionId])
+  @@index([paymentId])
+  @@index([orderId, createdAt])
+  @@map("paymenttransaction")
+}
+
+/// THE REPLAY DEFENCE. Phase 0 finding S-5: replay detection was inferred
+/// from order state only, so an exact provider redelivery could not be
+/// distinguished from a new event. `providerEventId` is UNIQUE — a
+/// replayed webhook collides and is recorded once (design §21). No
+/// webhook processing logic is implemented in this phase.
+model WebhookEvent {
+  id                    String                  @id @default(cuid())
+  provider              String
+  /// Provider's own event/message id. The replay-prevention key.
+  providerEventId       String                  @unique
+  providerTransactionId String?
+  eventType             String
+  statusCode            String?
+  /// Amount AS REPORTED BY THE PROVIDER (untrusted until verified).
+  amountReported        Decimal?                @db.Decimal(14, 2)
+  /// SHA-256 of the raw body, for forensic comparison.
+  payloadHash           String
+  /// Redacted payload summary; full raw bodies are not retained here.
+  payloadJson           Json?
+  signatureValid        Boolean                 @default(false)
+  orderId               String?
+  paymentId             String?
+  processingStatus      WebhookProcessingStatus @default(RECEIVED)
+  processingResult      String?
+  errorMessage          String?                 @db.Text
+  remoteIp              String?
+  receivedAt            DateTime                @default(now())
+  processedAt           DateTime?
+  createdAt             DateTime                @default(now())
+
+  order   EventOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  payment Payment?    @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([provider, receivedAt])
+  @@index([processingStatus, receivedAt])
+  @@index([orderId, receivedAt])
+  @@map("webhookevent")
+}
+
+// ---------------------------------------------------------------------
+// PIC (replaces the legacy Affiliate concept — legacy data is NOT migrated)
+// ---------------------------------------------------------------------
+
+/// A PIC is a User with a PIC profile. `userId` is UNIQUE (one profile per
+/// account) and `picCode` is the public-safe identifier used in links and
+/// share codes.
+model PICProfile {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  picCode          String    @unique
+  displayName      String
+  status           PICStatus @default(PENDING)
+  /// Basis points. 0 means "inherit event/organizer/platform default" —
+  /// it deliberately encodes no business rate.
+  defaultFeeRateBp Int       @default(0)
+  /// When false, the PIC may only attribute events they are assigned to
+  /// (design §14.3). Checked in the service layer from Phase 9.
+  canSellAllEvents Boolean   @default(false)
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  taxId             String?
+  /// Human-review note ONLY. No KTP/ID-card file is stored here or in any
+  /// other new table: Phase 0 finding S-1 showed ID scans committed to git,
+  /// and the remediation (§33.2) is an approved, human-owned task.
+  identityNote      String?   @db.Text
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  suspendedAt       DateTime?
+  suspendReason     String?   @db.Text
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user             User                 @relation("PICProfileUser", fields: [userId], references: [id], onDelete: Cascade)
+  approvedBy       User?                @relation("PICProfileApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  eventAssignments PICEventAssignment[]
+  attributions     PICAttribution[]
+  feeEntries       PICFeeLedger[]
+  settlements      Settlement[]
+  eventOrders      EventOrder[]
+  notifications    Notification[]
+
+  @@index([status])
+  @@map("picprofile")
+}
+
+/// "Event A has PIC Andi / Budi / Citra". The assignment is the authority
+/// that scopes both sales and fee entitlement. `feeRateBp` overrides the
+/// PIC default for this event; NULL means "inherit".
+model PICEventAssignment {
+  id               String     @id @default(cuid())
+  picProfileId     String
+  eventId          String
+  organizerId      String
+  feeRateBp        Int?
+  feeTypeOverride  PICFeeType?
+  assignedByUserId String
+  assignedAt       DateTime   @default(now())
+  revokedAt        DateTime?
+  isActive         Boolean    @default(true)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  picProfile PICProfile @relation(fields: [picProfileId], references: [id], onDelete: Restrict)
+  event      Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  organizer  Organizer  @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+  assignedBy User       @relation("PICAssignmentAssignedBy", fields: [assignedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([picProfileId, eventId])
+  @@index([eventId, isActive])
+  @@index([picProfileId, isActive])
+  @@index([organizerId])
+  @@map("piceventassignment")
+}
+
+/// The single attribution record per order (orderId UNIQUE) — this is what
+/// makes "duplicate attribution" structurally impossible. Source is
+/// explicit, so platform-driven assignment can never masquerade as a PIC
+/// self-referral (design §14.6). `method`/`shareToken`/touch timestamps
+/// exist for a future LINK/QR model (D-01) but are NOT required by it.
+model PICAttribution {
+  id                 String                @id @default(cuid())
+  orderId            String                @unique
+  organizerId        String
+  eventId            String
+  picProfileId       String
+  source             PICAttributionSource
+  method             PICAttributionMethod?
+  shareToken         String?
+  firstTouchAt       DateTime?
+  lastTouchAt        DateTime?
+  capturedAt         DateTime              @default(now())
+  /// true = attribution frozen (final). Freezing is NOT applied in this
+  /// phase; later phases own the rule that flips it.
+  isFinal            Boolean               @default(false)
+  finalizedAt        DateTime?
+  selfReferral       Boolean               @default(false)
+  overriddenByUserId String?
+  overrideReason     String?               @db.Text
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  order       EventOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  organizer   Organizer   @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  event       Event       @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  picProfile  PICProfile  @relation(fields: [picProfileId], references: [id], onDelete: Restrict)
+  overriddenBy User?     @relation("PICAttributionOverriddenBy", fields: [overriddenByUserId], references: [id], onDelete: SetNull)
+  feeEntries  PICFeeLedger[]
+
+  @@index([picProfileId, createdAt])
+  @@index([eventId, createdAt])
+  @@index([organizerId, createdAt])
+  @@map("picattribution")
+}
+
+/// APPEND-ONLY fee ledger (design §15). Never UPDATE an amount — post a
+/// REVERSAL/ADJUSTMENT row instead, so no historical figure silently
+/// mutates. `rateBp`/`fixedAmount`/`basisAmount` are SNAPSHOTS taken at
+/// posting time, so a later rate change cannot rewrite past earnings.
+model PICFeeLedger {
+  id            String           @id @default(cuid())
+  picProfileId  String
+  organizerId   String
+  eventId       String
+  orderId       String
+  orderItemId   String?
+  ticketTypeId  String?
+  attributionId String?
+  type          PICFeeEntryType
+  /// CREDIT = fee earned/payable; DEBIT = reversal/payout/adjustment.
+  direction     LedgerDirection
+  amount        Decimal          @db.Decimal(14, 2)
+  currency      String           @default("IDR")
+  feeType       PICFeeType
+  /// Snapshot of the rate actually applied (basis points).
+  rateBp        Int?
+  /// Snapshot of any fixed component (used by FIXED / HYBRID).
+  fixedAmount   Decimal?         @db.Decimal(14, 2)
+  basisType     FeeBasisType
+  /// The amount the rate/fixed component was applied to.
+  basisAmount   Decimal          @db.Decimal(14, 2)
+  quantity      Int
+  status        PICFeeStatus     @default(EARNED)
+  /// Int because the legacy Refund PK is Int (autoincrement).
+  refundId      Int?
+  settlementId  String?
+  adjustmentReason String?       @db.Text
+  createdByUserId  String?
+  /// Unique key that makes fee posting idempotent, e.g.
+  /// "fee:earned:{orderItemId}" or "fee:reversal:{refundId}".
+  idempotencyKey   String        @unique
+  createdAt        DateTime      @default(now())
+
+  picProfile PICProfile        @relation(fields: [picProfileId], references: [id], onDelete: Restrict)
+  organizer  Organizer         @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  event      Event             @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  order      EventOrder        @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderItem  EventOrderItem?   @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+  ticketType TicketType?       @relation(fields: [ticketTypeId], references: [id], onDelete: SetNull)
+  attribution PICAttribution?  @relation(fields: [attributionId], references: [id], onDelete: SetNull)
+  refund     Refund?           @relation(fields: [refundId], references: [id], onDelete: SetNull)
+  settlement Settlement?       @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  createdBy  User?             @relation("PICFeeEntryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  settlementItem SettlementItem?
+
+  /// At most one EARNED entry per order item (the idempotency guard).
+  @@unique([orderItemId, type])
+  @@index([picProfileId, status, createdAt])
+  @@index([organizerId, createdAt])
+  @@index([eventId, createdAt])
+  @@index([orderId])
+  @@index([settlementId])
+  @@map("picfeeledger")
+}
+
+// ---------------------------------------------------------------------
+// SETTLEMENT
+// ---------------------------------------------------------------------
+
+/// Two payee types on one table: PIC fee settlement and organizer
+/// remittance. Exactly one of `picProfileId` / `organizerId` is populated
+/// per row — MySQL cannot express that as a CHECK through Prisma, so it is
+/// documented and enforced in the service layer from Phase 9.
+///
+/// `method = GATEWAY_SPLIT` is storage-only. Per design D-04 iPaymu
+/// split-settlement is UNVERIFIED, so nothing may set that value yet.
+model Settlement {
+  id               String               @id @default(cuid())
+  settlementNumber String               @unique
+  payeeType        SettlementPayeeType
+  picProfileId     String?
+  organizerId      String?
+  periodStart      DateTime
+  periodEnd        DateTime
+  grossAmount      Decimal              @default(0) @db.Decimal(14, 2)
+  deductionAmount  Decimal              @default(0) @db.Decimal(14, 2)
+  netAmount        Decimal              @db.Decimal(14, 2)
+  currency         String               @default("IDR")
+  status           SettlementStatus     @default(DRAFT)
+  method           SettlementMethod
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  providerReference String?
+  providerStatus    String?
+  proofFilePath     String?
+  preparedByUserId  String
+  preparedAt        DateTime             @default(now())
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  paidByUserId      String?
+  paidAt            DateTime?
+  failureReason     String?              @db.Text
+  notes             String?              @db.Text
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  picProfile PICProfile? @relation(fields: [picProfileId], references: [id], onDelete: Restrict)
+  organizer  Organizer?  @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  preparedBy User        @relation("SettlementPreparedBy", fields: [preparedByUserId], references: [id], onDelete: Restrict)
+  approvedBy User?       @relation("SettlementApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  paidBy     User?       @relation("SettlementPaidBy", fields: [paidByUserId], references: [id], onDelete: SetNull)
+  items      SettlementItem[]
+  feeEntries PICFeeLedger[]
+
+  @@unique([payeeType, picProfileId, periodStart, periodEnd])
+  @@unique([payeeType, organizerId, periodStart, periodEnd])
+  @@index([payeeType, picProfileId, status])
+  @@index([organizerId, status])
+  @@index([status, createdAt])
+  @@map("settlement")
+}
+
+/// The lines a settlement covers. `picFeeLedgerId` is UNIQUE so one ledger
+/// entry can never be settled twice. The FK is mirrored by the settlementId
+/// on PICFeeLedger because Phase 1 defined both directions; the ledger
+/// column is the one the money code flips.
+model SettlementItem {
+  id             String          @id @default(cuid())
+  settlementId   String
+  picFeeLedgerId String?         @unique
+  orderId        String?
+  amount         Decimal         @db.Decimal(14, 2)
+  direction      LedgerDirection
+  description    String?
+  createdAt      DateTime        @default(now())
+
+  settlement Settlement    @relation(fields: [settlementId], references: [id], onDelete: Restrict)
+  feeEntry   PICFeeLedger? @relation(fields: [picFeeLedgerId], references: [id], onDelete: SetNull)
+  order      EventOrder?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([settlementId])
+  @@index([orderId])
+  @@map("settlementitem")
+}
+
+// ---------------------------------------------------------------------
+// TICKETING REFUND LINES (the retail Refund row itself is only extended)
+// ---------------------------------------------------------------------
+
+/// One line per refunded ticket. `ticketId` is UNIQUE so a ticket can be
+/// refunded at most once — the guarantee that prevents double refunds.
+model RefundItem {
+  id          String   @id @default(cuid())
+  /// Int because the legacy Refund PK is Int (autoincrement).
+  refundId    Int
+  ticketId    String   @unique
+  orderItemId String?
+  amount      Decimal  @db.Decimal(14, 2)
+  createdAt   DateTime @default(now())
+
+  refund    Refund          @relation(fields: [refundId], references: [id], onDelete: Cascade)
+  ticket    Ticket          @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  orderItem EventOrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+
+  @@index([refundId])
+  @@index([orderItemId])
+  @@map("refunditem")
+}
+
+// ---------------------------------------------------------------------
+// NOTIFICATION DELIVERY + IDEMPOTENCY + PLATFORM SETTINGS
+// ---------------------------------------------------------------------
+
+/// Per-channel delivery state for a Notification. Kept separate from the
+/// legacy `Notification.status` (which is enqueue-level) so an existing
+/// retail notification row is never reinterpreted. `(notificationId,
+/// channel)` is unique, which makes fan-out itself idempotent.
+model NotificationDelivery {
+  id                String                      @id @default(cuid())
+  notificationId    Int
+  channel           NotificationDeliveryChannel
+  provider          String?
+  status            NotificationDeliveryStatus  @default(QUEUED)
+  attemptCount      Int                         @default(0)
+  maxAttempts       Int                         @default(3)
+  providerMessageId String?
+  errorCode         String?
+  errorMessage      String?                     @db.Text
+  queuedAt          DateTime                    @default(now())
+  sentAt            DateTime?
+  failedAt          DateTime?
+  nextRetryAt       DateTime?
+  createdAt         DateTime                    @default(now())
+  updatedAt         DateTime                    @updatedAt
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, channel])
+  @@index([status, nextRetryAt])
+  @@map("notificationdelivery")
+}
+
+/// Records a request idempotency key so a retried checkout/payment/refund
+/// cannot create a second effect. Unique on (userId, scope, key). No
+/// middleware reads this table yet — Phase 6 owns enforcement.
+model IdempotencyKey {
+  id          String            @id @default(cuid())
+  userId      String
+  /// Logical operation, e.g. "checkout", "payment.create", "refund.create".
+  scope       String
+  key         String
+  /// Hash of the request body, to reject same-key/different-body replays.
+  requestHash String
+  /// Reference to the stored result (e.g. orderNumber) once completed.
+  responseRef String?
+  status      IdempotencyStatus @default(IN_PROGRESS)
+  expiresAt   DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, scope, key])
+  @@index([expiresAt])
+  @@map("idempotencykey")
+}
+
+/// Single-row platform configuration. No fee percentage is seeded: the
+/// defaults are 0 so an unconfigured platform cannot silently charge a
+/// rate that no business decision has approved.
+model PlatformSetting {
+  id                      Int      @id @default(1)
+  platformName            String   @default("TinggalKlik.Co")
+  logoUrl                 String?  @db.Text
+  email                   String?
+  phone                   String?
+  address                 String?  @db.Text
+  defaultPicFeeRateBp     Int      @default(0)
+  defaultPlatformFeeRateBp Int     @default(0)
+  reservationTtlMinutes   Int      @default(30)
+  /// Above this row count an export must run as a background job
+  /// (design §24.5).
+  exportSyncMaxRows       Int      @default(5000)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@map("platformsetting")
 }

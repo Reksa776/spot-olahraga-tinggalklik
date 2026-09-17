@@ -2,36 +2,45 @@
 
 import Image from "next/image";
 import { useRef, useState } from "react";
-import {
-    FiImage,
-    FiUpload,
-    FiX,
-} from "react-icons/fi";
+import { FiImage, FiUpload, FiX } from "react-icons/fi";
 import toast from "react-hot-toast";
+import {
+    ActionIcon,
+    Box,
+    Group,
+    Loader,
+    Paper,
+    SegmentedControl,
+    Stack,
+    Text,
+    TextInput,
+} from "@mantine/core";
 
 type Props = {
     value: string;
     onChange: (value: string) => void;
 };
 
-export default function ProductImageUpload({
-    value,
-    onChange,
-}: Props) {
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: the `POST /api/admin/upload` multipart call (same `FormData` key `file`, same
+ * endpoint, same response parsing), the `data.url` hand-off via `onChange`, the `uploading` gate,
+ * the `inputRef.value = ""` reset in `finally` and inside `removeImage()`, the `urlInput` mirror of
+ * `value`, the two modes and their default, and every toast/error message.
+ *
+ * The file picker stays a native `<input type="file">` — hidden and triggered by a `<label>`, which
+ * is the accessible way to open a picker without a clickable `div`. `SegmentedControl` replaces the
+ * two hand-styled toggle buttons so mode selection reads like the rest of the dashboard.
+ */
+export default function ProductImageUpload({ value, onChange }: Props) {
     const inputRef = useRef<HTMLInputElement>(null);
 
-    const [uploading, setUploading] =
-        useState(false);
+    const [uploading, setUploading] = useState(false);
+    const [mode, setMode] = useState<"upload" | "url">("upload");
+    const [urlInput, setUrlInput] = useState(value);
 
-    const [mode, setMode] =
-        useState<"upload" | "url">("upload");
-
-    const [urlInput, setUrlInput] =
-        useState(value);
-
-    async function handleUpload(
-        event: React.ChangeEvent<HTMLInputElement>
-    ) {
+    async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
         const file = event.target.files?.[0];
 
         if (!file) {
@@ -45,32 +54,22 @@ export default function ProductImageUpload({
 
             formData.append("file", file);
 
-            const response = await fetch(
-                "/api/admin/upload",
-                {
-                    method: "POST",
-                    body: formData,
-                }
-            );
+            const response = await fetch("/api/admin/upload", {
+                method: "POST",
+                body: formData,
+            });
 
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(
-                    data.message ||
-                        "Upload gagal"
-                );
+                throw new Error(data.message || "Upload gagal");
             }
 
             onChange(data.url);
         } catch (error) {
             console.error(error);
 
-            toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Upload gagal"
-            );
+            toast.error(error instanceof Error ? error.message : "Upload gagal");
         } finally {
             setUploading(false);
 
@@ -80,12 +79,10 @@ export default function ProductImageUpload({
         }
     }
 
-    function handleUrlChange(
-        value: string
-    ) {
-        setUrlInput(value);
+    function handleUrlChange(next: string) {
+        setUrlInput(next);
 
-        onChange(value);
+        onChange(next);
     }
 
     function removeImage() {
@@ -99,131 +96,111 @@ export default function ProductImageUpload({
     }
 
     return (
-        <div className="space-y-4">
-
-            <div className="flex gap-2">
-
-                <button
-                    type="button"
-                    onClick={() =>
-                        setMode("upload")
-                    }
-                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                        mode === "upload"
-                            ? "bg-gray-900 text-white"
-                            : "bg-gray-100 text-gray-600"
-                    }`}
-                >
-                    Upload
-                </button>
-
-                <button
-                    type="button"
-                    onClick={() =>
-                        setMode("url")
-                    }
-                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                        mode === "url"
-                            ? "bg-gray-900 text-white"
-                            : "bg-gray-100 text-gray-600"
-                    }`}
-                >
-                    URL
-                </button>
-
-            </div>
+        <Stack gap="md">
+            <SegmentedControl
+                size="md"
+                radius="md"
+                value={mode}
+                onChange={(next) => setMode(next as "upload" | "url")}
+                data={[
+                    { label: "Upload", value: "upload" },
+                    { label: "URL", value: "url" },
+                ]}
+                w={{ base: "100%", xs: 240 }}
+            />
 
             {mode === "upload" && (
-                <div>
-
+                <Box>
                     <input
                         ref={inputRef}
                         type="file"
                         accept="image/jpeg,image/png,image/webp"
                         onChange={handleUpload}
-                        className="hidden"
+                        hidden
                         id="product-image"
                     />
 
-                    <label
+                    <Paper
+                        component="label"
                         htmlFor="product-image"
-                        className="flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-gray-300 bg-gray-50 px-6 text-center transition hover:border-gray-400 hover:bg-gray-100"
+                        withBorder
+                        radius="md"
+                        p="xl"
+                        style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            minHeight: 176,
+                            textAlign: "center",
+                            cursor: "pointer",
+                            borderStyle: "dashed",
+                            borderWidth: 2,
+                        }}
                     >
-
                         {uploading ? (
                             <>
-                                <div className="mb-3 h-8 w-8 animate-spin rounded-full border-2 border-gray-300 border-t-gray-900" />
+                                <Loader size="md" mb="sm" />
 
-                                <p className="text-sm font-medium text-gray-700">
+                                <Text size="sm" fw={500}>
                                     Mengupload...
-                                </p>
+                                </Text>
                             </>
                         ) : (
                             <>
-                                <FiUpload
-                                    size={28}
-                                    className="mb-3 text-gray-400"
-                                />
+                                <FiUpload size={26} style={{ marginBottom: 10 }} />
 
-                                <p className="text-sm font-semibold text-gray-700">
+                                <Text size="sm" fw={600}>
                                     Upload gambar produk
-                                </p>
+                                </Text>
 
-                                <p className="mt-1 text-xs text-gray-500">
+                                <Text size="xs" c="dimmed" mt={4}>
                                     JPG, PNG, WEBP • maksimal 5MB
-                                </p>
+                                </Text>
                             </>
                         )}
-
-                    </label>
-
-                </div>
+                    </Paper>
+                </Box>
             )}
 
             {mode === "url" && (
-                <div>
-
-                    <input
-                        value={urlInput}
-                        onChange={(event) =>
-                            handleUrlChange(
-                                event.target.value
-                            )
-                        }
-                        placeholder="https://example.com/product.jpg"
-                        className="h-12 w-full rounded-xl border border-gray-300 bg-white px-4 text-sm text-gray-900 placeholder:text-gray-400 outline-none focus:border-rose-500"
-                    />
-
-                </div>
+                <TextInput
+                    size="md"
+                    radius="md"
+                    value={urlInput}
+                    onChange={(event) => handleUrlChange(event.currentTarget.value)}
+                    placeholder="https://example.com/product.jpg"
+                    aria-label="URL gambar produk"
+                    leftSection={<FiImage size={16} />}
+                />
             )}
 
             {value && (
-                <div className="relative overflow-hidden rounded-2xl border border-gray-200 bg-gray-50">
-
-                    <div className="relative aspect-video w-full">
-
+                <Paper withBorder radius="md" style={{ position: "relative", overflow: "hidden" }}>
+                    <Box style={{ position: "relative", width: "100%", aspectRatio: "16 / 9" }}>
                         <Image
                             src={value}
                             alt="Preview produk"
                             fill
-                            className="object-contain"
+                            style={{ objectFit: "contain" }}
                             unoptimized
                         />
+                    </Box>
 
-                    </div>
-
-                    <button
-                        type="button"
-                        onClick={removeImage}
-                        className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-white text-gray-700 shadow-md transition hover:bg-gray-100"
-                        aria-label="Hapus gambar"
-                    >
-                        <FiX size={18} />
-                    </button>
-
-                </div>
+                    <Group style={{ position: "absolute", top: 12, right: 12 }}>
+                        <ActionIcon
+                            variant="white"
+                            color="ink"
+                            size="lg"
+                            radius="xl"
+                            onClick={removeImage}
+                            aria-label="Hapus gambar"
+                        >
+                            <FiX size={18} />
+                        </ActionIcon>
+                    </Group>
+                </Paper>
             )}
-
-        </div>
+        </Stack>
     );
 }

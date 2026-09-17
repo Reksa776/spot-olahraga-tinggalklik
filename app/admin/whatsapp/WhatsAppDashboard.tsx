@@ -1,7 +1,39 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import {
+    Alert,
+    Box,
+    Button,
+    Group,
+    Loader,
+    Paper,
+    Stack,
+    Text,
+} from "@mantine/core";
+
+import {
+    PageHeader,
+    SectionCard,
+    StatusBadge,
+    type Tone,
+} from "@/components/dashboard/primitives";
+
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * Preserved exactly: every endpoint (`/api/admin/whatsapp/{status,qr,connect,disconnect}`) and its
+ * `credentials: "include"` / `cache: "no-store"` options, the `data.success` result checks, the
+ * `POLL_INTERVAL_MS = 1500` polling loop with its initial fetch and `clearInterval` teardown, both
+ * `console.log` diagnostics (the "safe debug log" that never prints the QR string), the `setQr(null)`
+ * on a successful disconnect, the `statusRef` assignment, `canConnect = !isConnected && !isConnecting`,
+ * every `setActionError` message branch, and the Asia/Jakarta `connectedAt` formatting.
+ *
+ * Presentation changes only: the tinted `<span>` status pill became `StatusBadge` with the same six
+ * labels, the hand-rolled spinner became a Mantine `Loader` (colour now from the theme rather than a
+ * stray rose accent), and the card/rows are `SectionCard`/`Group` + `Text`.
+ */
 
 // ==========================================
 // TYPES
@@ -28,6 +60,37 @@ type StatusData = {
 // POLLING INTERVAL
 // ==========================================
 const POLL_INTERVAL_MS = 1500;
+
+/** The same six labels the previous tinted pills rendered, with their semantic tone. */
+const STATUS_TONE: Record<WhatsAppStatus, Tone> = {
+    DISCONNECTED: "neutral",
+    CONNECTING: "warn",
+    CONNECTED: "success",
+    RECONNECTING: "warn",
+    LOGGED_OUT: "error",
+    ERROR: "error",
+};
+
+const STATUS_LABEL: Record<WhatsAppStatus, string> = {
+    DISCONNECTED: "DISCONNECTED",
+    CONNECTING: "CONNECTING",
+    CONNECTED: "CONNECTED",
+    RECONNECTING: "RECONNECTING",
+    LOGGED_OUT: "LOGGED OUT",
+    ERROR: "ERROR",
+};
+
+function StatusRow({ label, children }: { label: string; children: ReactNode }) {
+    return (
+        <Group justify="space-between" align="center" gap="md" wrap="nowrap">
+            <Text size="sm" fw={500} c="dimmed">
+                {label}
+            </Text>
+
+            {children}
+        </Group>
+    );
+}
 
 // ==========================================
 // COMPONENT
@@ -163,57 +226,6 @@ export default function WhatsAppDashboard() {
     }
 
     // ==========================================
-    // RENDER STATUS BADGE
-    // ==========================================
-    function renderStatusBadge(s: WhatsAppStatus) {
-        const config: Record<
-            WhatsAppStatus,
-            { bg: string; text: string; label: string }
-        > = {
-            DISCONNECTED: {
-                bg: "bg-gray-100",
-                text: "text-gray-600",
-                label: "DISCONNECTED",
-            },
-            CONNECTING: {
-                bg: "bg-yellow-100",
-                text: "text-yellow-700",
-                label: "CONNECTING",
-            },
-            CONNECTED: {
-                bg: "bg-green-100",
-                text: "text-green-700",
-                label: "CONNECTED",
-            },
-            RECONNECTING: {
-                bg: "bg-yellow-100",
-                text: "text-yellow-700",
-                label: "RECONNECTING",
-            },
-            LOGGED_OUT: {
-                bg: "bg-red-100",
-                text: "text-red-700",
-                label: "LOGGED OUT",
-            },
-            ERROR: {
-                bg: "bg-red-100",
-                text: "text-red-700",
-                label: "ERROR",
-            },
-        };
-
-        const c = config[s] || config.DISCONNECTED;
-
-        return (
-            <span
-                className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${c.bg} ${c.text}`}
-            >
-                {c.label}
-            </span>
-        );
-    }
-
-    // ==========================================
     // RENDER
     // ==========================================
 
@@ -225,114 +237,133 @@ export default function WhatsAppDashboard() {
     });
 
     return (
-        <div className="p-4 md:p-8">
-            <div className="mx-auto max-w-lg">
-                {/* HEADER */}
-                <h1 className="mb-6 text-2xl font-bold text-gray-900">
-                    WhatsApp Integration
-                </h1>
+        <Stack gap="lg">
+            <PageHeader
+                eyebrow="Admin"
+                title="WhatsApp Integration"
+                description="Hubungkan perangkat WhatsApp untuk mengirim notifikasi ke pelanggan."
+            />
 
-                {/* MAIN CARD */}
-                <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-                    {/* STATUS */}
-                    <div className="mb-4 flex items-center justify-between">
-                        <span className="text-sm font-medium text-gray-500">
-                            Status
-                        </span>
-                        {renderStatusBadge(currentStatus)}
-                    </div>
+            <Box maw={720}>
+                <SectionCard>
+                    <Stack gap="md">
+                        {/* STATUS */}
+                        <StatusRow label="Status">
+                            <StatusBadge
+                                tone={STATUS_TONE[currentStatus] ?? "neutral"}
+                            >
+                                {STATUS_LABEL[currentStatus] ?? currentStatus}
+                            </StatusBadge>
+                        </StatusRow>
 
-                    {/* PHONE */}
-                    <div className="mb-4 flex items-center justify-between">
-                        <span className="text-sm font-medium text-gray-500">
-                            Phone
-                        </span>
-                        <span className="text-sm text-gray-900">
-                            {status?.phoneNumber || "-"}
-                        </span>
-                    </div>
+                        {/* PHONE */}
+                        <StatusRow label="Phone">
+                            <Text size="sm">{status?.phoneNumber || "-"}</Text>
+                        </StatusRow>
 
-                    {/* CONNECTED AT */}
-                    {isConnected && status?.connectedAt && (
-                        <div className="mb-4 flex items-center justify-between">
-                            <span className="text-sm font-medium text-gray-500">
-                                Connected
-                            </span>
-                            <span className="text-sm text-gray-900">
-                                {new Date(status.connectedAt).toLocaleString(
-                                    "id-ID",
-                                    {
-                                        timeZone: "Asia/Jakarta",
-                                        day: "numeric",
-                                        month: "short",
-                                        year: "numeric",
-                                        hour: "2-digit",
-                                        minute: "2-digit",
-                                    }
-                                )}
-                            </span>
-                        </div>
-                    )}
+                        {/* CONNECTED AT */}
+                        {isConnected && status?.connectedAt ? (
+                            <StatusRow label="Connected">
+                                <Text size="sm">
+                                    {new Date(status.connectedAt).toLocaleString(
+                                        "id-ID",
+                                        {
+                                            timeZone: "Asia/Jakarta",
+                                            day: "numeric",
+                                            month: "short",
+                                            year: "numeric",
+                                            hour: "2-digit",
+                                            minute: "2-digit",
+                                        }
+                                    )}
+                                </Text>
+                            </StatusRow>
+                        ) : null}
 
-                    {/* ERROR */}
-                    {(status?.lastError || actionError) && (
-                        <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-600">
-                            {actionError || status?.lastError}
-                        </div>
-                    )}
+                        {/* ERROR */}
+                        {status?.lastError || actionError ? (
+                            <Alert color="red" variant="light" radius="md">
+                                {actionError || status?.lastError}
+                            </Alert>
+                        ) : null}
 
-                    {/* QR CODE SECTION */}
-                    {qr ? (
-                        <div className="mb-6">
-                            <div className="flex justify-center rounded-xl border border-gray-200 bg-gray-50 p-6">
-                                <QRCodeSVG
-                                    value={qr}
-                                    size={280}
-                                />
-                            </div>
-                            <p className="mt-3 text-center text-xs text-gray-500">
-                                Scan QR code menggunakan WhatsApp:
-                                <br />
-                                Settings → Linked Devices → Link a Device
-                            </p>
-                        </div>
-                    ) : isConnecting ? (
-                        <div className="mb-6 flex flex-col items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 p-6">
-                            <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-rose-600" />
-                            <span className="text-sm text-gray-500">
-                                Menunggu QR code...
-                            </span>
-                        </div>
-                    ) : null}
+                        {/* QR CODE SECTION */}
+                        {qr ? (
+                            <Stack gap="xs">
+                                <Paper
+                                    withBorder
+                                    radius="md"
+                                    p="lg"
+                                    style={{
+                                        display: "flex",
+                                        justifyContent: "center",
+                                        backgroundColor:
+                                            "var(--mantine-color-gray-0)",
+                                    }}
+                                >
+                                    <QRCodeSVG value={qr} size={280} />
+                                </Paper>
 
-                    {/* ACTION BUTTONS */}
-                    <div className="flex gap-3">
+                                <Text size="xs" c="dimmed" ta="center">
+                                    Scan QR code menggunakan WhatsApp:
+                                    <br />
+                                    Settings → Linked Devices → Link a Device
+                                </Text>
+                            </Stack>
+                        ) : isConnecting ? (
+                            <Paper
+                                withBorder
+                                radius="md"
+                                p="lg"
+                                style={{
+                                    backgroundColor: "var(--mantine-color-gray-0)",
+                                }}
+                            >
+                                <Stack align="center" gap="sm">
+                                    <Loader size="md" />
+
+                                    <Text size="sm" c="dimmed">
+                                        Menunggu QR code...
+                                    </Text>
+                                </Stack>
+                            </Paper>
+                        ) : null}
+
+                        {/* ACTION BUTTONS */}
+                        {/* The `loading` prop is deliberately not used: Mantine renders the label
+                            alongside its loader, but the original showed a different label per
+                            state, so the exact three-way/binary label copy is kept and the button
+                            is only disabled while a request is in flight. */}
                         {canConnect ? (
-                            <button
-                                type="button"
+                            <Button
+                                size="md"
+                                radius="md"
+                                color="green"
+                                fullWidth
                                 onClick={handleConnect}
                                 disabled={loading || isConnecting}
-                                className="flex-1 rounded-xl bg-green-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 {loading
                                     ? "Menghubungkan..."
                                     : isConnecting
                                       ? "Menunggu QR..."
                                       : "Connect WhatsApp"}
-                            </button>
+                            </Button>
                         ) : (
-                            <button
-                                type="button"
+                            <Button
+                                size="md"
+                                radius="md"
+                                color="red"
+                                fullWidth
                                 onClick={handleDisconnect}
                                 disabled={loading}
-                                className="flex-1 rounded-xl bg-red-600 px-4 py-3 text-sm font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                                 {loading ? "Memutus..." : "Disconnect"}
-                            </button>
+                            </Button>
                         )}
-                    </div>
-                </div>
-            </div>
-        </div>
+                    </Stack>
+                </SectionCard>
+            </Box>
+        </Stack>
     );
 }

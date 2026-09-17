@@ -4,8 +4,21 @@ import { useState } from "react";
 import { FiTrash2 } from "react-icons/fi";
 import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
-import { useDialog } from "@/components/ui/Dialog";
+import { Button, Group, Modal, Stack, Text } from "@mantine/core";
 
+/**
+ * PHASE (Mantine body migration): presentation only.
+ *
+ * The confirmation moved from the shared `components/ui/Dialog` promise helper to a Mantine
+ * `Modal`, as the brief requires for dashboard-owned confirmations (§9). That helper is mounted in
+ * the root layout and serves the retail/customer graph, so using it here would have kept the
+ * dashboard coupled to the customer design system.
+ *
+ * Preserved exactly: the `DELETE /api/admin/products/{id}` call, its headers and `cache: "no-store"`,
+ * the raw-text-then-parse response handling, the `response.ok` check, the `data.message` fallbacks,
+ * the success toast, `router.refresh()` and the `loading` gate. The confirmation wording is
+ * unchanged — including the archive-not-delete caveat, which describes real server behaviour.
+ */
 export default function DeleteProductButton({
     productId,
     productName,
@@ -14,70 +27,45 @@ export default function DeleteProductButton({
     productName: string;
 }) {
     const router = useRouter();
-    const dialog = useDialog();
 
-    const [loading, setLoading] =
-        useState(false);
+    const [loading, setLoading] = useState(false);
+    const [confirming, setConfirming] = useState(false);
 
     async function handleDelete() {
-        const confirmed = await dialog.confirm({
-            title: "Hapus Produk",
-            message: `Hapus produk "${productName}"?\n\nJika produk ini punya history pesanan, produk akan diarsipkan (disembunyikan dari katalog) alih-alih dihapus permanen.`,
-            variant: "danger",
-            confirmText: "Hapus",
-        });
-
-        if (!confirmed) {
-            return;
-        }
+        setConfirming(false);
 
         try {
             setLoading(true);
 
-            const url =
-                `/api/admin/products/${productId}`;
+            const url = `/api/admin/products/${productId}`;
 
             console.log("DELETE URL:", url);
 
             const response = await fetch(url, {
                 method: "DELETE",
                 headers: {
-                    "Content-Type":
-                        "application/json",
+                    "Content-Type": "application/json",
                 },
                 cache: "no-store",
             });
 
-            console.log(
-                "DELETE STATUS:",
-                response.status
-            );
+            console.log("DELETE STATUS:", response.status);
 
-            const text =
-                await response.text();
+            const text = await response.text();
 
-            console.log(
-                "DELETE RESPONSE:",
-                text
-            );
+            console.log("DELETE RESPONSE:", text);
 
             let data: any = {};
 
             try {
-                data = text
-                    ? JSON.parse(text)
-                    : {};
+                data = text ? JSON.parse(text) : {};
             } catch {
-                console.error(
-                    "Response bukan JSON:",
-                    text
-                );
+                console.error("Response bukan JSON:", text);
             }
 
             if (!response.ok) {
                 throw new Error(
-                    data.message ||
-                    `Gagal menghapus produk. HTTP ${response.status}`
+                    data.message || `Gagal menghapus produk. HTTP ${response.status}`
                 );
             }
 
@@ -85,15 +73,10 @@ export default function DeleteProductButton({
 
             router.refresh();
         } catch (error) {
-            console.error(
-                "DELETE PRODUCT ERROR:",
-                error
-            );
+            console.error("DELETE PRODUCT ERROR:", error);
 
             toast.error(
-                error instanceof Error
-                    ? error.message
-                    : "Gagal menghapus produk."
+                error instanceof Error ? error.message : "Gagal menghapus produk."
             );
         } finally {
             setLoading(false);
@@ -101,17 +84,51 @@ export default function DeleteProductButton({
     }
 
     return (
-        <button
-            type="button"
-            onClick={handleDelete}
-            disabled={loading}
-            className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-red-100 px-3 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-            <FiTrash2 size={14} />
+        <>
+            <Button
+                variant="light"
+                color="red"
+                size="md"
+                radius="md"
+                leftSection={<FiTrash2 size={15} />}
+                loading={loading}
+                onClick={() => setConfirming(true)}
+            >
+                Hapus
+            </Button>
 
-            {loading
-                ? "Menghapus..."
-                : "Hapus"}
-        </button>
+            <Modal
+                opened={confirming}
+                onClose={() => setConfirming(false)}
+                title="Hapus Produk"
+                centered
+            >
+                <Stack gap="md">
+                    <Text size="sm">
+                        Hapus produk &quot;{productName}&quot;?
+                    </Text>
+
+                    <Text size="sm" c="dimmed">
+                        Jika produk ini punya history pesanan, produk akan diarsipkan
+                        (disembunyikan dari katalog) alih-alih dihapus permanen.
+                    </Text>
+                </Stack>
+
+                <Group justify="flex-end" mt="lg">
+                    <Button
+                        variant="default"
+                        size="md"
+                        radius="md"
+                        onClick={() => setConfirming(false)}
+                    >
+                        Batal
+                    </Button>
+
+                    <Button color="red" size="md" radius="md" onClick={handleDelete}>
+                        Hapus
+                    </Button>
+                </Group>
+            </Modal>
+        </>
     );
 }
