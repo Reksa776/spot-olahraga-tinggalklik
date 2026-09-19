@@ -13,7 +13,7 @@ import { useRouter } from "next/navigation";
  * change. The browser supplies no reason and no order id beyond the URL — `orderNumber`
  * is data, and the server resolves ownership from the session (brief §14).
  *
- * (The path is namespaced because the live retail tree owns `/api/orders/**`; see
+ * (The path is namespaced because the retail tree owned `/api/orders/**`; see
  * `app/api/ticketing/checkout/route.ts`.)
  *
  * The CSRF control is the Phase 3 same-origin check on the server; a browser sends

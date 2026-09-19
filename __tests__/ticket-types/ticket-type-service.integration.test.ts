@@ -248,9 +248,11 @@ describe("create", () => {
     test("an owner creates a tier; counters start at zero and price is exact", async () => {
         const scope = await scopeFor(ownerA.id);
 
+        // PHASE 18B (D-P17-05 = A): a sellable price carries no fractional rupiah, so the
+        // round-trip value here is a whole (but large) one.
         const created = await createTicketType(scope, eventA.id, {
             name: "Tribun",
-            price: "1234567.89",
+            price: "1234567",
             quota: 100,
             description: "Tribun utara",
             minPerOrder: 1,
@@ -260,7 +262,7 @@ describe("create", () => {
 
         expect(created.name).toBe("Tribun");
         // Exact decimal round trip — no float drift.
-        expect(created.price).toBe("1234567.89");
+        expect(created.price).toBe("1234567.00");
         expect(created.currency).toBe("IDR");
         expect(created.inventory).toEqual({
             quota: 100,

@@ -50,7 +50,7 @@ function warn(name: string, detail?: string) {
 
 console.log("\n━━━ 1. PRODUCTION CONFIGURATION ━━━");
 
-const configResult = validateIpaymuProductionConfig();
+validateIpaymuProductionConfig();
 const configSummary = getIpaymuConfigSummary();
 
 console.log(`  Mode: ${configSummary.isProduction ? "PRODUCTION" : "SANDBOX"}`);
@@ -227,7 +227,6 @@ const webhookFields: Record<string, string> = {
 
 // Build canonical body and compute expected signature
 const {
-    normalizeCallbackBody,
     computeCanonicalJson,
     computeWebhookSignature: computeWHSig,
 } = await import("@/lib/payment/ipaymu");

@@ -3,18 +3,24 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { useState, type ReactNode } from "react";import {
-    AppShell,
-    Box,
-    Divider,
-    NavLink,
-    ScrollArea,
-    Stack,
-    Text,
-} from "@mantine/core";
-import { FiExternalLink, FiLogOut } from "react-icons/fi";
+import { useState, type ReactNode } from "react";
+import { ExternalLink, LogOut } from "lucide-react";
 
 import Brand from "@/components/Brand";
+import { cn } from "@/lib/utils";
+import { Avatar, AvatarFallback } from "@/components/dashboard/ui/misc";
+import {
+    SidebarContent,
+    SidebarFooter,
+    SidebarGroupLabel,
+    SidebarHeader,
+    SidebarMenu,
+    SidebarMenuButton,
+    SidebarMenuItem,
+    SidebarMenuLabel,
+    SidebarCollapseToggle,
+    useSidebar,
+} from "@/components/dashboard/ui/sidebar";
 import { isNavGroupActive, pickActiveNavHref } from "@/lib/ui/dashboard-nav";
 
 /**
@@ -22,23 +28,38 @@ import { isNavGroupActive, pickActiveNavHref } from "@/lib/ui/dashboard-nav";
  * DASHBOARD NAVIGATION
  * ==========================================
  *
- * The sidebar's *contents* — the lockup, the section label, the grouped links and the footer
- * actions — as opposed to `DashboardShell`, which owns the `AppShell` frame around them. The split
- * exists so the admin navigation can live in `components/admin/AdminNavbar.tsx` (where four
- * pre-existing test suites look for it, and where the group definitions belong) while the rendering
- * logic stays in exactly one place.
+ * The sidebar's *contents* — the lockup, the section label, the grouped destinations and the
+ * footer actions — as opposed to `DashboardShell`, which owns the frame around them. The split
+ * exists so `DashboardAppShell` can declare the destinations while the rendering logic stays in
+ * exactly one place.
+ *
+ * SECTIONS, NOT ACCORDIONS
+ * ------------------------
+ * Every top-level entry is a labelled section whose children render flat underneath it. None of
+ * the sections collapse: a destination buried behind a chevron is a destination forgotten, and
+ * this menu is small enough that every row can stay visible. A section whose label lights up
+ * when one of its children is the active page, and exactly ONE row is highlighted at a time.
  *
  * ACTIVE STATE
  * ------------
  * Matching is on the path *and* on the query, and exactly ONE row wins — see
- * `lib/ui/dashboard-nav.ts`, which owns the rule and is tested directly. In short: the Broadcast
- * group's eight entries all point at `/admin/broadcasts` and differ only by `?type=…`, so comparing
- * the path alone would highlight all eight at once, and `/admin` must not stay lit while the user is
- * inside `/admin/products`. Group headers open themselves when one of their children is active,
- * which is what the previous sidebar did too.
+ * `lib/ui/dashboard-nav.ts`, which owns the rule and is tested directly. A parent stay unlit
+ * while the user is inside a child, and a child keeps its light on its own sub-pages.
  *
- * The footer keeps the two actions the previous sidebar had — "Lihat situs" and "Keluar" — with the
- * same `signOut({ callbackUrl: "/" })` behaviour and the same in-flight label.
+ * SHADCN REWRITE
+ * --------------
+ * This file renders through `components/dashboard/ui/sidebar.tsx`. Every behaviour is preserved:
+ * the same single-highlight rule, the same close-on-select `onNavigate`, the same logout
+ * semantics, and the same collapsible desktop rail and mobile drawer. What changed is the
+ * surface: a deep-navy band with a brand-coloured active row, labelled sections instead of a
+ * flat list, and an identity block in the footer so the rail reads as one composed surface.
+ *
+ * WHY THE LOCKUP IS STILL THE TAILWIND `Brand`
+ * -------------------------------------------
+ * There is exactly ONE brand lockup in this product (`components/Brand.tsx`, asserted by
+ * `identity-consolidation.test.ts`), and it already has a dark tone — it was written for the dark
+ * footer band. The sidebar renders that same component in its light tone rather than re-drawing the
+ * mark in shadcn classes, which is how the dashboard redesign avoids launching a second logo.
  */
 
 export type ShellNavItem = {
@@ -55,30 +76,31 @@ export type ShellNavGroup = {
 
 export type ShellNavEntry = ShellNavItem | ShellNavGroup;
 
-function isGroup(entry: ShellNavEntry): entry is ShellNavGroup {
-    return "items" in entry;
-}
-
 export default function DashboardNav({
     nav,
     sectionLabel,
     sectionDescription,
+    userName,
+    userEmail,
     onNavigate,
 }: {
-    nav: ShellNavEntry[];
+    nav: ShellNavGroup[];
     sectionLabel: string;
     sectionDescription?: string;
+    userName?: string | null;
+    userEmail?: string | null;
     onNavigate?: () => void;
 }) {
     const pathname = usePathname();
     const searchParams = useSearchParams();
     const [signingOut, setSigningOut] = useState(false);
     const currentQuery = searchParams.toString();
+    const { collapsed } = useSidebar();
 
     // Every destination the caller supplied, flattened. The winner among them is the only row that
     // renders as active, so the sidebar can never claim two current pages at once.
-    const allHrefs = nav.flatMap((entry) =>
-        isGroup(entry) ? entry.items.map((item) => item.href) : [entry.href]
+    const allHrefs = nav.flatMap((group) =>
+        group.items.map((item) => item.href)
     );
 
     const activeHref = pickActiveNavHref(allHrefs, pathname, currentQuery);
@@ -87,13 +109,21 @@ export default function DashboardNav({
         return href === activeHref;
     }
 
-    function groupActive(group: ShellNavGroup): boolean {
+    function sectionActive(group: ShellNavGroup): boolean {
         return isNavGroupActive(
             group.items.map((item) => item.href),
             pathname,
             currentQuery
         );
     }
+
+    const initials = (userName ?? userEmail ?? "?")
+        .split(" ")
+        .map((part) => part[0])
+        .filter(Boolean)
+        .slice(0, 2)
+        .join("")
+        .toUpperCase();
 
     async function handleSignOut() {
         try {
@@ -106,91 +136,109 @@ export default function DashboardNav({
 
     return (
         <>
-            <AppShell.Section>
-                <Box px="xs" py="sm">
-                    <Brand />
-                </Box>
+            {/* ── LOCKUP + SECTION CONTEXT ───────────────────────────────────────── */}
+            <SidebarHeader>
+                <div className={cn("min-w-0 flex-1", collapsed && "md:hidden")}>
+                    <Brand tone="light" />
 
-                <Stack gap={0} px="xs" pb="xs">
-                    <Text size="xs" fw={700} tt="uppercase" c="dimmed" style={{ letterSpacing: "0.06em" }}>
-                        {sectionLabel}
-                    </Text>
-                    {sectionDescription ? (
-                        <Text size="xs" c="dimmed" lineClamp={2}>
-                            {sectionDescription}
-                        </Text>
-                    ) : null}
-                </Stack>
+                    <div className="mt-2.5 flex flex-col gap-1">
+                        <span className="w-fit rounded-full bg-sidebar-accent px-2 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wider text-sidebar-accent-foreground">
+                            {sectionLabel}
+                        </span>
 
-                <Divider my="xs" />
-            </AppShell.Section>
+                        {sectionDescription ? (
+                            <span className="line-clamp-2 text-[0.6875rem] leading-relaxed text-sidebar-foreground/55">
+                                {sectionDescription}
+                            </span>
+                        ) : null}
+                    </div>
+                </div>
 
-            <AppShell.Section grow component={ScrollArea} type="auto" offsetScrollbars>
-                <Stack gap={2}>
-                    {nav.map((entry) => {
-                        if (!isGroup(entry)) {
-                            return (
-                                <NavLink
-                                    key={entry.href}
-                                    component={Link}
-                                    href={entry.href}
-                                    label={entry.label}
-                                    leftSection={entry.icon}
-                                    active={itemActive(entry.href)}
-                                    onClick={onNavigate}
-                                    variant="light"
-                                    color="brand"
-                                />
-                            );
-                        }
+                <SidebarCollapseToggle />
+            </SidebarHeader>
 
-                        return (
-                            <NavLink
-                                key={entry.label}
-                                label={entry.label}
-                                leftSection={entry.icon}
-                                childrenOffset={28}
-                                defaultOpened={groupActive(entry)}
-                                variant="light"
-                                color="brand"
-                            >
-                                {entry.items.map((item) => (
-                                    <NavLink
-                                        key={`${item.href}-${item.label}`}
-                                        component={Link}
-                                        href={item.href}
-                                        label={item.label}
-                                        leftSection={item.icon}
-                                        active={itemActive(item.href)}
-                                        onClick={onNavigate}
-                                        color="brand"
-                                    />
-                                ))}
-                            </NavLink>
-                        );
-                    })}
-                </Stack>
-            </AppShell.Section>
+            {/* ── DESTINATIONS, BY LABELLED SECTION ──────────────────────────────── */}
+            <SidebarContent>
+                {nav.map((group) => (
+                    <section
+                        key={group.label}
+                        className="flex min-w-0 flex-col gap-0.5"
+                    >
+                        <SidebarGroupLabel
+                            className={cn(
+                                sectionActive(group) &&
+                                    "text-sidebar-foreground"
+                            )}
+                        >
+                            {group.label}
+                        </SidebarGroupLabel>
 
-            <AppShell.Section>
-                <Divider my="xs" />
+                        <SidebarMenu>
+                            {group.items.map((entry) => (
+                                <SidebarMenuItem key={entry.href}>
+                                    <SidebarMenuButton
+                                        asChild
+                                        isActive={itemActive(entry.href)}
+                                        tooltip={entry.label}
+                                    >
+                                        <Link href={entry.href} onClick={onNavigate}>
+                                            {entry.icon}
+                                            <SidebarMenuLabel>
+                                                {entry.label}
+                                            </SidebarMenuLabel>
+                                        </Link>
+                                    </SidebarMenuButton>
+                                </SidebarMenuItem>
+                            ))}
+                        </SidebarMenu>
+                    </section>
+                ))}
+            </SidebarContent>
 
-                <NavLink
-                    component={Link}
-                    href="/"
-                    label="Lihat situs"
-                    leftSection={<FiExternalLink size={18} />}
-                    color="gray"
-                />
+            {/* ── FOOTER: WHO IS SIGNED IN, THEN THE EXIT ACTIONS ───────────────── */}
+            <SidebarFooter>
+                <div
+                    className={cn(
+                        "flex items-center gap-3 px-2 py-1.5",
+                        collapsed && "md:hidden"
+                    )}
+                >
+                    <Avatar className="size-9 shrink-0">
+                        <AvatarFallback className="border border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground">
+                            {initials}
+                        </AvatarFallback>
+                    </Avatar>
 
-                <NavLink
-                    label={signingOut ? "Keluar…" : "Keluar"}
-                    leftSection={<FiLogOut size={18} />}
-                    color="red"
+                    <div className="min-w-0 flex-1">
+                        <p className="truncate text-[0.8125rem] font-semibold leading-tight text-sidebar-foreground">
+                            {userName ?? "Akun"}
+                        </p>
+                        <p className="truncate text-[0.6875rem] leading-tight text-sidebar-foreground/55">
+                            {userEmail ?? "Masuk sebagai operator"}
+                        </p>
+                    </div>
+                </div>
+
+                <SidebarMenuButton asChild tooltip="Lihat situs">
+                    <Link href="/">
+                        <ExternalLink className="size-[18px] shrink-0" />
+                        <SidebarMenuLabel>Lihat situs</SidebarMenuLabel>
+                    </Link>
+                </SidebarMenuButton>
+
+                {/* The sign-out row keeps its own hover tone — a red wash rather than the neutral
+                    white one — so a destructive action is never mistaken for a destination. Its
+                    `signOut` call and in-flight label are unchanged. */}
+                <SidebarMenuButton
+                    tooltip={signingOut ? "Keluar…" : "Keluar"}
                     onClick={handleSignOut}
-                    style={{ cursor: "pointer" }}
-                />
-            </AppShell.Section>
+                    disabled={signingOut}
+                    className="hover:bg-red-500/15 hover:text-red-200"
+                >
+                    <LogOut className="size-[18px] shrink-0" />
+                    <SidebarMenuLabel>{signingOut ? "Keluar…" : "Keluar"}</SidebarMenuLabel>
+                </SidebarMenuButton>
+            </SidebarFooter>
         </>
     );
 }

@@ -1,5 +1,10 @@
 import type { Prisma, TicketStatus } from "@prisma/client";
 
+import {
+    isEventCheckInOpen,
+    type EventCheckInGate,
+} from "@/lib/events/sales-state";
+
 import { buildTicketQrPayload } from "./reference";
 
 /**
@@ -40,7 +45,17 @@ export const TICKET_WALLET_SELECT = {
             title: true,
             startAt: true,
             endAt: true,
-            venue: { select: { name: true } },
+            // The three columns `isEventCheckInOpen` reads. They are selected so the QR
+            // verdict (below) can be the ONE canonical predicate instead of a second,
+            // drifting opinion about whether the door is open.
+            status: true,
+            archivedAt: true,
+            cancelledAt: true,
+            // Public venue facts only. `address` is the venue's street address (a fact a
+            // buyer needs in order to attend) and is deliberately the ONLY place a location
+            // string enters this payload — no venue id, no organizer, no capacity, no
+            // coordinates.
+            venue: { select: { name: true, city: true, address: true } },
             sport: { select: { name: true } },
         },
     },
@@ -57,6 +72,10 @@ export type TicketEventSummary = {
     startAt: string;
     endAt: string | null;
     venueName: string | null;
+    /** Public venue city, when the venue has one. */
+    venueCity: string | null;
+    /** Public venue street address, when the venue has one. */
+    venueAddress: string | null;
     sportName: string;
 };
 
@@ -109,7 +128,14 @@ export type TicketDetail = TicketWalletItem & {
      * (brief §36: "QR is NOT authorization").
      */
     admission: {
-        /** Whether the QR is worth showing at all right now. */
+        /**
+         * Whether the QR is worth showing at all right now.
+         *
+         * PHASE 16: false when the TICKET is not a credential (refunded, voided, unpaid,
+         * already used) **or** when the EVENT is not admitting (cancelled, archived, or past
+         * `endAt + 30 minutes`). Both halves come from server-side state; nothing here is
+         * derived from the browser clock, and the payload never claims `QR_SCAN` exists.
+         */
         scannable: boolean;
         /** Why not, when `scannable` is false. */
         reason: string | null;
@@ -128,6 +154,8 @@ function toEventSummary(row: WalletRow): TicketEventSummary {
         startAt: row.event.startAt.toISOString(),
         endAt: row.event.endAt?.toISOString() ?? null,
         venueName: row.event.venue?.name ?? null,
+        venueCity: row.event.venue?.city ?? null,
+        venueAddress: row.event.venue?.address ?? null,
         sportName: row.event.sport.name,
     };
 }
@@ -163,8 +191,12 @@ export function buildWalletItem(row: WalletRow): TicketWalletItem {
  *
  * The QR payload is built from the ticket's own code by a validating helper, so a malformed
  * row fails loudly here rather than producing an image that means nothing.
+ *
+ * PHASE 16 — `now` is a parameter, not a call to `Date.now()` inside a predicate, so the
+ * verdict below is a pure function of the row and one instant (the same discipline
+ * `isEventCheckInOpen` follows, and the reason the ticket suites can assert a boundary exactly).
  */
-export function buildTicketDetail(row: WalletRow): TicketDetail {
+export function buildTicketDetail(row: WalletRow, now: Date = new Date()): TicketDetail {
     const item = toWalletItem(row);
     const payload = buildTicketQrPayload(item.ticketCode);
 
@@ -175,20 +207,53 @@ export function buildTicketDetail(row: WalletRow): TicketDetail {
             renderer: "qrcode.react",
             version: row.qrVersion,
         },
-        admission: describeAdmission(item.status),
+        admission: describeAdmission(item.status, row.event, now),
     };
 }
 
 /**
  * Whether the ticket is currently a valid credential.
  *
- * Only `ISSUED` is. `RESERVED` is unpaid, `CHECKED_IN` has been used, and
- * `VOID`/`REFUNDED` are revoked — design §19.4's validation order ("Hash → lookup → status
- * → event match → payment state") ends in exactly this decision, which the future check-in
- * phase re-derives server-side. This function only decides whether the UI shows a live QR,
- * a used one, or an explanation.
+ * TWO QUESTIONS, ASKED IN THE ORDER THE GATE ASKS THEM, because the gate is what the buyer
+ * is being prepared for:
+ *
+ *   1. Is the TICKET itself still a credential? Only `ISSUED` is. `RESERVED` is unpaid,
+ *      `CHECKED_IN` has been used, and `VOID`/`REFUNDED` are revoked — design §19.4's
+ *      validation order ("Hash → lookup → status → event match → payment state").
+ *   2. Is the EVENT still admitting anyone? Phase 15 made `ONGOING`/`COMPLETED` real and gave
+ *      the gate a closing instant (`endAt + 30 minutes`), so an `ISSUED` ticket for a
+ *      cancelled, archived, cancelled-out or completed-and-past-grace event would otherwise
+ *      still say "show this at the door" while `checkInTicket` refuses it with
+ *      `EVENT_NOT_OPEN`.
+ *
+ * The second question is answered by `isEventCheckInOpen` — the ONE canonical predicate the
+ * API, the check-in service and the dashboard already share — never by a second opinion
+ * computed here. The ticket's own status wins when both would refuse, because "your money was
+ * refunded" is the more important fact to a buyer than "the door is shut".
  */
-function describeAdmission(status: TicketStatus): {
+function describeAdmission(
+    status: TicketStatus,
+    event: EventCheckInGate,
+    now: Date
+): {
+    scannable: boolean;
+    reason: string | null;
+} {
+    const byTicket = describeStatusAdmission(status);
+
+    if (!byTicket.scannable) {
+        return byTicket;
+    }
+
+    return isEventCheckInOpen(event, now)
+        ? byTicket
+        : { scannable: false, reason: "EVENT_NOT_OPEN" };
+}
+
+/**
+ * The ticket-status half of the verdict, on its own so the event half cannot re-order it.
+ */
+function describeStatusAdmission(status: TicketStatus): {
     scannable: boolean;
     reason: string | null;
 } {

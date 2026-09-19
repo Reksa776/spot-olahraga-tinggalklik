@@ -3,98 +3,145 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { cn } from "@/lib/utils";
+import { Alert, AlertDescription, AlertTitle } from "@/components/dashboard/ui/alert";
+import { Badge } from "@/components/dashboard/ui/badge";
+import { Button } from "@/components/dashboard/ui/button";
 import {
-    Alert,
-    Anchor,
-    Badge,
-    Box,
-    Button,
     Card,
-    Divider,
-    EmptyState,
-    Group,
-    Loader,
-    Pagination,
-    Paper,
-    ScrollArea,
-    SimpleGrid,
-    Skeleton,
-    Stack,
+    CardAction,
+    CardContent,
+    CardDescription,
+    CardHeader,
+    CardTitle,
+} from "@/components/dashboard/ui/card";
+import { ScrollArea } from "@/components/dashboard/ui/misc";
+import { Skeleton } from "@/components/dashboard/ui/separator";
+import {
     Table,
-    Text,
-    ThemeIcon,
-    Title,
-} from "@mantine/core";
+    TableBody,
+    TableCaption,
+    TableCell,
+    TableHead,
+    TableHeader,
+    TableRow,
+} from "@/components/dashboard/ui/table";
 
 /**
  * ==========================================
- * DASHBOARD PRIMITIVES
+ * DASHBOARD PRIMITIVES (shadcn/ui)
  * ==========================================
  *
- * The dashboard is 38 pages and 22 components; without a small shared vocabulary every one of them
- * would compose Mantine differently and the result would be the "generic AI dashboard" the brief
- * rules out. These are deliberately FEW and each replaces repeated markup that already existed:
+ * The shared vocabulary every back-office page is built from. It has the same public API as the
+ * Mantine version it replaces — same names, same props — so the 38 pages and 22 components that
+ * consume it did not have to change while the foundation did.
  *
- *   PageHeader      replaced  a bordered title block that ~15 admin pages hand-rolled
- *   SectionCard     replaced  `<div className="rounded-2xl border … p-5">` (~40 occurrences)
- *   StatCard        replaced  the four KPI tiles on the admin overview
- *   StatusBadge     replaced the ad-hoc tinted `<span>` status pills that each page hand-rolled
- *   DataTable       replaced  hand-written `<table>` blocks with no empty/loading/error state
- *   LinkPagination  replaced  the previous/next link pair on the server-rendered lists
- *   EmptyBlock / ErrorBlock / LoadingBlock   the three states most tables did not have at all
+ *   PageHeader      the title block ~15 admin pages used to hand-roll
+ *   SectionCard     the panel ~40 blocks used to hand-roll
+ *   StatCard        the KPI tile, on the admin overview and five other pages
+ *   StatusBadge     semantic status pills, so a page cannot invent its own green
+ *   DataTable       the table, with its loading, empty and error states made explicit
+ *   DataRow         the "label left, value right" row every summary panel renders
+ *   LinkPagination  the server-renderable pager (hrefs are built here, not passed in)
+ *   EmptyBlock / ErrorBlock / LoadingBlock   the three list states
+ *
+ * THE VISUAL LANGUAGE
+ * -------------------
+ * Three surfaces, and nothing invents a fourth:
+ *
+ *   PANEL  `SectionCard` / `DataTable`  — `rounded-card`, hairline `border-border`, `bg-card`,
+ *                                         the one `shadow-card` elevation
+ *   TILE   `StatCard`                   — the same panel, with the number as the hero
+ *   ROW    `DataRow`                    — one rhythm for every activity list, hairline separated
+ *
+ * Type does the hierarchy (uppercase 11px labels, 14px body, 30px KPI numbers) and colour is only
+ * ever used for one job: `primary` for the current action, a semantic tone for a status, and
+ * `muted-foreground` for everything secondary. Every value is a token, so the accent switcher and
+ * dark mode repaint the whole dashboard — including the pages that have not been touched yet.
  *
  * SERVER/CLIENT BOUNDARY
  * ----------------------
- * Everything here is a client component (Mantine reads context), but it is designed to be called
- * FROM server components. That constrains the props: no callbacks and no render functions, because
- * a server component cannot pass a function across the boundary. So `DataTable` takes
- * already-built `cells` (ReactNode) rather than a `render` function, `ErrorBlock` takes an
- * `action` node rather than an `onRetry` callback, and `LinkPagination` is given strings and
- * builds its own hrefs. Client callers are free to pass whatever they like into those nodes.
+ * Everything here is a client component, but it is designed to be called FROM server components.
+ * That constrains the props: no callbacks and no render functions, because a server component
+ * cannot pass a function across the boundary. So `DataTable` takes already-built `cells` (ReactNode)
+ * rather than a `render` function, `ErrorBlock` takes an `action` node rather than an `onRetry`
+ * callback, and `LinkPagination` is given strings and builds its own hrefs. Client callers are free
+ * to pass whatever they like into those nodes.
  */
 
 /* ------------------------------------------------------------------------------------------------
  * SEMANTIC TONES
  * ------------------------------------------------------------------------------------------------
- * The brief is explicit that status colour stays semantic and must not be repainted with the brand
- * colour. One table, used everywhere, is how that stays true: a mapping that exists once cannot
- * drift per page.
+ * The brief is explicit that status colour stays semantic and must not be repainted with the accent.
+ * One table, used everywhere, is how that stays true: a mapping that exists once cannot drift per
+ * page. `destructive` is deliberately absent from the accent palettes for the same reason.
  */
 export type Tone = "success" | "error" | "warn" | "info" | "pending" | "neutral" | "brand";
 
-const TONE_COLOR: Record<Tone, string> = {
-    success: "green",
-    error: "red",
-    warn: "yellow",
-    info: "blue",
-    pending: "orange",
-    neutral: "gray",
-    brand: "brand",
+type BadgeVariant = "default" | "secondary" | "outline" | "success" | "warning" | "danger" | "info" | "muted";
+
+const TONE_VARIANT: Record<Tone, BadgeVariant> = {
+    success: "success",
+    error: "danger",
+    warn: "warning",
+    info: "info",
+    pending: "warning",
+    neutral: "muted",
+    brand: "default",
 };
+
+/** The tone's solid hue, for a dot or a chart series. Mirrors the badge palette above. */
+const TONE_DOT: Record<Tone, string> = {
+    success: "bg-emerald-500",
+    error: "bg-destructive",
+    warn: "bg-amber-500",
+    info: "bg-sky-500",
+    pending: "bg-amber-500",
+    neutral: "bg-muted-foreground",
+    brand: "bg-primary",
+};
+
+export function useToneColor(tone: Tone): string {
+    return TONE_DOT[tone];
+}
 
 export function StatusBadge({
     tone = "neutral",
     children,
     size = "md",
+    withDot = false,
 }: {
     tone?: Tone;
     children: ReactNode;
     size?: "sm" | "md" | "lg";
+    /** Prefixes a tone-coloured dot. Useful where several statuses sit in one column. */
+    withDot?: boolean;
 }) {
     return (
-        <Badge color={TONE_COLOR[tone]} variant="light" size={size} radius="sm">
+        <Badge
+            variant={TONE_VARIANT[tone]}
+            className={cn(
+                size === "sm" && "px-2 py-0.5 text-[0.6875rem]",
+                size === "lg" && "px-3 py-1 text-[0.8125rem]"
+            )}
+        >
+            {withDot ? (
+                <span
+                    aria-hidden
+                    className={cn("size-1.5 shrink-0 rounded-full", TONE_DOT[tone])}
+                />
+            ) : null}
             {children}
         </Badge>
     );
 }
 
-export function useToneColor(tone: Tone): string {
-    return TONE_COLOR[tone];
-}
-
 /* ------------------------------------------------------------------------------------------------
  * PAGE HEADER
- * ------------------------------------------------------------------------------------------------ */
+ * ------------------------------------------------------------------------------------------------
+ * Title left, actions right, and a brand tick beside the eyebrow. On a narrow screen the actions
+ * wrap under the title rather than being pushed off-canvas.
+ */
 export function PageHeader({
     title,
     description,
@@ -107,37 +154,55 @@ export function PageHeader({
     actions?: ReactNode;
 }) {
     return (
-        <Group justify="space-between" align="flex-start" gap="lg" wrap="wrap" mb="lg">
-            <Box style={{ minWidth: 0 }}>
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+            <div className="min-w-0 flex-1 basis-80">
                 {eyebrow ? (
-                    <Text size="sm" fw={600} c="brand.7" tt="uppercase" style={{ letterSpacing: "0.04em" }}>
-                        {eyebrow}
-                    </Text>
+                    <div className="mb-1.5 flex items-center gap-2">
+                        <span
+                            aria-hidden
+                            className="h-3.5 w-[3px] shrink-0 rounded-full bg-primary"
+                        />
+                        <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-primary">
+                            {eyebrow}
+                        </span>
+                    </div>
                 ) : null}
 
-                <Title order={1} mt={eyebrow ? 4 : 0}>
-                    {title}
-                </Title>
+                <h1 className="text-2xl font-bold leading-tight tracking-tight">{title}</h1>
 
                 {description ? (
-                    <Text c="dimmed" size="sm" mt={6} maw={720}>
+                    <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
                         {description}
-                    </Text>
+                    </p>
                 ) : null}
-            </Box>
+            </div>
 
             {actions ? (
-                <Group gap="sm" wrap="nowrap">
-                    {actions}
-                </Group>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>
             ) : null}
-        </Group>
+        </div>
     );
 }
 
 /* ------------------------------------------------------------------------------------------------
- * SECTION CARD — the bordered panel ~40 dashboard blocks were hand-rolling
- * ------------------------------------------------------------------------------------------------ */
+ * SECTION CARD
+ * ------------------------------------------------------------------------------------------------
+ * The header is separated from the body by a hairline, which is what makes a stacked page readable:
+ * the eye gets a rule to stop at instead of a run of whitespace.
+ *
+ * `padding` and `mih` are accepted for source compatibility with the Mantine version; `padding`
+ * maps onto the same spacing scale and `mih` onto a minimum height, so a page that used them keeps
+ * its proportions instead of collapsing.
+ */
+const PADDING_CLASS: Record<string, string> = {
+    xs: "p-3",
+    sm: "p-4",
+    md: "p-4",
+    lg: "p-5",
+    xl: "p-6",
+    "0": "p-0",
+};
+
 export function SectionCard({
     title,
     description,
@@ -145,48 +210,57 @@ export function SectionCard({
     children,
     padding,
     mih,
+    className,
+    bodyClassName,
 }: {
     title?: ReactNode;
     description?: ReactNode;
     actions?: ReactNode;
     children: ReactNode;
+    /** Accepted from the previous API: a spacing key, mapped onto the same scale. */
     padding?: string | number;
+    /** Accepted from the previous API: a minimum height in pixels. */
     mih?: number;
+    className?: string;
+    bodyClassName?: string;
 }) {
-    return (
-        <Card withBorder radius="md" padding={padding ?? "lg"} mih={mih}>
-            {title || actions ? (
-                <Group justify="space-between" align="flex-start" gap="md" mb={description ? 4 : "md"}>
-                    <Box>
-                        {title ? (
-                            <Text fw={600} size="md">
-                                {title}
-                            </Text>
-                        ) : null}
+    const hasHeader = Boolean(title || actions);
+    const paddingClass = padding !== undefined ? PADDING_CLASS[String(padding)] ?? "p-5" : "p-5";
 
+    return (
+        <Card className={cn("flex h-full flex-col", className)} style={mih ? { minHeight: mih } : undefined}>
+            {hasHeader ? (
+                <CardHeader className="flex-row items-start justify-between gap-3 border-b border-border pb-4">
+                    <div className="min-w-0">
+                        {title ? <CardTitle>{title}</CardTitle> : null}
                         {description ? (
-                            <Text c="dimmed" size="sm" mt={2}>
-                                {description}
-                            </Text>
+                            <CardDescription className="mt-1">{description}</CardDescription>
                         ) : null}
-                    </Box>
+                    </div>
 
                     {actions ? (
-                        <Group gap="xs" wrap="nowrap">
-                            {actions}
-                        </Group>
+                        <CardAction className="flex items-center gap-2">{actions}</CardAction>
                     ) : null}
-                </Group>
+                </CardHeader>
             ) : null}
 
-            {title && !description ? <Box mt="md">{children}</Box> : children}
+            {hasHeader ? (
+                <CardContent className={cn(paddingClass, "min-h-0 flex-1", bodyClassName)}>
+                    {children}
+                </CardContent>
+            ) : (
+                <div className={cn(paddingClass, "min-h-0 flex-1", bodyClassName)}>{children}</div>
+            )}
         </Card>
     );
 }
 
 /* ------------------------------------------------------------------------------------------------
  * STAT CARD
- * ------------------------------------------------------------------------------------------------ */
+ * ------------------------------------------------------------------------------------------------
+ * The number is the hero: 30px, tight tracking, tabular figures. The icon rides in a soft tinted
+ * chip, which is the only place a semantic colour appears on an otherwise neutral tile.
+ */
 export function StatCard({
     label,
     value,
@@ -203,32 +277,39 @@ export function StatCard({
     footer?: ReactNode;
 }) {
     return (
-        <Card withBorder radius="md" padding="lg" h="100%">
-            <Group justify="space-between" align="flex-start" wrap="nowrap">
-                <Text size="sm" c="dimmed" fw={500}>
+        <Card className="flex h-full flex-col p-5">
+            <div className="flex items-start justify-between gap-3">
+                <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-muted-foreground">
                     {label}
-                </Text>
+                </span>
 
                 {icon ? (
-                    <ThemeIcon color={TONE_COLOR[tone]} variant="light" size="lg" radius="md">
+                    <span
+                        className={cn(
+                            "flex size-9 shrink-0 items-center justify-center rounded-field",
+                            tone === "error" && "bg-destructive/10 text-destructive",
+                            tone === "success" && "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400",
+                            tone === "info" && "bg-sky-500/12 text-sky-600 dark:text-sky-400",
+                            tone === "pending" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                            tone === "warn" && "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+                            tone === "neutral" && "bg-muted text-muted-foreground",
+                            tone === "brand" && "bg-primary/10 text-primary"
+                        )}
+                    >
                         {icon}
-                    </ThemeIcon>
+                    </span>
                 ) : null}
-            </Group>
+            </div>
 
-            <Text fz={28} fw={700} mt="sm" lh={1.15}>
+            <div className="mt-4 text-[1.875rem] font-bold leading-none tracking-tight tabular-nums">
                 {value}
-            </Text>
+            </div>
 
-            {hint ? (
-                <Text size="xs" c="dimmed" mt={6}>
-                    {hint}
-                </Text>
-            ) : null}
+            {hint ? <p className="mt-2 text-xs text-muted-foreground">{hint}</p> : null}
 
             {footer ? (
                 <>
-                    <Divider my="sm" />
+                    <div className="my-4 h-px bg-border" />
                     {footer}
                 </>
             ) : null}
@@ -236,17 +317,77 @@ export function StatCard({
     );
 }
 
-export function StatGrid({ children, minWidth = 220 }: { children: ReactNode; minWidth?: number }) {
+export function StatGrid({ children, className }: { children: ReactNode; className?: string }) {
     return (
-        <SimpleGrid cols={{ base: 1, xs: 2, lg: 4 }} spacing="md" verticalSpacing="md" style={{ "--sg-min": minWidth }}>
+        <div
+            className={cn(
+                "grid grid-cols-1 gap-4 xs:grid-cols-2 xl:grid-cols-4",
+                className
+            )}
+        >
             {children}
-        </SimpleGrid>
+        </div>
+    );
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * DATA ROW
+ * ------------------------------------------------------------------------------------------------
+ * `leading` is an icon, a rank chip or a badge; `trailing` is a value, a badge or a stacked pair.
+ * `divider` is off for the first row in a list, which is how a panel avoids a rule at its top.
+ */
+export function DataRow({
+    leading,
+    title,
+    meta,
+    trailing,
+    divider = true,
+    align = "center",
+    className,
+}: {
+    leading?: ReactNode;
+    title?: ReactNode;
+    meta?: ReactNode;
+    trailing?: ReactNode;
+    divider?: boolean;
+    align?: "center" | "flex-start";
+    className?: string;
+}) {
+    return (
+        <div
+            className={cn(
+                "flex justify-between gap-4 py-3",
+                align === "center" ? "items-center" : "items-start",
+                divider && "border-t border-border",
+                className
+            )}
+        >
+            {leading ? <div className="shrink-0">{leading}</div> : null}
+
+            {title || meta ? (
+                <div className="min-w-0 flex-1">
+                    {title ? (
+                        <p className="truncate text-sm font-semibold leading-tight">{title}</p>
+                    ) : null}
+                    {meta ? (
+                        <p className="mt-1 truncate text-xs text-muted-foreground">{meta}</p>
+                    ) : null}
+                </div>
+            ) : (
+                <div className="flex-1" />
+            )}
+
+            {trailing ? <div className="shrink-0">{trailing}</div> : null}
+        </div>
     );
 }
 
 /* ------------------------------------------------------------------------------------------------
  * TABLE
- * ------------------------------------------------------------------------------------------------ */
+ * ------------------------------------------------------------------------------------------------
+ * The viewport is what scrolls (never the page), the three states are mutually exclusive, and a
+ * failed fetch can never be mistaken for "no data".
+ */
 export type TableColumn = {
     header: ReactNode;
     align?: "left" | "center" | "right";
@@ -258,6 +399,12 @@ export type TableRow = {
     key: string;
     /** One node per column, in the same order as `columns`. */
     cells: ReactNode[];
+};
+
+const ALIGN_CLASS: Record<"left" | "center" | "right", string> = {
+    left: "text-left",
+    center: "text-center",
+    right: "text-right",
 };
 
 export function DataTable({
@@ -289,12 +436,12 @@ export function DataTable({
 
     if (loading) {
         return (
-            <Stack gap="xs">
-                <Skeleton height={38} radius="sm" />
+            <div className="flex flex-col gap-2">
+                <Skeleton className="h-9 w-full" />
                 {Array.from({ length: loadingRows }).map((_, index) => (
-                    <Skeleton key={index} height={30} radius="sm" />
+                    <Skeleton key={index} className="h-7 w-full" />
                 ))}
-            </Stack>
+            </div>
         );
     }
 
@@ -303,71 +450,70 @@ export function DataTable({
     }
 
     return (
-        <Stack gap="md">
+        <div className="flex flex-col gap-4">
             {/* Horizontal scroll rather than a collapsing layout: a 12-column order table stays
                 readable on a phone instead of becoming illegible columns. */}
-            <ScrollArea type="auto" offsetScrollbars>
-                <Table
-                    highlightOnHover
-                    withTableBorder
-                    verticalSpacing="sm"
-                    horizontalSpacing="md"
-                    style={minWidth ? { minWidth } : undefined}
-                >
-                    {caption ? <Table.Caption>{caption}</Table.Caption> : null}
+            <ScrollArea className="w-full">
+                <Table style={minWidth ? { minWidth } : undefined}>
+                    {caption ? <TableCaption>{caption}</TableCaption> : null}
 
-                    <Table.Thead>
-                        <Table.Tr>
+                    <TableHeader>
+                        <TableRow className="hover:bg-transparent">
                             {columns.map((column, index) => (
-                                <Table.Th
+                                <TableHead
                                     key={index}
-                                    style={{
-                                        textAlign: column.align ?? "left",
-                                        width: column.width,
-                                        whiteSpace: "nowrap",
-                                    }}
+                                    className={ALIGN_CLASS[column.align ?? "left"]}
+                                    style={{ width: column.width }}
                                 >
                                     {column.header}
-                                </Table.Th>
+                                </TableHead>
                             ))}
-                        </Table.Tr>
-                    </Table.Thead>
+                        </TableRow>
+                    </TableHeader>
 
-                    <Table.Tbody>
+                    <TableBody>
                         {rows.map((row) => (
-                            <Table.Tr key={row.key}>
+                            <TableRow key={row.key}>
                                 {row.cells.map((cell, index) => (
-                                    <Table.Td
+                                    <TableCell
                                         key={index}
-                                        style={{ textAlign: columns[index]?.align ?? "left" }}
+                                        className={ALIGN_CLASS[columns[index]?.align ?? "left"]}
                                     >
                                         {cell}
-                                    </Table.Td>
+                                    </TableCell>
                                 ))}
-                            </Table.Tr>
+                            </TableRow>
                         ))}
-                    </Table.Tbody>
+                    </TableBody>
                 </Table>
             </ScrollArea>
 
             {footer ? footer : null}
-        </Stack>
+        </div>
     );
 }
 
-export function TableToolbar({ children }: { children: ReactNode }) {
+/** A filter bar above a table or list, so a filtered page reads as "toolbar, then results". */
+export function TableToolbar({
+    children,
+    className,
+}: {
+    children: ReactNode;
+    className?: string;
+}) {
     return (
-        <Paper withBorder radius="md" p="md" mb="md">
-            <Group gap="md" align="flex-end" wrap="wrap">
-                {children}
-            </Group>
-        </Paper>
+        <Card className={cn("mb-4 p-4", className)}>
+            <div className="flex flex-wrap items-end gap-4">{children}</div>
+        </Card>
     );
 }
 
 /* ------------------------------------------------------------------------------------------------
  * STATES
- * ------------------------------------------------------------------------------------------------ */
+ * ------------------------------------------------------------------------------------------------
+ * Each is a different shape on purpose: empty is centred and quiet, error is an alert that cannot be
+ * missed, loading is a placeholder. A page that renders the wrong one is a bug you can see.
+ */
 export function EmptyBlock({
     title,
     description,
@@ -380,15 +526,21 @@ export function EmptyBlock({
     action?: ReactNode;
 }) {
     return (
-        <EmptyState
-            size="md"
-            withIndicatorBackground
-            title={title}
-            description={description}
-            icon={icon}
-        >
-            {action ? <EmptyState.Actions>{action}</EmptyState.Actions> : null}
-        </EmptyState>
+        <div className="flex flex-col items-center justify-center gap-3 px-4 py-12 text-center">
+            <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                {icon ?? <span className="text-lg font-bold">—</span>}
+            </span>
+
+            <p className="text-sm font-semibold">{title}</p>
+
+            {description ? (
+                <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
+                    {description}
+                </p>
+            ) : null}
+
+            {action ? <div className="mt-1">{action}</div> : null}
+        </div>
     );
 }
 
@@ -402,30 +554,57 @@ export function ErrorBlock({
     title?: ReactNode;
 }) {
     return (
-        <Alert color="red" variant="light" radius="md" title={title}>
-            <Stack gap="sm" align="flex-start">
-                <Text size="sm">{message}</Text>
-                {action}
-            </Stack>
+        <Alert variant="danger">
+            <div className="flex min-w-0 flex-1 flex-col gap-3">
+                <AlertTitle>{title}</AlertTitle>
+                <AlertDescription>{message}</AlertDescription>
+                {action ? <div>{action}</div> : null}
+            </div>
         </Alert>
     );
 }
 
-export function LoadingBlock({ label = "Memuat…", height = 240 }: { label?: ReactNode; height?: number }) {
+export function LoadingBlock({
+    label = "Memuat…",
+    height = 240,
+}: {
+    label?: ReactNode;
+    height?: number;
+}) {
     return (
-        <Group justify="center" align="center" gap="sm" mih={height}>
-            <Loader size="sm" />
-            <Text size="sm" c="dimmed">
-                {label}
-            </Text>
-        </Group>
+        <div
+            className="flex items-center justify-center gap-3"
+            style={{ minHeight: height }}
+        >
+            <span className="size-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-primary" />
+            <span className="text-sm text-muted-foreground">{label}</span>
+        </div>
     );
 }
 
-export function InfoNote({ children, tone = "info" }: { children: ReactNode; tone?: Tone }) {
+export function InfoNote({
+    children,
+    tone = "info",
+    className,
+}: {
+    children: ReactNode;
+    tone?: Tone;
+    className?: string;
+}) {
     return (
-        <Alert color={TONE_COLOR[tone]} variant="light" radius="md">
-            {children}
+        <Alert
+            variant={
+                tone === "warn" || tone === "pending"
+                    ? "warning"
+                    : tone === "error"
+                      ? "danger"
+                      : tone === "success"
+                        ? "success"
+                        : "info"
+            }
+            className={className}
+        >
+            <AlertDescription className="text-foreground">{children}</AlertDescription>
         </Alert>
     );
 }
@@ -436,50 +615,76 @@ export function InfoNote({ children, tone = "info" }: { children: ReactNode; ton
  *
  * WHY A CLIENT COMPONENT
  * ----------------------
- * Mantine's `Button` accepts `component={Link}`, but a component *reference* cannot be passed from a
- * server component across the RSC boundary — it fails at runtime with "Functions cannot be passed
- * directly to Client Components". The back-office layouts are server components, so they cannot
- * build that button themselves. This component does, and is why the layouts call it by props
- * (`actionHref` / `actionLabel`) instead of passing a component.
+ * The back-office layouts are server components, and they must render a "you do not have access"
+ * panel with a way out. A server component cannot build a linked button by handing a component
+ * reference to a client one, so this component owns the `<Link>` itself and is called by props
+ * (`actionHref` / `actionLabel`). That is the same constraint the Mantine version was built around,
+ * and it is asserted by the boundary guard in `__tests__/ui-consolidation`.
  *
- * WHY IT EXISTS AT ALL
- * --------------------
- * The three back-office layouts each hand-rolled the same "you do not have access" panel — three
- * copies of the same 640px centred `Alert` plus a way out. That is one panel now, so a change to
- * how an authorization failure is presented happens once. The copy is supplied by the caller
- * because each surface explains a different denial (no organiser membership, no platform role, the
- * page-level permission the service rejected).
+ * The copy is supplied by the caller because each surface explains a different denial (no organiser
+ * membership, no platform role, the page-level permission the service rejected). The wording is
+ * unchanged from the previous version.
+ *
+ * WHY THERE IS A `standalone` VARIANT
+ * ------------------------------------
+ * A denial is still a back-office route: `app/layout.tsx` renders the retail `<Footer>` for every
+ * route, and `app/globals.css` suppresses it only under `body:has([data-dashboard-shell])`. When a
+ * LAYOUT denies access it renders this panel *instead of* `DashboardShell`, so nothing carries the
+ * marker and the marketing footer reappears underneath a "no access" card on `/organizer/**` and
+ * `/platform/**`. `standalone` is those two call sites: it adds the marker and the page surface the
+ * shell would otherwise supply.
+ *
+ * A PAGE-level denial (`/platform/sports`, `/platform/venues`) is rendered *inside* the shell,
+ * which already carries both — so it keeps the default flat form and no marker is duplicated. In
+ * either case this is presentational only: it grants nothing.
  */
 export function AccessDeniedPanel({
     title,
     body,
     actionHref,
     actionLabel,
+    standalone = false,
 }: {
     title: ReactNode;
     body?: ReactNode;
     actionHref?: string;
     actionLabel?: ReactNode;
+    /** Render as a whole back-office surface (used by the layouts, which replace the shell). */
+    standalone?: boolean;
 }) {
-    return (
-        <Box maw={640} mx="auto" px="md" py={64}>
-            <Alert color="yellow" variant="light" radius="md" title={title}>
-                {body}
+    const panel = (
+        <div className="mx-auto w-full max-w-xl px-4 py-16">
+            <Card className="p-8">
+                <div className="flex flex-col items-center gap-4 text-center">
+                    <span className="flex size-12 items-center justify-center rounded-full bg-amber-500/15 text-lg font-bold text-amber-600 dark:text-amber-400">
+                        !
+                    </span>
 
-                {actionHref && actionLabel ? (
-                    <Button
-                        component={Link}
-                        href={actionHref}
-                        mt="md"
-                        size="md"
-                        color="ink"
-                        radius="md"
-                    >
-                        {actionLabel}
-                    </Button>
-                ) : null}
-            </Alert>
-        </Box>
+                    <h2 className="text-lg font-semibold leading-tight">{title}</h2>
+
+                    {body ? (
+                        <div className="text-sm leading-relaxed text-muted-foreground">{body}</div>
+                    ) : null}
+
+                    {actionHref && actionLabel ? (
+                        <Button asChild variant="secondary" className="mt-1">
+                            <Link href={actionHref}>{actionLabel}</Link>
+                        </Button>
+                    ) : null}
+                </div>
+            </Card>
+        </div>
+    );
+
+    if (!standalone) return panel;
+
+    return (
+        <div
+            data-dashboard-shell
+            className="flex min-h-screen w-full flex-col bg-background text-foreground"
+        >
+            {panel}
+        </div>
     );
 }
 
@@ -487,7 +692,7 @@ export function AccessDeniedPanel({
  * PAGINATION
  * ------------------------------------------------------------------------------------------------
  * String-driven so a server component can render it: the hrefs are built here instead of being
- * passed in as a function.
+ * passed in as a function. The count line is on the left, the control on the right.
  */
 export function LinkPagination({
     page,
@@ -522,108 +727,258 @@ export function LinkPagination({
         return qs ? `${basePath}?${qs}` : basePath;
     }
 
-    return (
-        <Group justify="space-between" align="center" gap="md" wrap="wrap">
-            <Text size="sm" c="dimmed">
-                {label} {page} dari {totalPages}
-            </Text>
+    /*
+     * A compact window of page numbers with first/last, so a long list does not render 40 links.
+     * The window is `null` where an ellipsis belongs.
+     */
+    const windowed: (number | null)[] = [];
+    const push = (value: number | null) => {
+        if (windowed[windowed.length - 1] !== value) windowed.push(value);
+    };
 
-            <Pagination
-                total={totalPages}
-                value={page}
-                size="md"
-                withEdges
-                getItemProps={(item) => ({
-                    component: Link,
-                    href: hrefFor(item),
-                })}
-            />
-        </Group>
+    for (let target = 1; target <= totalPages; target += 1) {
+        const isEdge = target === 1 || target === totalPages;
+        const isNear = Math.abs(target - page) <= 1;
+
+        if (isEdge || isNear) push(target);
+        else push(null);
+    }
+
+    return (
+        <Card className="p-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+                <span className="text-sm text-muted-foreground">
+                    {label} {page} dari {totalPages}
+                </span>
+
+                <nav aria-label={label} className="flex items-center gap-1">
+                    <Button asChild variant="outline" size="sm" aria-disabled={page <= 1}>
+                        <Link
+                            href={hrefFor(Math.max(1, page - 1))}
+                            aria-hidden={page <= 1}
+                            tabIndex={page <= 1 ? -1 : undefined}
+                        >
+                            Sebelumnya
+                        </Link>
+                    </Button>
+
+                    {windowed.map((target, index) =>
+                        target === null ? (
+                            <span
+                                key={`gap-${index}`}
+                                className="px-1.5 text-sm text-muted-foreground"
+                            >
+                                …
+                            </span>
+                        ) : (
+                            <Button
+                                key={target}
+                                asChild
+                                size="sm"
+                                variant={target === page ? "default" : "outline"}
+                                className="tabular-nums"
+                            >
+                                <Link
+                                    href={hrefFor(target)}
+                                    aria-current={target === page ? "page" : undefined}
+                                >
+                                    {target}
+                                </Link>
+                            </Button>
+                        )
+                    )}
+
+                    <Button
+                        asChild
+                        variant="outline"
+                        size="sm"
+                        aria-disabled={page >= totalPages}
+                    >
+                        <Link
+                            href={hrefFor(Math.min(totalPages, page + 1))}
+                            aria-hidden={page >= totalPages}
+                            tabIndex={page >= totalPages ? -1 : undefined}
+                        >
+                            Berikutnya
+                        </Link>
+                    </Button>
+                </nav>
+            </div>
+        </Card>
     );
 }
 
 /* ------------------------------------------------------------------------------------------------
  * MISC
- * ------------------------------------------------------------------------------------------------ */
-export function Money({ value, size = "sm", fw = 600 }: { value: ReactNode; size?: string; fw?: number }) {
+ * ------------------------------------------------------------------------------------------------
+ */
+export function Money({
+    value,
+    size = "sm",
+    fw = 600,
+}: {
+    value: ReactNode;
+    size?: string;
+    fw?: number;
+}) {
     return (
-        <Text size={size} fw={fw} style={{ whiteSpace: "nowrap" }}>
+        <span
+            className="whitespace-nowrap tabular-nums"
+            style={{
+                fontSize: size === "xs" ? "0.75rem" : size === "sm" ? "0.875rem" : undefined,
+                fontWeight: fw,
+            }}
+        >
             {value}
-        </Text>
+        </span>
     );
 }
 
 /**
- * A primary action that is comfortable to hit — `md`/`lg` is the dashboard's primary size.
+ * A link button, for a *server* page.
  *
  * WHY IT TAKES `href` RATHER THAN A `component`
  * ---------------------------------------------
- * The same rule as `AccessDeniedPanel`: a *component reference* cannot cross the RSC boundary, so a
- * **server** page cannot write `<Button component={Link} />` — Mantine would receive a function and
- * fail at runtime with "Functions cannot be passed directly to Client Components". This client
- * component owns the `<Link>` instead, so a server page passes only strings and nodes.
+ * The same rule as `AccessDeniedPanel`: a component reference cannot cross the server/client
+ * boundary, so a server page cannot write `<Button asChild><Link/></Button>` inline — the Link would
+ * be a function prop on a client component and fail at runtime. This client component owns the
+ * `<Link>`, so a server page passes only strings and nodes.
  *
- * `variant` and `leftSection` exist because the dashboard's secondary/navigational buttons ("Edit",
- * "Reset Filter") need them; without those two props every server page would go back to hand-rolling
- * a link button and reintroduce the boundary violation.
+ * `variant` and `leftSection` exist because the dashboard's secondary and navigational buttons
+ * ("Edit", "Reset Filter", "Laporan") need them; without those props every server page would go back
+ * to hand-rolling a link and reintroduce the boundary violation.
  */
 export function PrimaryAction({
     href,
     onClick,
     children,
     loading,
-    color = "brand",
+    color,
     disabled,
     variant = "filled",
     leftSection,
     size = "md",
+    className,
+    type = "submit",
 }: {
     href?: string;
     onClick?: () => void;
     children: ReactNode;
     loading?: boolean;
+    /** Legacy prop from the Mantine API: `"ink"` renders the neutral variant. */
     color?: string;
     disabled?: boolean;
+    /** `filled` | `light` | `outline` | `subtle` (Mantine names) or the shadcn names directly. */
     variant?: string;
     leftSection?: ReactNode;
     size?: "sm" | "md" | "lg";
+    className?: string;
+    /**
+     * Defaults to `"submit"` — the HTML default for a `<button>` with no `type`, and therefore the
+     * behaviour every call site already had under Mantine. A form's primary action is almost always
+     * a submit, and the handful of call sites that open a dialog are outside any `<form>`, where
+     * `submit` is inert. Passing `"button"` explicitly is how a caller opts out.
+     */
+    type?: "button" | "submit" | "reset";
 }) {
+    /*
+     * Mantine's variant names and shadcn's are mapped here, once, so a page can keep the prop it
+     * already had. `color="ink"` was the previous "neutral, not brand" intent and becomes the
+     * outline variant.
+     */
+    const VARIANT_MAP: Record<string, "default" | "secondary" | "outline" | "ghost"> = {
+        filled: "default",
+        light: "secondary",
+        subtle: "ghost",
+        outline: "outline",
+        default: "default",
+        secondary: "secondary",
+        ghost: "ghost",
+    };
+
+    const shadcnVariant =
+        color === "ink" ? "outline" : VARIANT_MAP[variant] ?? "default";
+
+    const sizeProp = size === "sm" ? "sm" : size === "lg" ? "lg" : "default";
+
+    const content = (
+        <>
+            {loading ? (
+                <span className="size-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current" />
+            ) : (
+                leftSection
+            )}
+            {children}
+        </>
+    );
+
     if (href) {
         return (
-            <Button
-                component={Link}
-                href={href}
-                variant={variant}
-                size={size}
-                color={color}
-                radius="md"
-                leftSection={leftSection}
-            >
-                {children}
+            <Button asChild variant={shadcnVariant} size={sizeProp} className={className}>
+                <Link href={href}>{content}</Link>
             </Button>
         );
     }
 
     return (
         <Button
-            variant={variant}
-            size={size}
-            color={color}
-            radius="md"
+            type={type}
+            variant={shadcnVariant}
+            size={sizeProp}
             onClick={onClick}
-            loading={loading}
-            disabled={disabled}
-            leftSection={leftSection}
+            disabled={disabled || loading}
+            className={className}
         >
-            {children}
+            {content}
         </Button>
     );
 }
 
-export function TextLink({ href, children }: { href: string; children: ReactNode }) {
+export function TextLink({
+    href,
+    children,
+    className,
+}: {
+    href: string;
+    children: ReactNode;
+    className?: string;
+}) {
     return (
-        <Anchor component={Link} href={href} size="sm" fw={500}>
+        <Link
+            href={href}
+            className={cn(
+                "text-sm font-semibold text-primary underline-offset-4 hover:underline",
+                className
+            )}
+        >
             {children}
-        </Anchor>
+        </Link>
+    );
+}
+
+/**
+ * A quiet heading for a block that is NOT a card — used where a page groups several panels under
+ * one label and a full `SectionCard` header would nest a panel inside a panel.
+ */
+export function SectionHeading({
+    title,
+    description,
+    actions,
+}: {
+    title: ReactNode;
+    description?: ReactNode;
+    actions?: ReactNode;
+}) {
+    return (
+        <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
+                <h2 className="text-lg font-semibold leading-tight tracking-tight">{title}</h2>
+                {description ? (
+                    <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+                ) : null}
+            </div>
+
+            {actions ? <div className="flex shrink-0 gap-2">{actions}</div> : null}
+        </div>
     );
 }

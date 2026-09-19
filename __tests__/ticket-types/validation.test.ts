@@ -14,6 +14,9 @@
  * No database, no Next.js — pure schema behaviour only.
  */
 
+import fs from "fs";
+import path from "path";
+
 import {
     createTicketTypeSchema,
     updateTicketTypeSchema,
@@ -46,27 +49,27 @@ describe("money is parsed as an exact decimal, never a float", () => {
         expect(parsed.success && parsed.data.price).toBe("150000.00");
     });
 
-    test("two decimal places survive exactly", () => {
+    test("a large whole amount survives exactly, with a string result", () => {
         const parsed = createTicketTypeSchema.safeParse({
             ...VALID,
-            // This is the value a float round trip destroys.
-            price: "1234567.89",
+            // This is the size a float round trip destroys.
+            price: "1234567",
         });
 
         expect(parsed.success).toBe(true);
-        expect(parsed.success && parsed.data.price).toBe("1234567.89");
+        expect(parsed.success && parsed.data.price).toBe("1234567.00");
+        // The parsed value is a decimal STRING, never a JS number.
+        expect(typeof (parsed.success && parsed.data.price)).toBe("string");
     });
 
-    test("no float ever touches the value: the parsed result is a string", () => {
+    test("a whole-rupiah amount is canonicalised to the column scale", () => {
         const parsed = createTicketTypeSchema.safeParse({
             ...VALID,
-            price: "0.1",
+            price: "0",
         });
 
         expect(parsed.success).toBe(true);
-        expect(typeof (parsed.success && parsed.data.price)).toBe("string");
-        // 0.1 + 0.2 === 0.30000000000000004 in float; as decimal strings it is exact.
-        expect(parsed.success && parsed.data.price).toBe("0.10");
+        expect(parsed.success && parsed.data.price).toBe("0.00");
     });
 
     test.each([
@@ -79,6 +82,11 @@ describe("money is parsed as an exact decimal, never a float", () => {
         ["1.000,50", "locale format"],
         ["1e3", "scientific notation"],
         ["1.234", "more than 2 decimals"],
+        // ── PHASE 18B (D-P17-05 = A): no fractional rupiah ───────────────────────
+        ["150000.50", "half a rupiah"],
+        ["150000.25", "a quarter rupiah"],
+        ["150000.01", "one sen"],
+        ["1234567.89", "two decimal places"],
         ["0x10", "hex"],
         ["NaN", "NaN"],
         ["Infinity", "Infinity"],
@@ -111,14 +119,15 @@ describe("money is parsed as an exact decimal, never a float", () => {
 
         expect(tooBig.success).toBe(false);
 
-        // The exact boundary value is accepted.
+        // The largest WHOLE rupiah the column can hold is accepted (Phase 18B: a fractional
+        // rupiah is refused, so `…999.99` is no longer a valid price).
         const atLimit = createTicketTypeSchema.safeParse({
             ...VALID,
-            price: TICKET_TYPE_LIMITS.MAX_MONEY,
+            price: "999999999999",
         });
 
         expect(atLimit.success).toBe(true);
-        expect(atLimit.success && atLimit.data.price).toBe("999999999999.99");
+        expect(atLimit.success && atLimit.data.price).toBe("999999999999.00");
     });
 
     test("trailing zeroes are canonicalised so equivalent inputs compare equal", () => {
@@ -143,6 +152,81 @@ describe("money is parsed as an exact decimal, never a float", () => {
 
         expect(parsed.success).toBe(true);
         expect(parsed.success && parsed.data.price).toBe("150000.00");
+    });
+});
+
+/**
+ * PHASE 18B (D-P17-05 = A) — SELLABLE PRICES ARE WHOLE RUPIAH.
+ *
+ * Why this is a product-level invariant and not a formatting preference: checkout converted
+ * each line with `roundToRupiah(unitPrice × quantity)` while refund eligibility summed each
+ * ticket's un-rounded `priceSnapshot`. A fractional unit price made those two disagree, which
+ * stranded a final ticket (its remaining balance below its own price) and, under concurrency,
+ * could push `refundedAmount` past `total`. With whole rupiah both sums are identical by
+ * construction, so the balance guard in settlement is a backstop rather than the only defense.
+ *
+ * Enforced on CREATE and UPDATE because both feed the only writer (`lib/ticket-types/service`).
+ */
+describe("PHASE 18B — a price carries no fractional rupiah", () => {
+    test.each([
+        ["100000", "whole rupiah"],
+        ["100000.00", "whole rupiah, explicit scale"],
+        ["100500", "Rp100.500"],
+        ["0", "free"],
+    ])("create accepts %p (%s)", (price) => {
+        const parsed = createTicketTypeSchema.safeParse({ ...VALID, price });
+
+        expect(parsed.success).toBe(true);
+    });
+
+    test.each([
+        ["100000.50", "half a rupiah"],
+        ["100000.25", "a quarter rupiah"],
+        ["100000.01", "one sen"],
+    ])("create refuses %p (%s) with the whole-rupiah message", (price) => {
+        const result = createTicketTypeSchema.safeParse({ ...VALID, price });
+
+        expect(result.success).toBe(false);
+
+        const messages = (result as unknown as {
+            error: { issues: { message: string }[] };
+        }).error.issues.map((issue) => issue.message);
+
+        expect(messages).toContain(TICKET_TYPE_LIMITS.WHOLE_RUPIAH_MESSAGE);
+    });
+
+    test("update refuses a fractional price too", () => {
+        const result = updateTicketTypeSchema.safeParse({ price: "100000.50" });
+
+        expect(result.success).toBe(false);
+        expect(issuePaths(result)).toContain("price");
+    });
+
+    test("a JSON number with a fractional part is refused as well", () => {
+        // 100000.5 as a JSON number must not sneak past the string path.
+        const result = createTicketTypeSchema.safeParse({
+            ...VALID,
+            price: 100000.5,
+        });
+
+        expect(result.success).toBe(false);
+    });
+
+    test("no route that writes a price bypasses the schema", () => {
+        // The service is the only writer, and it is fed by these two schemas (Phase 18B
+        // audit). A raw number reaching Prisma would re-open the invariant.
+        const sources = [
+            fs.readFileSync(
+                path.resolve(__dirname, "../../lib/ticket-types/service.ts"),
+                "utf8"
+            ),
+        ];
+
+        for (const source of sources) {
+            // The only price write is the validated string from the parsed input.
+            expect(source).toMatch(/price: input\.price/);
+            expect(source).not.toMatch(/price: Number\(/);
+        }
     });
 });
 

@@ -166,6 +166,17 @@ export const PERMISSIONS = {
     REFUND_REQUEST: "refund.request",
     REFUND_APPROVE: "refund.approve",
     REFUND_EXECUTE: "refund.execute",
+    /**
+     * PHASE 10B — the buyer's own refund request (policy D-R02).
+     *
+     * The organiser-side `refund.request` is ORGANIZER-scoped: it means "request a refund
+     * against this tenant's order". The buyer path is OWN-scoped instead, exactly like
+     * `order.cancel.own` / `ticket.issue.own`, so a customer can request a refund for the
+     * order they own without holding any tenant capability. Approving and executing are
+     * deliberately NOT in the own map: D-R02 reserves those for staff, and the service also
+     * refuses a requester deciding their own request (separation of duties).
+     */
+    REFUND_REQUEST_OWN: "refund.request.own",
 
     // PIC
     PIC_MANAGE: "pic.manage",
@@ -244,6 +255,7 @@ const OWN_SCOPE: readonly Permission[] = [
     P.PAYMENT_READ_OWN,
     P.TICKET_READ_OWN,
     P.TICKET_ISSUE_OWN,
+    P.REFUND_REQUEST_OWN,
     P.PIC_ATTRIBUTION_READ_OWN,
     P.PIC_FEE_READ_OWN,
     P.REPORT_EXPORT_OWN_PIC_FEE,
@@ -539,6 +551,8 @@ const PLATFORM_ROLE_OWN_PERMISSIONS: Record<
         // technicality, which is a functional defect rather than a security posture.
         P.TICKET_READ_OWN,
         P.TICKET_ISSUE_OWN,
+        // PHASE 10B (D-R02): a buyer may request a refund for their own order.
+        P.REFUND_REQUEST_OWN,
     ]),
     CUSTOMER: toSet([
         P.ORDER_READ_OWN,
@@ -546,6 +560,7 @@ const PLATFORM_ROLE_OWN_PERMISSIONS: Record<
         P.PAYMENT_READ_OWN,
         P.TICKET_READ_OWN,
         P.TICKET_ISSUE_OWN,
+        P.REFUND_REQUEST_OWN,
     ]),
 };
 

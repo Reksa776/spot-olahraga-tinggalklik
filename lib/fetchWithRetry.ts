@@ -22,10 +22,11 @@ export async function fetchWithRetry(
       lastError = err;
 
       // jangan retry kalau bukan network error (misal abort karena user cancel)
+      const causeCode = (err as { cause?: { code?: string } })?.cause?.code;
       const isNetworkError =
         err instanceof TypeError ||
-        (err as any)?.cause?.code === "ETIMEDOUT" ||
-        (err as any)?.cause?.code === "ECONNRESET";
+        causeCode === "ETIMEDOUT" ||
+        causeCode === "ECONNRESET";
 
       if (!isNetworkError || attempt === retries) break;
 

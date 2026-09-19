@@ -9,13 +9,21 @@ import {
 import { prisma } from "@/lib/prisma";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
+import { releaseOrderReservations } from "@/lib/ticketing/reservations";
+import { voidOpenPayments } from "@/lib/ticketing/payment/void";
+
 import { requireEventAccess, requireEventCreate, requireVenueRead } from "./access";
 import { summarizeSales } from "./sales-state";
 import {
     generateUniqueSlug,
     isAcceptableRequestedSlug,
 } from "./slug";
-import type { CreateEventInput, UpdateEventInput } from "./validation";
+import type {
+    CancelEventInput,
+    CompleteEventInput,
+    CreateEventInput,
+    UpdateEventInput,
+} from "./validation";
 
 /**
  * ==========================================
@@ -67,6 +75,9 @@ const ORGANIZER_EVENT_SELECT = {
     contactPhone: true,
     publishedAt: true,
     cancelledAt: true,
+    // PHASE 15 — the observed completion instant, so the dashboard can explain WHEN the
+    // event was closed rather than only that it is. Null for every other status.
+    completedAt: true,
     archivedAt: true,
     createdByUserId: true,
     createdAt: true,
@@ -234,6 +245,41 @@ export async function getOrganizerEvent(
 }
 
 /**
+ * Refuse an inverted sales window.
+ *
+ * PHASE 12. Design §10.2 makes `salesStartAt` / `salesEndAt` the event-level default a
+ * ticket type inherits, and the schema's pair rule mirrors the ticket-type rule
+ * (`lib/ticket-types/validation.ts`): only a *contradictory* pair is wrong, because a
+ * null end means "until event start" and a null start means "immediately after publish".
+ *
+ * The schema already refuses a bad pair inside one payload; this service-level check is
+ * the authoritative one, because an update can move one end against the stored other
+ * end ("start the sale next month" against an end that is tomorrow).
+ */
+function assertSalesWindow(
+    salesStartAt: Date | null | undefined,
+    salesEndAt: Date | null | undefined
+): void {
+    if (
+        salesStartAt instanceof Date &&
+        salesEndAt instanceof Date &&
+        salesEndAt.getTime() < salesStartAt.getTime()
+    ) {
+        throw AppError.validation(
+            "Waktu berakhir penjualan tidak boleh sebelum waktu mulai.",
+            {
+                fields: [
+                    {
+                        path: "salesEndAt",
+                        message: "Harus setelah waktu mulai penjualan.",
+                    },
+                ],
+            }
+        );
+    }
+}
+
+/**
  * Generate a human-readable event reference, e.g. `TKL-EVT-2026-000123`.
  *
  * The shape follows the comment on the `eventCode` column. Uniqueness is retried a
@@ -317,6 +363,8 @@ export async function createEvent(
             ],
         });
     }
+
+    assertSalesWindow(input.salesStartAt, input.salesEndAt);
 
     if (input.startAt.getTime() <= Date.now()) {
         throw AppError.validation("Waktu mulai harus di masa depan.", {
@@ -429,12 +477,51 @@ export async function updateEvent(
             status: true,
             startAt: true,
             endAt: true,
+            salesStartAt: true,
+            salesEndAt: true,
             archivedAt: true,
         },
     });
 
     if (current.archivedAt) {
         throw AppError.conflict("Event sudah diarsipkan.");
+    }
+
+    // ── PHASE 15 — LIFECYCLE-DERIVED FREEZES (P14-D03 / P14-D12) ─────────────────
+    //
+    // `startAt` and `endAt` are no longer just scheduling inputs: they are the STATE,
+    // because `ONGOING` and `COMPLETED` are derived from them. Editing a derived input
+    // after the state has moved would make the stored status contradict the dates.
+    //
+    //   startAt  frozen at ONGOING and COMPLETED (the state was derived from it)
+    //   endAt    frozen at COMPLETED only (a correction is still legitimate while the
+    //            event is live — the scheduler simply recomputes the next time it runs)
+    //
+    // A rejected edit is a CONFLICT naming the field, never a silent no-op, so the caller
+    // cannot believe a change was applied when it was dropped.
+    if (
+        input.startAt !== undefined &&
+        input.startAt.getTime() !== current.startAt.getTime() &&
+        (current.status === "ONGOING" || current.status === "COMPLETED")
+    ) {
+        throw AppError.conflict(
+            "Waktu mulai event tidak dapat diubah setelah event berjalan atau selesai.",
+            { status: current.status, reason: "START_AT_FROZEN", field: "startAt" }
+        );
+    }
+
+    if (
+        input.endAt !== undefined &&
+        current.status === "COMPLETED" &&
+        (input.endAt === null
+            ? current.endAt !== null
+            : current.endAt === null ||
+              input.endAt.getTime() !== current.endAt.getTime())
+    ) {
+        throw AppError.conflict(
+            "Waktu selesai event tidak dapat diubah setelah event selesai.",
+            { status: current.status, reason: "END_AT_FROZEN", field: "endAt" }
+        );
     }
 
     if (input.sportId && input.sportId !== current.sportId) {
@@ -467,6 +554,15 @@ export async function updateEvent(
             fields: [{ path: "startAt", message: "Harus di masa depan." }],
         });
     }
+
+    // Effective window against the STORED value: `undefined` keeps the current end,
+    // `null` clears it, so a one-sided PATCH cannot leave start > end.
+    assertSalesWindow(
+        input.salesStartAt === undefined
+            ? current.salesStartAt
+            : input.salesStartAt,
+        input.salesEndAt === undefined ? current.salesEndAt : input.salesEndAt
+    );
 
     // Slug change: structural validation here, uniqueness against the database
     // EXCLUDING this event. On collision the change is refused rather than
@@ -570,7 +666,22 @@ export async function updateEvent(
  * PRECONDITIONS (design §10.3):
  *   1. at least one active `TicketType` with `quota > 0`   — enforced
  *   2. `startAt` in the future                            — enforced
- *   3. banner present                                     — recommended only, NOT enforced
+ *   3. `endAt` present                                    — enforced (PHASE 20B, D-P19-05 = A)
+ *   4. banner present                                     — recommended only, NOT enforced
+ *
+ * PHASE 20B — `endAt` IS REQUIRED BEFORE PUBLICATION (D-P19-05 = A)
+ * ----------------------------------------------------------------
+ * `Phase 20A` §8 Option A, selected by the owner. Without an `endAt` an event can never
+ * complete — neither automatically (`P14-D22`) nor manually (`completeEventManually`) — so
+ * it stays live forever and, under the gate contract (`isEventCheckInOpen`, Option A of
+ * `D-P19-03`), its gate would never close. Requiring the value at PUBLISH rather than at
+ * CREATE is the smallest possible change: a draft may still be saved incomplete, and
+ * `endAt` remains editable through `DRAFT`, `PUBLISHED` and `ONGOING` (`P14-D12`), so an
+ * organizer only needs a plausible value at the moment they go live.
+ *
+ * Nothing else changes: `startAt` is still required and still must be in the future, the
+ * banner stays a non-blocking hint, and the lifecycle's automatic transitions
+ * (`P14-D02`/`P14-D04`) are untouched.
  *
  * PHASE 5 DEPENDENCY, HANDLED WITHOUT COUPLING
  * --------------------------------------------
@@ -607,6 +718,9 @@ export async function publishEvent(
             title: true,
             status: true,
             startAt: true,
+            // PHASE 20B (D-P19-05 = A): needed for the "an end time must exist before
+            // publication" precondition below.
+            endAt: true,
             publishedAt: true,
             archivedAt: true,
             bannerUrl: true,
@@ -628,13 +742,18 @@ export async function publishEvent(
         throw AppError.conflict("Event sudah diarsipkan.");
     }
 
-    if (current.status === "PUBLISHED") {
-        throw AppError.conflict("Event sudah dipublikasikan.");
-    }
-
-    if (current.status === "CANCELLED" || current.status === "COMPLETED") {
+    // PHASE 15 (P14-D03 / P14-D23): the ONLY source state is `DRAFT`.
+    //
+    // Once `ONGOING` exists as a real state, the previous guards ("refuse PUBLISHED,
+    // CANCELLED, COMPLETED") left `ONGOING → PUBLISHED` reachable — a BACKWARD transition
+    // that would falsify a state derived from `startAt`. The lifecycle is monotonic, so the
+    // list of refusals is inverted into a single allowed source: `DRAFT`, full stop.
+    if (current.status !== "DRAFT") {
         throw AppError.conflict(
-            "Event yang sudah dibatalkan atau selesai tidak dapat dipublikasikan."
+            current.status === "PUBLISHED"
+                ? "Event sudah dipublikasikan."
+                : "Hanya event berstatus draft yang dapat dipublikasikan.",
+            { status: current.status, reason: "NOT_DRAFT" }
         );
     }
 
@@ -654,6 +773,16 @@ export async function publishEvent(
 
     if (current.startAt.getTime() <= Date.now()) {
         unmet.push("Waktu mulai event harus di masa depan.");
+    }
+
+    // PHASE 20B (D-P19-05 = A): an event without an end time can never complete — not
+    // automatically (`P14-D22`) and not manually — so it would remain live, and its gate
+    // open, indefinitely. The requirement lands here rather than on create so a draft can
+    // still be saved before the schedule is settled.
+    if (current.endAt === null) {
+        unmet.push(
+            "Waktu selesai event wajib diisi sebelum event dipublikasikan agar event dapat diselesaikan."
+        );
     }
 
     if (unmet.length > 0) {
@@ -699,6 +828,150 @@ export async function publishEvent(
 }
 
 /**
+ * Complete an event by hand (design §10.3's "or Manager"; P14-D05).
+ *
+ * The automatic path is the tick (`advanceEventLifecycleBatch`); this is the human one. It
+ * exists because a manager may need to close an event the scheduler has not reached yet
+ * (the event plainly ended) without waiting for the next tick, and because the design's own
+ * lifecycle table names a Manager as a legitimate trigger.
+ *
+ * ── PRECONDITIONS (P14-D05 / P14-D22) ────────────────────────────────────────────────
+ *   * `endAt IS NOT NULL` — an `endAt`-less event can never be completed, automatically or
+ *     manually, because the design's precondition ("past `endAt`") cannot be satisfied.
+ *     Such an event is cancelled or archived instead.
+ *   * `now >= endAt` — finishing BEFORE the scheduled end is what CANCELLATION expresses.
+ *     Allowing early completion would make the public record contradict the dates.
+ *
+ * ── WHAT IT DOES NOT DO (P14-D16) ────────────────────────────────────────────────────
+ * It moves no money and voids nothing: no order is expired, no payment is voided, no ticket
+ * is voided, no refund is triggered, no quota is returned and no ledger entry is written.
+ * Open refunds continue to be processed exactly as before; the archive action remains the
+ * one with a commercial precondition.
+ *
+ * Idempotent: completing an already-`COMPLETED` event returns the row unchanged and writes
+ * no second audit row, mirroring `cancelEvent`/`archiveEvent`. The transition itself is a
+ * conditional UPDATE carrying the current status, so two concurrent callers cannot both
+ * win and a concurrent tick cannot be clobbered.
+ */
+export async function completeEvent(
+    scope: AuthzScope,
+    eventId: string,
+    input: CompleteEventInput = { note: null },
+    request?: Request
+) {
+    const { scope: authorized, event } = await requireEventAccess(
+        eventId,
+        PERMISSIONS.EVENT_PUBLISH
+    );
+
+    const current = await prisma.event.findUniqueOrThrow({
+        where: { id: event.id },
+        select: {
+            id: true,
+            organizerId: true,
+            title: true,
+            status: true,
+            startAt: true,
+            endAt: true,
+            cancelledAt: true,
+            archivedAt: true,
+            completedAt: true,
+        },
+    });
+
+    if (current.archivedAt) {
+        throw AppError.conflict("Event sudah diarsipkan.");
+    }
+
+    if (current.cancelledAt || current.status === "CANCELLED") {
+        throw AppError.conflict(
+            "Event yang sudah dibatalkan tidak dapat diselesaikan.",
+            { status: current.status, reason: "EVENT_CANCELLED" }
+        );
+    }
+
+    // Replay: the end state already holds. Report success without a second audit row and
+    // without rewriting `completedAt`.
+    if (current.status === "COMPLETED") {
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: current.id },
+            select: ORGANIZER_EVENT_SELECT,
+        });
+
+        return { event: row, alreadyCompleted: true };
+    }
+
+    if (current.status !== "PUBLISHED" && current.status !== "ONGOING") {
+        throw AppError.conflict(
+            "Hanya event yang sudah dipublikasikan yang dapat diselesaikan.",
+            { status: current.status, reason: "NOT_PUBLISHED" }
+        );
+    }
+
+    if (current.endAt === null) {
+        throw AppError.conflict(
+            "Event tanpa waktu selesai tidak dapat diselesaikan secara manual. Batalkan atau arsipkan event ini sebagai gantinya.",
+            { reason: "NO_END_AT" }
+        );
+    }
+
+    const now = new Date();
+
+    if (now.getTime() < current.endAt.getTime()) {
+        throw AppError.conflict(
+            "Event belum melewati waktu selesai. Gunakan pembatalan bila event berakhir lebih awal.",
+            {
+                reason: "NOT_ENDED",
+                endAt: current.endAt.toISOString(),
+                now: now.toISOString(),
+            }
+        );
+    }
+
+    // The transition IS the guard, so a losing racer (another manual caller, or the tick)
+    // is a clean conflict instead of a double transition.
+    const claimed = await prisma.event.updateMany({
+        where: {
+            id: current.id,
+            status: { in: ["PUBLISHED", "ONGOING"] },
+            archivedAt: null,
+            cancelledAt: null,
+            endAt: { not: null, lte: now },
+        },
+        data: { status: "COMPLETED", completedAt: now },
+    });
+
+    if (claimed.count !== 1) {
+        throw AppError.conflict("Status event sudah berubah. Coba lagi.");
+    }
+
+    const updated = await prisma.event.findUniqueOrThrow({
+        where: { id: current.id },
+        select: ORGANIZER_EVENT_SELECT,
+    });
+
+    await writeTicketingAudit({
+        action: "event.complete",
+        actor: authorized,
+        actorOrganizerId: current.organizerId,
+        organizerId: current.organizerId,
+        entityType: "Event",
+        entityRef: current.id,
+        description: `Event diselesaikan: ${current.title}`,
+        beforeState: { status: current.status },
+        afterState: {
+            status: updated.status,
+            completedAt: updated.completedAt?.toISOString() ?? null,
+            note: input.note ?? null,
+        },
+        reason: input.note ?? "MANUAL_COMPLETION",
+        request,
+    });
+
+    return { event: updated, alreadyCompleted: false };
+}
+
+/**
  * Unpublish an event (decision D-14, LOCKED).
  *
  * D-14 requires: the event leaves normal public listings; the direct public detail may
@@ -710,6 +983,10 @@ export async function publishEvent(
  * one audit row. The absence of order/ticket/payment writes is the implementation of
  * D-14, not an omission. Ticket-holder-specific access belongs to the ticket and order
  * phases and will read `Event.status` to render its own messaging.
+ *
+ * PHASE 15 (P14-D03/P14-D23): the source state is exactly `PUBLISHED`. `ONGOING` is
+ * monotonic, so there is no `ONGOING → PUBLISHED` path — an event that has started is
+ * cancelled or completed, never rewritten as an unpublished draft.
  */
 export async function unpublishEvent(
     scope: AuthzScope,
@@ -838,6 +1115,353 @@ export async function deleteEvent(
     });
 
     return { id: current.id };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 12 — cancellation and archival (design §10.2, §10.3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Refund states that mean "money is still moving" — archive must wait for these.
+ *
+ * Design §10.3's archive precondition is "no open refunds/settlements". A refund is
+ * open while it is anywhere before a provider-confirmed terminal state, so the three
+ * in-flight values are refused and `REFUNDED`, `REJECTED` and `FAILED` are not. The set
+ * comes from the shipped `RefundStatus` enum rather than from prose.
+ */
+const OPEN_REFUND_STATUSES = ["PENDING", "APPROVED", "PROCESSING"] as const;
+
+/** Statuses a manual cancellation may start from (design §10.3: `PUBLISHED → CANCELLED`). */
+const CANCELLABLE_EVENT_STATUSES = ["PUBLISHED", "ONGOING"] as const;
+
+/**
+ * Cancel an event (design §10.3: `PUBLISHED → CANCELLED`).
+ *
+ * WHAT THIS IMPLEMENTS, AND WHAT IT DELIBERATELY DOES NOT
+ * ------------------------------------------------------
+ * Design §10.3 states the cancel effect as: "Sales stop immediately; unpaid orders
+ * auto-expire; issued tickets become `VOID`; refund workflow engages (post-MVP
+ * automation)". This function implements the two parts whose behaviour is fully
+ * specified and safe:
+ *
+ *   1. **Sales stop immediately.** `status = CANCELLED` + `cancelledAt` set. The public
+ *      detail already renders the unavailable state with a reason (`lib/events/catalog.ts`)
+ *      and `isEventPurchasable` already refuses a `CANCELLED` event at checkout and at the
+ *      reservation CAS — so this is the single switch those guards read, not a second rule.
+ *   2. **Unpaid orders auto-expire.** Every `PENDING_PAYMENT` order of the event is moved to
+ *      `EXPIRED`, its held seats are released and any open payment session is voided, using
+ *      the *same* primitives and the *same* per-order transaction shape as the reservation
+ *      reaper (`lib/ticketing/reservations.ts`). This is what stops a buyer from paying a
+ *      dead event a moment later and landing in the "paid but ticketless" operator queue.
+ *      The order CAS is `WHERE status = 'PENDING_PAYMENT'`, so a settlement that wins the
+ *      race is respected and never resurrected (design §12.3's anti-resurrection rule).
+ *
+ * NOT implemented, on purpose, and recorded as product decisions in the Phase 12 report:
+ *
+ *   • **No automatic refund.** Design §10.2/§10.3 put refund automation after MVP, and the
+ *     task contract is explicit that money must never move without provider confirmation.
+ *     Cancelling therefore moves no money, writes no `REFUNDED` status and touches no
+ *     ledger. Organizers refund through the existing refund workflow.
+ *   • **Issued tickets are not voided.** "Issued tickets become VOID" is coupled to the
+ *     bulk-refund workflow that is post-MVP; voiding a paid ticket with no refund rail
+ *     would strand buyers. This is the one part of §10.3's declared effect that needs a
+ *     product decision, so it is documented rather than invented.
+ *   • **The design's "Finance approval" step is not modelled.** The Phase 3 permission
+ *     vocabulary has no event-cancel-plus-approval capability, so cancellation is gated on
+ *     the existing `event.publish` lifecycle permission (Manager/Admin/Owner) and the
+ *     approval step is recorded as a decision to make.
+ *
+ * Idempotent: cancelling an already-cancelled event returns the row unchanged and writes
+ * no second audit row. The status CAS is the guard, so the winner is the only writer.
+ */
+export async function cancelEvent(
+    scope: AuthzScope,
+    eventId: string,
+    input: CancelEventInput = { reason: null },
+    request?: Request
+) {
+    const { scope: authorized, event } = await requireEventAccess(
+        eventId,
+        PERMISSIONS.EVENT_PUBLISH
+    );
+
+    const current = await prisma.event.findUniqueOrThrow({
+        where: { id: event.id },
+        select: {
+            id: true,
+            organizerId: true,
+            title: true,
+            status: true,
+            publishedAt: true,
+            cancelledAt: true,
+            archivedAt: true,
+        },
+    });
+
+    if (current.archivedAt) {
+        throw AppError.conflict("Event sudah diarsipkan.");
+    }
+
+    // Idempotent replay: the end state already holds, so report success without a
+    // second audit row or a rewritten `cancelledAt`.
+    if (current.status === "CANCELLED") {
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: current.id },
+            select: ORGANIZER_EVENT_SELECT,
+        });
+
+        return { event: row, expiredOrders: 0, alreadyCancelled: true };
+    }
+
+    if (
+        !(CANCELLABLE_EVENT_STATUSES as readonly string[]).includes(
+            current.status
+        )
+    ) {
+        throw AppError.conflict(
+            "Hanya event yang sudah dipublikasikan yang dapat dibatalkan."
+        );
+    }
+
+    const cancelledAt = new Date();
+
+    // The transition IS the guard (conditional UPDATE, never a read-then-write), so two
+    // concurrent cancels cannot both win and a concurrent publish cannot be clobbered.
+    const claimed = await prisma.event.updateMany({
+        where: {
+            id: current.id,
+            status: current.status,
+            archivedAt: null,
+        },
+        data: {
+            status: "CANCELLED",
+            cancelledAt,
+            cancelReason: input.reason ?? null,
+        },
+    });
+
+    if (claimed.count !== 1) {
+        throw AppError.conflict("Status event sudah berubah. Coba lagi.");
+    }
+
+    // ── Unpaid orders auto-expire (design §10.3) ────────────────────────────────
+    // One transaction per order, exactly like the reaper: the order status, the
+    // reservation rows, the counters and the payment void commit together or not at all.
+    // If this loop is interrupted, the remaining holds are still released by the TTL
+    // reaper, so nothing is stranded by a partial run.
+    const pendingOrders = await prisma.eventOrder.findMany({
+        where: { eventId: current.id, status: "PENDING_PAYMENT" },
+        select: { id: true },
+        orderBy: { id: "asc" },
+    });
+
+    let expiredOrders = 0;
+
+    for (const order of pendingOrders) {
+        const outcome = await prisma.$transaction(
+            async (tx) => {
+                // Claim the decision before releasing anything (phase-7 lock ordering:
+                // order row → reservations → ticket types), so a settlement that owns the
+                // order is never double-released.
+                const cas = await tx.eventOrder.updateMany({
+                    where: { id: order.id, status: "PENDING_PAYMENT" },
+                    data: { status: "EXPIRED", cancelReason: "Event dibatalkan." },
+                });
+
+                if (cas.count === 0) {
+                    return null;
+                }
+
+                await releaseOrderReservations(tx, order.id, "EXPIRED");
+                const paymentsVoided = await voidOpenPayments(tx, order.id);
+
+                const parent = await tx.eventOrder.findUniqueOrThrow({
+                    where: { id: order.id },
+                    select: { orderNumber: true, organizerId: true },
+                });
+
+                return { ...parent, paymentsVoided };
+            },
+            { timeout: 15_000 }
+        );
+
+        if (!outcome) {
+            continue;
+        }
+
+        expiredOrders += 1;
+
+        await writeTicketingAudit({
+            action: "order.expire",
+            actorType: "SYSTEM",
+            actorOrganizerId: null,
+            organizerId: outcome.organizerId,
+            entityType: "EventOrder",
+            entityRef: outcome.orderNumber,
+            description:
+                "Pesanan tiket kedaluwarsa karena event dibatalkan; kursi dikembalikan ke ketersediaan.",
+            beforeState: { status: "PENDING_PAYMENT" },
+            afterState: { status: "EXPIRED" },
+            reason: "EVENT_CANCELLED",
+        });
+
+        if (outcome.paymentsVoided > 0) {
+            await writeTicketingAudit({
+                action: "payment.expired",
+                actorType: "SYSTEM",
+                actorOrganizerId: null,
+                organizerId: outcome.organizerId,
+                entityType: "Payment",
+                entityRef: outcome.orderNumber,
+                description:
+                    "Sesi pembayaran ditutup karena event dibatalkan.",
+                afterState: {
+                    paymentStatus: "EXPIRED",
+                    attempts: outcome.paymentsVoided,
+                },
+                reason: "EVENT_CANCELLED",
+            });
+        }
+    }
+
+    const updated = await prisma.event.findUniqueOrThrow({
+        where: { id: current.id },
+        select: ORGANIZER_EVENT_SELECT,
+    });
+
+    await writeTicketingAudit({
+        action: "event.cancel",
+        actor: authorized,
+        actorOrganizerId: current.organizerId,
+        organizerId: current.organizerId,
+        entityType: "Event",
+        entityRef: current.id,
+        description: `Event dibatalkan: ${current.title}`,
+        beforeState: { status: current.status },
+        afterState: {
+            status: updated.status,
+            cancelledAt: updated.cancelledAt?.toISOString() ?? null,
+            expiredOrders,
+            // No money moved and no ticket was voided; the audit row says so explicitly
+            // so a reviewer does not have to infer it from the absence of other rows.
+            refundTriggered: false,
+            ticketsVoided: false,
+        },
+        reason: input.reason ?? null,
+        request,
+    });
+
+    return { event: updated, expiredOrders, alreadyCancelled: false };
+}
+
+/**
+ * Archive an event — design §10.2/§10.3's soft delete.
+ *
+ * "`archivedAt` — soft delete; hidden from all public surfaces", "data retained", "no
+ * open refunds/settlements". Every one of those is already enforced elsewhere in the
+ * codebase (public catalog 404, public detail 404, update/publish/unpublish/delete
+ * guards, ticket-type terminal guard), and this function is the missing *writer* of the
+ * two columns those guards read. It changes nothing else:
+ *
+ *   • no order, ticket, payment, refund or ledger row is touched;
+ *   • no data is deleted — `deleteEvent`'s draft-only rule is untouched;
+ *   • the event stays visible on the organizer dashboard (history is retained).
+ *
+ * SOURCE STATES
+ * -------------
+ * Design §10.3's diagram shows the steady-state path `COMPLETED/CANCELLED → ARCHIVED`,
+ * but the schema places no constraint on the source status and no automatic
+ * ONGOING/COMPLETED job exists yet (recorded as a deferred product decision), so a
+ * `PUBLISHED` event that has already happened could never reach it. Archiving is
+ * therefore permitted from any status that is not already archived, and the documented
+ * precondition — no open refunds — is the one that is enforced. This widening is
+ * recorded as an explicit product decision in the Phase 12 report rather than presented
+ * as the design's original rule.
+ *
+ * Idempotent: archiving an archived event returns the row unchanged, keeping the first
+ * `archivedAt` and writing no second audit row.
+ */
+export async function archiveEvent(
+    scope: AuthzScope,
+    eventId: string,
+    request?: Request
+) {
+    const { scope: authorized, event } = await requireEventAccess(
+        eventId,
+        PERMISSIONS.EVENT_PUBLISH
+    );
+
+    const current = await prisma.event.findUniqueOrThrow({
+        where: { id: event.id },
+        select: {
+            id: true,
+            organizerId: true,
+            title: true,
+            status: true,
+            archivedAt: true,
+        },
+    });
+
+    if (current.archivedAt) {
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: current.id },
+            select: ORGANIZER_EVENT_SELECT,
+        });
+
+        return { event: row, alreadyArchived: true };
+    }
+
+    // Open refunds still moving money must settle before the event disappears from the
+    // surfaces a finance reviewer works from (design §10.3's precondition).
+    const openRefunds = await prisma.refund.count({
+        where: {
+            eventOrder: { eventId: current.id },
+            status: { in: [...OPEN_REFUND_STATUSES] },
+        },
+    });
+
+    if (openRefunds > 0) {
+        throw AppError.conflict(
+            "Event tidak dapat diarsipkan selama masih ada refund yang belum selesai.",
+            { openRefunds, preconditions: ["Selesaikan semua refund terlebih dahulu."] }
+        );
+    }
+
+    const archivedAt = new Date();
+
+    const claimed = await prisma.event.updateMany({
+        where: { id: current.id, archivedAt: null },
+        data: { status: "ARCHIVED", archivedAt },
+    });
+
+    if (claimed.count !== 1) {
+        throw AppError.conflict("Status event sudah berubah. Coba lagi.");
+    }
+
+    const updated = await prisma.event.findUniqueOrThrow({
+        where: { id: current.id },
+        select: ORGANIZER_EVENT_SELECT,
+    });
+
+    await writeTicketingAudit({
+        action: "event.archive",
+        actor: authorized,
+        actorOrganizerId: current.organizerId,
+        organizerId: current.organizerId,
+        entityType: "Event",
+        entityRef: current.id,
+        description: `Event diarsipkan: ${current.title}`,
+        beforeState: { status: current.status, archivedAt: null },
+        afterState: {
+            status: updated.status,
+            archivedAt: updated.archivedAt?.toISOString() ?? null,
+            // Explicit, so the audit trail states that archival is non-destructive.
+            dataDeleted: false,
+        },
+        request,
+    });
+
+    return { event: updated, alreadyArchived: false };
 }
 
 /** Re-exported so route handlers can build consistent error bodies. */

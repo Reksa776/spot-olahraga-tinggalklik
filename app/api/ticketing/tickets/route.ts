@@ -12,9 +12,9 @@ import { ticketWalletQuerySchema } from "@/lib/ticketing/tickets/validation";
  * PROTECTED. `/api/ticketing/` is in `proxy.ts`'s PROTECTED_API_PREFIXES, and this route
  * also resolves the session itself — the proxy is defence in depth, not the control.
  *
- * WHY NOT `/api/tickets` (the design's §26.5 path): the live retail tree already owns
- * `/api/orders/**` and the ticketing surface is namespaced under `/api/ticketing/**` for
- * consistency with every other ticketing route (brief §3). See
+ * WHY NOT `/api/tickets` (the design's §26.5 path): the retail tree owned `/api/orders/**`
+ * when this was built, and the ticketing surface is namespaced under `/api/ticketing/**`
+ * for consistency with every other ticketing route. See
  * `app/api/ticketing/checkout/route.ts` for the full collision analysis.
  *
  * Read-only, so no `requireSameOrigin`: the Phase 3 origin check applies to state-changing

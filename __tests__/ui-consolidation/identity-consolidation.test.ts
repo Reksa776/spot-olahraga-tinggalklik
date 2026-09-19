@@ -3,7 +3,7 @@ import path from "node:path";
 
 /**
  * ==========================================
- * PHASE 10 — ONE VISUAL IDENTITY
+ * ONE VISUAL IDENTITY
  * ==========================================
  *
  * Before this phase the application ran two palettes: `ink`/`brand` on the discovery surface and
@@ -45,20 +45,27 @@ const IDENTITY_CHROME = [
     "app/register/page.tsx",
     "components/auth/LoginForm.tsx",
     "components/auth/RegisterForm.tsx",
+    // The dashboard's single layout and chrome. The same rule applies to them: identity
+    // surfaces carry ink/brand, never an ad-hoc accent.
+    "app/dashboard/layout.tsx",
+    "components/dashboard/DashboardShell.tsx",
+    "components/dashboard/DashboardNav.tsx",
+    "components/dashboard/DashboardAppShell.tsx",
+    "components/dashboard/DashboardProviders.tsx",
+];
+
+/**
+ * Retail chrome that used to be on the list above and was deleted with the retail application.
+ *
+ * Asserted as absent rather than merely dropped from the list: if one of these paths comes back,
+ * the retail surface came back with it, and that is a product decision rather than a refactor.
+ */
+const DELETED_RETAIL_CHROME = [
     "components/Footer.tsx",
     "components/products/BottomNavbar.tsx",
     "components/admin/AdminNavbar.tsx",
     "components/admin/AdminMenuCard.tsx",
-    "app/platform/layout.tsx",
-    "app/organizer/layout.tsx",
-    // Mantine dashboard chrome (added when the back offices were migrated to Mantine). The same
-    // rule applies to it: identity surfaces carry ink/brand, never an ad-hoc accent.
-    "components/dashboard/DashboardShell.tsx",
-    "components/dashboard/DashboardNav.tsx",
     "components/dashboard/AdminShell.tsx",
-    "components/dashboard/OrganizerShell.tsx",
-    "components/dashboard/PlatformShell.tsx",
-    "components/dashboard/DashboardProviders.tsx",
 ];
 
 /**
@@ -91,6 +98,10 @@ describe("P10-5. the accent contract is declared where the tokens are", () => {
 });
 
 describe("P10-6. no identity surface carries the retired accent", () => {
+    it.each(DELETED_RETAIL_CHROME)("%s stays deleted", (file) => {
+        expect(existsSync(path.join(ROOT, file))).toBe(false);
+    });
+
     it.each(IDENTITY_CHROME)("%s is free of rose/blue accents", (file) => {
         expect(existsSync(path.join(ROOT, file))).toBe(true);
 
@@ -122,10 +133,10 @@ describe("P10-7. the exceptions stay exceptions", () => {
 
 describe("P10-8. one lockup, rendered by every surface", () => {
     /*
-     * Re-pointed when the back-office chrome moved into the Mantine shell. The assertion is
+     * Re-pointed when the back-office chrome moved into the shared dashboard shell. The assertion is
      * unchanged — every surface that renders chrome renders the shared lockup, and nothing
      * re-implements it — but the files that DO the rendering are now the shells rather than the
-     * three section layouts, which simply pass authority and content through.
+     * section layouts, which simply pass authority and content through.
      */
     const LOCKUP_CONSUMERS = [
         "components/ticketing/SiteHeader.tsx",
@@ -159,11 +170,15 @@ describe("P10-8. one lockup, rendered by every surface", () => {
         }
     });
 
-    it("the platform and organiser back offices identify themselves with a chip, not a title", () => {
-        // Both keep a role chip beside the mark, so the surface is still identifiable without
-        // inventing a second brand. Re-pointed at the shells, which now own that chip.
-        expect(read("components/dashboard/PlatformShell.tsx")).toContain("Platform");
-        expect(read("components/dashboard/OrganizerShell.tsx")).toContain("Penyelenggara");
+    it("the dashboard identifies itself with a chip, not a second brand", () => {
+        // The one shell keeps a section chip beside the mark, so the surface is still
+        // identifiable without inventing a second brand. The chip is now a single "Dashboard"
+        // label with the caller's standing as its context line.
+        expect(read("components/dashboard/DashboardAppShell.tsx")).toContain('sectionLabel="Dashboard"');
+
+        // The context line distinguishes platform from organizer without a second shell.
+        expect(read("app/dashboard/layout.tsx")).toContain("Platform ·");
+        expect(read("app/dashboard/layout.tsx")).toContain("Penyelenggara");
     });
 });
 
@@ -172,10 +187,10 @@ describe("P10-9. the back offices offer a way back to the public site", () => {
      * Re-pointed twice, and both times for the same reason: the assertion is about the SURFACE
      * offering an exit, not about where the JSX lives.
      *
-     *   1. When the chrome moved into the Mantine shell, the shell took over the exit.
-     *   2. When the layouts were fixed to stop passing a component reference to Mantine (a server
-     *      component cannot — see `mantine-dashboard.test.ts` P-M7), the denial panels' links became
-     *      `actionHref` props on the client `AccessDeniedPanel`.
+     *   1. When the chrome moved into the shared dashboard shell, the shell took over the exit.
+     *   2. When the layouts were fixed to stop passing a component reference across the client
+     *      boundary (a server component cannot), the denial panels' links became `actionHref` props
+     *      on the client `AccessDeniedPanel`.
      *
      * The platform denial goes to the site root; the organiser denial goes to the public event
      * catalogue, which is the more useful destination for an organiser without a tenant.
@@ -183,8 +198,7 @@ describe("P10-9. the back offices offer a way back to the public site", () => {
     it.each([
         ["components/dashboard/DashboardNav.tsx", 'href="/"', "Lihat situs"],
         ["components/dashboard/DashboardShell.tsx", 'href="/"', "Lihat situs"],
-        ["app/platform/layout.tsx", 'actionHref="/"', "Lihat situs"],
-        ["app/organizer/layout.tsx", 'actionHref="/events"', "Lihat katalog event"],
+        ["app/dashboard/layout.tsx", 'actionHref="/events"', "Lihat katalog event"],
     ])("%s offers a way out to a public page", (file, expectedHref, expectedLabel) => {
         const source = read(file);
 

@@ -1,10 +1,13 @@
 "use client";
 
+import Image from "next/image";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Group, Image, Paper, SimpleGrid, Stack, Text } from "@mantine/core";
 
 import { apiFetch, ClientApiError } from "./api";
+import { Button } from "@/components/dashboard/ui/button";
+import { Card } from "@/components/dashboard/ui/card";
+import { Input, Label } from "@/components/dashboard/ui/input";
 import { ErrorBlock, InfoNote, PrimaryAction } from "@/components/dashboard/primitives";
 
 /**
@@ -21,11 +24,11 @@ import { ErrorBlock, InfoNote, PrimaryAction } from "@/components/dashboard/prim
  * generated server-side. Stripping happens on the server because D-55 requires it —
  * "never trust client-side stripping alone".
  *
- * PHASE (Mantine body migration): presentation only. The `FormData` construction, the
+ * PHASE (shadcn migration): presentation only. The `FormData` construction, the
  * `inputRef.current.value = ""` reset, the `busy` gate, the notice/error copy, the
  * `maxImages` limit branch and both API calls are unchanged. The file input keeps its
- * `accept` list and gains an accessible label via Mantine's input wrapper, so the control is
- * still reachable and describable by keyboard and screen reader.
+ * `accept` list and its label association (`htmlFor`/`id` pair), so the control is still
+ * reachable and describable by keyboard and screen reader.
  */
 
 type Image = {
@@ -109,69 +112,70 @@ export default function EventImageManager({ eventId, images, maxImages }: Props)
     }
 
     return (
-        <Stack gap="md">
-            <SimpleGrid cols={{ base: 2, sm: 3 }} spacing="md">
-                {images.map((image) => (
-                    <Paper key={image.id} withBorder radius="md" style={{ overflow: "hidden" }}>
-                        <Image
-                            src={image.url}
-                            alt={image.altText ?? "Gambar event"}
-                            h={112}
-                            fit="cover"
-                            w="100%"
-                        />
+        <div className="flex flex-col gap-4">
+            {images.length > 0 ? (
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                    {images.map((image) => (
+                        <Card key={image.id} className="overflow-hidden">
+                            <Image
+                                src={image.url}
+                                alt={image.altText ?? "Gambar event"}
+                                width={480}
+                                height={224}
+                                unoptimized
+                                className="h-28 w-full object-cover"
+                            />
 
-                        <Button
-                            variant="subtle"
-                            color="red"
-                            size="sm"
-                            radius={0}
-                            fullWidth
-                            disabled={busy}
-                            onClick={() => onDelete(image.id)}
-                        >
-                            Hapus
-                        </Button>
-                    </Paper>
-                ))}
-            </SimpleGrid>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={busy}
+                                onClick={() => onDelete(image.id)}
+                                className="h-9 w-full rounded-none text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            >
+                                Hapus
+                            </Button>
+                        </Card>
+                    ))}
+                </div>
+            ) : (
+                <p className="text-sm text-muted-foreground">
+                    Belum ada gambar untuk event ini.
+                </p>
+            )}
 
             {images.length < maxImages ? (
-                <form onSubmit={onUpload}>
-                    <Stack gap="xs">
-                        <Text component="label" size="sm" fw={500} htmlFor="event-image-upload">
-                            Unggah gambar
-                        </Text>
+                <form onSubmit={onUpload} className="flex flex-col gap-3">
+                    <Label htmlFor="event-image-upload">Unggah gambar</Label>
 
-                        <input
-                            id="event-image-upload"
-                            ref={inputRef}
-                            type="file"
-                            accept="image/jpeg,image/png,image/webp"
-                            style={{ display: "block", width: "100%", fontSize: 14 }}
-                        />
+                    <Input
+                        id="event-image-upload"
+                        ref={inputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="h-auto py-2 file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-foreground"
+                    />
 
-                        <Text size="xs" c="dimmed">
-                            JPG, PNG, atau WEBP, maksimal 5MB. Metadata EXIF (termasuk
-                            lokasi GPS) dihapus otomatis di server.
-                        </Text>
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                        JPG, PNG, atau WEBP, maksimal 5MB. Metadata EXIF (termasuk
+                        lokasi GPS) dihapus otomatis di server.
+                    </p>
 
-                        <Group>
-                            <PrimaryAction loading={busy}>
-                                {busy ? "Mengunggah…" : "Unggah gambar"}
-                            </PrimaryAction>
-                        </Group>
-                    </Stack>
+                    <div>
+                        <PrimaryAction loading={busy}>
+                            {busy ? "Mengunggah…" : "Unggah gambar"}
+                        </PrimaryAction>
+                    </div>
                 </form>
             ) : (
-                <Text size="xs" c="dimmed">
+                <p className="text-xs text-muted-foreground">
                     Batas {maxImages} gambar per event sudah tercapai.
-                </Text>
+                </p>
             )}
 
             {error ? <ErrorBlock message={error} title="Upload gagal" /> : null}
 
             {notice ? <InfoNote tone="success">{notice}</InfoNote> : null}
-        </Stack>
+        </div>
     );
 }

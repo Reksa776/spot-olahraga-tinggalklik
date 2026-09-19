@@ -11,11 +11,11 @@ import { getOwnOrder } from "@/lib/ticketing/orders";
  *
  * PROTECTED. `/api/ticketing/` is in `proxy.ts`'s PROTECTED_API_PREFIXES.
  *
- * WHY NOT `/api/orders/[orderNumber]` (the design's §26.2 path): the live retail tree
- * already owns `/api/orders/**` with a `[id]` dynamic segment, and Next.js rejects two
- * different dynamic segment names at the same position. Moving retail is forbidden
- * (brief §34) and would break live order pages, so the ticketing surface lives under
- * `/api/ticketing/**`. See the note in `app/api/ticketing/checkout/route.ts`.
+ * WHY NOT `/api/orders/[orderNumber]` (the design's §26.2 path): when this was built the
+ * retail tree owned `/api/orders/**` with a `[id]` dynamic segment, and Next.js rejects
+ * two different dynamic segment names at the same position. Retail has since been
+ * deleted, but the ticketing surface stays under `/api/ticketing/**` rather than moving
+ * a live endpoint. See the note in `app/api/ticketing/checkout/route.ts`.
  *
  * Read-only, so no `requireSameOrigin` — the Phase 3 origin check applies to
  * state-changing methods (GET is exempt by design, and requiring an Origin header on a

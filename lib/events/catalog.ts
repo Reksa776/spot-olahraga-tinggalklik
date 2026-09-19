@@ -153,7 +153,14 @@ function toCard(row: CardRow, origin: string): PublicEventCard {
  */
 function publicVisibilityWhere(now: Date): Prisma.EventWhereInput {
     return {
-        status: "PUBLISHED",
+        // PHASE 15 (P14-D11): `ONGOING` is now a reachable, REAL state (the scheduler moves
+        // `PUBLISHED → ONGOING` at `startAt`), so a filter of `status: "PUBLISHED"` would
+        // make every live event vanish from the catalog the moment it started.
+        //
+        // `COMPLETED` is deliberately absent: completion means the event is over, and the
+        // existing past-event filter below already hides an event whose end has passed.
+        // `DRAFT` / `PENDING_REVIEW` / `CANCELLED` / `ARCHIVED` stay excluded.
+        status: { in: ["PUBLISHED", "ONGOING"] },
         visibility: "PUBLIC",
         archivedAt: null,
         // Not yet past: endAt when set, otherwise startAt.

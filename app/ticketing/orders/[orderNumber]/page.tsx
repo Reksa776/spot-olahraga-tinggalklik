@@ -4,6 +4,8 @@ import { notFound, redirect } from "next/navigation";
 
 import CancelOrderButton from "@/components/orders/CancelOrderButton";
 import PayNowButton from "@/components/orders/PayNowButton";
+import RequestRefundButton from "@/components/orders/RequestRefundButton";
+import PaymentInstruction from "@/components/ticketing/PaymentInstruction";
 import RefreshOrderStatus from "@/components/orders/RefreshOrderStatus";
 import ReservationCountdown from "@/components/orders/ReservationCountdown";
 import IssueTicketsButton from "@/components/tickets/IssueTicketsButton";
@@ -75,6 +77,14 @@ const ORDER_STATUS: Record<string, { label: string; className: string }> = {
         label: "Kedaluwarsa",
         className: "bg-rose-50 text-rose-700 ring-rose-200",
     },
+    REFUNDED: {
+        label: "Dana dikembalikan",
+        className: "bg-violet-50 text-violet-700 ring-violet-200",
+    },
+    PARTIALLY_REFUNDED: {
+        label: "Dana dikembalikan sebagian",
+        className: "bg-violet-50 text-violet-700 ring-violet-200",
+    },
 };
 
 /** Buyer-facing label for the order's `PaymentStatus`. */
@@ -101,6 +111,10 @@ const PAYMENT_STATUS: Record<string, { label: string; className: string }> = {
     },
     REFUNDED: {
         label: "Dana dikembalikan",
+        className: "bg-violet-50 text-violet-700 ring-violet-200",
+    },
+    PARTIALLY_REFUNDED: {
+        label: "Dana dikembalikan sebagian",
         className: "bg-violet-50 text-violet-700 ring-violet-200",
     },
 };
@@ -137,6 +151,22 @@ export default async function OrderPage({ params }: Props) {
     };
 
     const isPending = order.status === "PENDING_PAYMENT";
+
+    /**
+     * Whether the server would accept a refund request from this page.
+     *
+     * Advisory only, derived from the payload's own ticket statuses — the refund service
+     * re-derives every rule (payment state, window, per-ticket claims) and refuses on its own.
+     * The full request is offered only while EVERY ticket is still ISSUED, so this button can
+     * never send a set the policy would reject for a checked-in ticket.
+     */
+    const isPaid =
+        order.paymentStatus === "PAID" ||
+        order.paymentStatus === "PARTIALLY_REFUNDED";
+    const canRequestRefund =
+        isPaid &&
+        order.tickets.length > 0 &&
+        order.tickets.every((ticket) => ticket.status === "ISSUED");
 
     // Names for held reservations come from the order's own lines, matched on ticket type id — the
     // reservation carries no name, and the payload deliberately exposes no ticket-type internals.
@@ -318,7 +348,21 @@ export default async function OrderPage({ params }: Props) {
                         {/* ── Awaiting payment ──────────────────────────────── */}
                         {isPending && order.paymentStatus !== "PAID" ? (
                             <section className="mt-7 border-t border-ink-100 pt-6">
-                                {order.canPay ? (
+                                {/*
+                                 * A live instruction is shown INSTEAD of the method picker: the
+                                 * buyer has already chosen, the gateway has already issued the
+                                 * QR/account number, and asking again would invite a second
+                                 * parallel attempt for one order. `paymentInstruction` is null
+                                 * unless the newest attempt is still PENDING, so a paid or
+                                 * expired attempt renders nothing here.
+                                 */}
+                                {order.paymentInstruction ? (
+                                    <PaymentInstruction
+                                        instruction={order.paymentInstruction}
+                                        amount={order.totals.total}
+                                        orderNumber={order.orderNumber}
+                                    />
+                                ) : order.canPay ? (
                                     <PayNowButton
                                         orderNumber={order.orderNumber}
                                         paymentUrl={order.paymentUrl}
@@ -344,7 +388,7 @@ export default async function OrderPage({ params }: Props) {
                         ) : null}
 
                         {/* ── Paid: fulfilment ──────────────────────────────── */}
-                        {order.paymentStatus === "PAID" ? (
+                        {isPaid ? (
                             <section className="mt-7 border-t border-ink-100 pt-6">
                                 <p className="text-sm font-bold text-emerald-800">
                                     Pembayaran sudah diterima
@@ -410,6 +454,22 @@ export default async function OrderPage({ params }: Props) {
                                         kontak pada pesanan ini.
                                     </p>
                                 )}
+
+                                {/* ── Refund (Phase 10B) ───────────────────── */}
+                                <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-ink-100 pt-4">
+                                    {canRequestRefund ? (
+                                        <RequestRefundButton
+                                            orderNumber={order.orderNumber}
+                                        />
+                                    ) : null}
+
+                                    <Link
+                                        href="/ticketing/refunds"
+                                        className="text-sm font-semibold text-ink-500 transition hover:text-ink-900"
+                                    >
+                                        Lihat pengajuan refund
+                                    </Link>
+                                </div>
                             </section>
                         ) : null}
 

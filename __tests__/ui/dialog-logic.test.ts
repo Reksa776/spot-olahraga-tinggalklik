@@ -30,6 +30,10 @@ class DialogSimulator {
 
     private pendingPromise: Promise<boolean | string | null> | null = null;
 
+    /** Outer resolve stashed for test control. Typed, so no `any` escape hatch is needed. */
+    private _outerResolve: ((value: boolean | string | null) => void) | null =
+        null;
+
     openDialog(type: DialogType): Promise<boolean | string | null> {
         return new Promise((res) => {
             this.state = {
@@ -39,7 +43,7 @@ class DialogSimulator {
             };
             this.pendingPromise = new Promise((r) => {
                 // Store the outer resolve for test control
-                (this as any)._outerResolve = r;
+                this._outerResolve = r;
             });
         });
     }

@@ -54,7 +54,7 @@ describe("M4 — CSP Configuration Audit", () => {
         expect(csp).toMatch(/script-src\s+.*'self'/);
     });
 
-    test("script-src includes 'unsafe-inline' (required for TikTok Pixel)", async () => {
+    test("script-src includes 'unsafe-inline' (required by Next.js inline bootstrap)", async () => {
         // CSP is now dynamically generated — validate runtime output
         const nextConfig = (await import("../../next.config")).default;
         const headersFn = nextConfig.headers as () => Promise<unknown>;
@@ -69,12 +69,7 @@ describe("M4 — CSP Configuration Audit", () => {
                 if (h.key === "Content-Security-Policy") csp = h.value;
             }
         }
-        // TikTok Pixel uses innerHTML to inject bootstrap script
         expect(csp).toMatch(/script-src\s+.*'unsafe-inline'/);
-    });
-
-    test("script-src allows analytics.tiktok.com", () => {
-        expect(config).toContain("https://analytics.tiktok.com");
     });
 
     test("script-src does NOT allow arbitrary external script origins", async () => {
@@ -97,10 +92,11 @@ describe("M4 — CSP Configuration Audit", () => {
         const scriptSrcMatch = csp.match(/script-src\s+([^;]+)/);
         expect(scriptSrcMatch).not.toBeNull();
         if (scriptSrcMatch) {
-            // Must contain only known-safe origins
+            // Must contain only known-safe sources
             expect(scriptSrcMatch[1]).toContain("'self'");
             expect(scriptSrcMatch[1]).toContain("'unsafe-inline'");
-            expect(scriptSrcMatch[1]).toContain("https://analytics.tiktok.com");
+            // No third-party script origin is permitted.
+            expect(scriptSrcMatch[1]).not.toMatch(/https?:\/\//);
             // Should NOT contain eval in production
             expect(scriptSrcMatch[1]).not.toContain("'unsafe-eval'");
         }
@@ -110,12 +106,13 @@ describe("M4 — CSP Configuration Audit", () => {
         expect(config).toMatch(/style-src.*'self'.*'unsafe-inline'/);
     });
 
-    test("img-src allows required image origins", () => {
-        // CSP is built as array joined with '; ' — search for each origin
-        expect(config).toContain("img-src 'self'");
-        expect(config).toContain("https://down-id.img.susercontent.com");
-        expect(config).toContain("https://unpkg.com");
-        expect(config).toContain("https://*.tile.openstreetmap.org");
+    test("img-src allows only our own origin, data: URIs and the gateway's QR host", () => {
+        // The gateway hosts were added deliberately: iPaymu serves the QRIS code as a PNG on
+        // its own domain, and that image IS the payment instrument. The assertion below still
+        // fails on any OTHER third-party image origin.
+        expect(config).toContain(
+            "img-src 'self' data: https://my.ipaymu.com https://sandbox.ipaymu.com"
+        );
     });
 
     test("img-src allows data: URIs (for inline images)", () => {
@@ -189,43 +186,56 @@ describe("M4 — CSP Configuration Audit", () => {
 
 /* ==========================================
  * EXTERNAL ORIGIN VERIFICATION
- * ========================================== */
+ * ==========================================
+ *
+ * The three checks that used to live here verified that the origins allowed by the CSP matched the
+ * components that used them — the TikTok pixel, Leaflet map tiles and Leaflet marker images. All
+ * three components belonged to the retail application and were deleted with it, and the
+ * corresponding CSP allowances were removed rather than left as unused policy.
+ *
+ * The replacement guard is the inverse, and it is what actually matters now: the CSP must allow no
+ * third-party script or image origin at all.
+ */
 
 describe("M4 — External Origin Verification", () => {
-    test("TikTok Pixel script origin matches CSP allowance", async () => {
-        const tiktokCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "components/analytics/TikTokPixel.tsx"
-            ),
-            "utf-8"
-        );
-        // TikTok Pixel loads from analytics.tiktok.com
-        expect(tiktokCode).toContain("analytics.tiktok.com");
-    });
+    test("no third-party script or image origin is allowed", async () => {
+        const nextConfig = (await import("../../next.config")).default;
+        const headersFn = nextConfig.headers as () => Promise<unknown>;
+        const result = (await headersFn()) as Array<{
+            source: string;
+            headers: Array<{ key: string; value: string }>;
+        }>;
 
-    test("Leaflet tile origin matches CSP allowance", async () => {
-        const mapCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "app/addresses/new/LocationPickerMap.tsx"
-            ),
-            "utf-8"
-        );
-        // Leaflet uses tile.openstreetmap.org
-        expect(mapCode).toContain("tile.openstreetmap.org");
-    });
+        let csp = "";
+        for (const entry of result) {
+            for (const h of entry.headers) {
+                if (h.key === "Content-Security-Policy") csp = h.value;
+            }
+        }
 
-    test("Leaflet marker origin matches CSP allowance", async () => {
-        const mapCode = readFileSync(
-            resolve(
-                process.cwd(),
-                "app/addresses/new/LocationPickerMap.tsx"
-            ),
-            "utf-8"
-        );
-        // Leaflet markers come from unpkg.com
-        expect(mapCode).toContain("unpkg.com");
+        // The deleted retail integrations must not survive as dead CSP policy.
+        expect(csp).not.toContain("analytics.tiktok.com");
+        expect(csp).not.toContain("openstreetmap.org");
+        expect(csp).not.toContain("unpkg.com");
+        expect(csp).not.toContain("susercontent.com");
+
+        // script-src is still our own origin only. img-src names exactly two third-party
+        // origins — the payment gateway's — and nothing else, because the QRIS image it hosts
+        // is the payment instrument and cannot be re-encoded locally.
+        const scriptSrc = csp.match(/script-src\s+([^;]+)/)?.[1] ?? "";
+        const imgSrc = csp.match(/img-src\s+([^;]+)/)?.[1] ?? "";
+
+        expect(scriptSrc).toContain("'self'");
+        expect(scriptSrc).not.toMatch(/https?:\/\//);
+        expect(imgSrc).toContain("'self'");
+
+        const imgOrigins =
+            imgSrc.match(/https?:\/\/[^\s;]+/g)?.map((value) => value.trim()) ?? [];
+
+        expect(imgOrigins.sort()).toEqual([
+            "https://my.ipaymu.com",
+            "https://sandbox.ipaymu.com",
+        ]);
     });
 });
 

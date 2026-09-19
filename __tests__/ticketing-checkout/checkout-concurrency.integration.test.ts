@@ -47,6 +47,8 @@ jest.setTimeout(600_000);
 
 const SUFFIX = `p6c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+/** PHASE 20B (D-P19-05 = A): a publishable event must carry an `endAt`. */
+const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 const PRICE = "100000.00";
 const SEATS = 50;
 const BUYERS = 100;
@@ -158,7 +160,12 @@ beforeAll(async () => {
     event = await createEvent(
         scope,
         org.id,
-        { title: `P6C Event ${SUFFIX}`, sportId, startAt: FUTURE } as never
+        {
+            title: `P6C Event ${SUFFIX}`,
+            sportId,
+            startAt: FUTURE,
+            endAt: FUTURE_END,
+        } as never
     );
 
     typeRace = await createTicketType(await organizerScope(), event.id, {
@@ -425,7 +432,7 @@ describe("E. reservation transition races keep the counters honest", () => {
 
         await reserveQuota(solo.id, 5);
 
-        const [release, confirm] = await Promise.all([
+        const [_release, confirm] = await Promise.all([
             releaseReservation(solo.id, 5),
             confirmReservation(solo.id, 5),
         ]);

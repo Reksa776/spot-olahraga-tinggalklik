@@ -18,9 +18,10 @@ export type PublicStoreSetting = {
  * Only exposes fields that are safe for public
  * pages: footer, contact, legal pages.
  *
- * NEVER expose: tiktokPixelId, latitude,
- * longitude, rajaOngkirDestinationId, or any
- * internal configuration.
+ * The model no longer carries the retail-only columns (analytics
+ * pixel ids, geo coordinates, the courier destination id) — those
+ * were removed with the retail application, and the select below is
+ * the whole of the remaining public surface.
  */
 export async function getPublicStoreSetting(): Promise<PublicStoreSetting> {
     const setting = await prisma.storeSetting.findUnique({

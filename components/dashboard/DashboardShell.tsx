@@ -4,63 +4,94 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { useEffect, useState, type ReactNode } from "react";
-import {
-    AppShell,
-    Avatar,
-    Badge,
-    Box,
-    Burger,
-    Group,
-    Menu,
-    Text,
-    UnstyledButton,
-} from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
-import {
-    FiChevronDown,
-    FiExternalLink,
-    FiLogOut,
-    FiUser,
-} from "react-icons/fi";
+import { ExternalLink, LogOut, Ticket } from "lucide-react";
 
 import Brand from "@/components/Brand";
-import DashboardNav, { type ShellNavEntry } from "./DashboardNav";
+import { Avatar, AvatarFallback } from "@/components/dashboard/ui/misc";
+import { Button } from "@/components/dashboard/ui/button";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/dashboard/ui/dropdown-menu";
+import {
+    Sidebar,
+    SidebarProvider,
+    SidebarTrigger,
+    useSidebar,
+} from "@/components/dashboard/ui/sidebar";
+import { ThemeQuickToggle, ThemeSettingsMenu } from "./theme/theme-switcher";
+import DashboardNav, {
+    type ShellNavEntry,
+    type ShellNavGroup,
+    type ShellNavItem,
+} from "./DashboardNav";
+
+export type { ShellNavEntry, ShellNavGroup, ShellNavItem };
 
 /**
  * ==========================================
  * DASHBOARD SHELL
  * ==========================================
  *
- * The `AppShell` frame for every back-office surface (`/admin`, `/organizer`, `/platform`),
- * replacing three hand-rolled layouts that each re-implemented a sidebar, a mobile top bar and a
- * mobile overlay. Behaviourally it is a superset of what it replaced:
+ * The frame for every back-office surface (`/admin`, `/organizer`, `/platform`), shared by all
+ * three so the sections cannot drift apart:
  *
- *   • the same destinations, including the query-differentiated Broadcast entries;
- *   • the same grouping and labels the previous sidebar used, so nobody has to relearn the menu;
- *   • the same logout semantics (`signOut` with a `/` callback, exactly as before);
- *   • plus a real active state, a collapsible group that opens itself when a child is active, a
- *     burger-driven mobile navbar, and an accessible user menu.
+ *   SIDEBAR   `components/dashboard/ui/sidebar.tsx` — persistent rail from `md` up, drawer below it
+ *   TOPBAR    below — page context, theme controls, account menu
+ *   CONTENT   one capped, consistently padded canvas
  *
- * The sidebar itself lives in `DashboardNav`, because the admin navigation definitions belong in
- * `components/admin/AdminNavbar.tsx` while the *rendering* of a navigation should exist once.
+ * WHAT CHANGED IN THE SHADCN REWRITE
+ * ----------------------------------
+ * The shell used to be a Mantine `AppShell`. It is now plain Tailwind over the shared sidebar
+ * primitives, and three things are new:
+ *
+ *   1. **A real top bar.** Left: the mobile navigation trigger and a two-line page context — the
+ *      section ("Admin") above the current destination ("Produk"). The destination label is read
+ *      from the caller's own navigation, so the bar can never claim the user is somewhere the menu
+ *      does not offer; there is no separate route-title table to fall out of date. Right: the theme
+ *      controls (light/dark, accent colour, chart palette) and the account menu. No notification
+ *      bell and no search box exist, because neither has a backend to read from.
+ *   2. **A capped content canvas.** The page content is padded once and stops growing at 1440px, so
+ *      a form cannot stretch across an ultrawide monitor and every page starts at the same optical
+ *      margin.
+ *   3. **No footer.** The root element carries `data-dashboard-shell`, which is what
+ *      `app/globals.css` uses to suppress the rest of the chrome for back-office routes.
  *
  * AUTHORITY IS AN INPUT, NOT A DECISION
  * ------------------------------------
- * This component never decides who sees what. Callers pass the navigation they are allowed to
- * render — `PlatformShell` is handed two booleans the server layout computed from the permission
- * map, and `AdminShell` is only reachable behind the existing `role === "ADMIN"` gate. The shell
- * renders what it is given and nothing else: no menu item exists here that a caller cannot withhold.
+ * This component never decides who sees what. The caller passes the navigation it is allowed to
+ * render — `DashboardAppShell` builds it from capability booleans that `app/dashboard/layout.tsx`
+ * computed with the real permission deciders. The shell renders what it is given and nothing else:
+ * no menu item exists here that a caller cannot withhold.
  */
 
-export default function DashboardShell({
-    nav,
-    sectionLabel,
-    sectionDescription,
-    userName,
-    userEmail,
-    children,
-}: {
-    nav: ShellNavEntry[];
+/** The label of the destination the user is currently on, or `null` if none matches. */
+function findActiveLabel(nav: ShellNavGroup[], pathname: string): string | null {
+    const candidates = nav.flatMap((group) =>
+        group.items.map((item) => ({
+            href: item.href.split("?")[0],
+            label: item.label,
+        }))
+    );
+
+    // Deepest matching path wins, and an exact match beats a prefix: the same rule the sidebar uses
+    // for its highlight, expressed for labels rather than for hrefs.
+    const matches = candidates
+        .filter(
+            (candidate) =>
+                pathname === candidate.href || pathname.startsWith(`${candidate.href}/`)
+        )
+        .sort((a, b) => b.href.length - a.href.length);
+
+    return matches[0]?.label ?? null;
+}
+
+type DashboardShellProps = {
+    nav: ShellNavGroup[];
     /** Short chip beside the brand, e.g. "Admin", "Platform", "Penyelenggara". */
     sectionLabel: string;
     /** Contextual line under the brand in the sidebar, e.g. the organiser name. */
@@ -68,16 +99,39 @@ export default function DashboardShell({
     userName?: string | null;
     userEmail?: string | null;
     children: ReactNode;
-}) {
-    const pathname = usePathname();
-    const [navOpened, { toggle: toggleNav, close: closeNav }] = useDisclosure(false);
-    const [signingOut, setSigningOut] = useState(false);
+};
 
-    // The path is read on every navigation, so a collapsed mobile navbar closes itself instead of
-    // covering the page the user just asked for.
+/**
+ * The shell's public entry point: it mounts the sidebar context and renders the frame.
+ *
+ * The provider has to be INSIDE the shell (rather than at the layout) because the mobile drawer,
+ * the collapsed rail and the navigation all read the same context, and the layouts are server
+ * components that cannot create it.
+ */
+export default function DashboardShell(props: DashboardShellProps) {
+    return (
+        <SidebarProvider>
+            <DashboardShellFrame {...props} />
+        </SidebarProvider>
+    );
+}
+
+function DashboardShellFrame({
+    nav,
+    sectionLabel,
+    sectionDescription,
+    userName,
+    userEmail,
+    children,
+}: DashboardShellProps) {
+    const pathname = usePathname();
+    const { setMobileOpen } = useSidebar();
+
+    // A collapsed mobile drawer closes itself on navigation instead of covering the page the user
+    // just asked for.
     useEffect(() => {
-        closeNav();
-    }, [pathname, closeNav]);
+        setMobileOpen(false);
+    }, [pathname, setMobileOpen]);
 
     const initials = (userName ?? userEmail ?? "?")
         .split(" ")
@@ -86,6 +140,10 @@ export default function DashboardShell({
         .slice(0, 2)
         .join("")
         .toUpperCase();
+
+    const activeLabel = findActiveLabel(nav, pathname) ?? sectionLabel;
+
+    const [signingOut, setSigningOut] = useState(false);
 
     async function handleSignOut() {
         try {
@@ -97,115 +155,151 @@ export default function DashboardShell({
     }
 
     return (
-        <AppShell
-            header={{ height: 60 }}
-            navbar={{ width: 272, breakpoint: "md", collapsed: { mobile: !navOpened } }}
-            padding="lg"
-            styles={{
-                main: { backgroundColor: "var(--mantine-color-gray-0)", minHeight: "100vh" },
-            }}
+        <div
+            data-dashboard-shell
+            className="flex min-h-screen w-full bg-background text-foreground"
         >
-            <AppShell.Header>
-                <Group h="100%" px="md" justify="space-between" wrap="nowrap">
-                    <Group gap="sm" wrap="nowrap">
-                        <Burger
-                            opened={navOpened}
-                            onClick={toggleNav}
-                            hiddenFrom="md"
-                            size="sm"
-                            aria-label="Buka menu"
-                        />
+            <DashboardNavSlot
+                nav={nav}
+                sectionLabel={sectionLabel}
+                sectionDescription={sectionDescription}
+                userName={userName}
+                userEmail={userEmail}
+            />
 
-                        <Box hiddenFrom="md">
-                            <Brand />
-                        </Box>
+            <div className="flex min-w-0 flex-1 flex-col">
+                {/* ── TOP BAR ──────────────────────────────────────────────────────── */}
+                <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 border-b border-border bg-card/95 px-4 backdrop-blur sm:px-6">
+                    <SidebarTrigger />
 
-                        <Badge variant="light" color="brand" size="lg" radius="sm" visibleFrom="md">
+                    <div className="md:hidden">
+                        <Brand />
+                    </div>
+
+                    {/* Page context: where the user is, stated from the navigation they were given. */}
+                    <div className="flex min-w-0 flex-col">
+                        <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-muted-foreground">
                             {sectionLabel}
-                        </Badge>
-                    </Group>
+                        </span>
+                        <span className="truncate text-sm font-semibold leading-tight">
+                            {activeLabel}
+                        </span>
+                    </div>
 
-                    <Group gap="xs" wrap="nowrap">
-                        <Menu position="bottom-end" withArrow shadow="md" width={240}>
-                            <Menu.Target>
-                                <UnstyledButton
+                    <div className="ml-auto flex items-center gap-1">
+                        <ThemeQuickToggle />
+
+                        <ThemeSettingsMenu />
+
+                        <Button
+                            asChild
+                            variant="ghost"
+                            size="sm"
+                            className="hidden text-muted-foreground hover:text-foreground sm:inline-flex"
+                        >
+                            <Link href="/">
+                                <ExternalLink />
+                                Lihat situs
+                            </Link>
+                        </Button>
+
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <button
+                                    type="button"
                                     aria-label="Menu akun"
-                                    style={{ borderRadius: 8 }}
-                                    px="xs"
-                                    py={6}
+                                    className="flex items-center gap-2 rounded-field p-1 pr-2 outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                                 >
-                                    <Group gap="sm" wrap="nowrap">
-                                        <Avatar color="brand" variant="light" radius="xl" size="md">
-                                            {initials}
-                                        </Avatar>
+                                    <Avatar>
+                                        <AvatarFallback>{initials}</AvatarFallback>
+                                    </Avatar>
 
-                                        <Box visibleFrom="sm" style={{ textAlign: "left" }}>
-                                            <Text size="sm" fw={600} lineClamp={1} maw={170}>
-                                                {userName ?? "Akun"}
-                                            </Text>
-                                            {userEmail ? (
-                                                <Text size="xs" c="dimmed" lineClamp={1} maw={170}>
-                                                    {userEmail}
-                                                </Text>
-                                            ) : null}
-                                        </Box>
+                                    <span className="hidden flex-col items-start sm:flex">
+                                        <span className="max-w-[10rem] truncate text-[0.8125rem] font-semibold leading-tight">
+                                            {userName ?? "Akun"}
+                                        </span>
+                                        {userEmail ? (
+                                            <span className="max-w-[10rem] truncate text-[0.6875rem] leading-tight text-muted-foreground">
+                                                {userEmail}
+                                            </span>
+                                        ) : null}
+                                    </span>
+                                </button>
+                            </DropdownMenuTrigger>
 
-                                        <FiChevronDown size={14} />
-                                    </Group>
-                                </UnstyledButton>
-                            </Menu.Target>
+                            <DropdownMenuContent align="end">
+                                <DropdownMenuLabel>Akun</DropdownMenuLabel>
 
-                            <Menu.Dropdown>
-                                <Menu.Label>Akun</Menu.Label>
+                                <DropdownMenuItem asChild>
+                                    <Link href="/ticketing/tickets">
+                                        <Ticket />
+                                        Tiket saya
+                                    </Link>
+                                </DropdownMenuItem>
 
-                                <Menu.Item
-                                    leftSection={<FiUser size={15} />}
-                                    component={Link}
-                                    href="/profile"
-                                >
-                                    Profil saya
-                                </Menu.Item>
+                                <DropdownMenuItem asChild>
+                                    <Link href="/">
+                                        <ExternalLink />
+                                        Lihat situs
+                                    </Link>
+                                </DropdownMenuItem>
 
-                                <Menu.Item
-                                    leftSection={<FiExternalLink size={15} />}
-                                    component={Link}
-                                    href="/"
-                                >
-                                    Lihat situs
-                                </Menu.Item>
+                                <DropdownMenuSeparator />
 
-                                <Menu.Divider />
-
-                                <Menu.Item
-                                    color="red"
-                                    leftSection={<FiLogOut size={15} />}
-                                    onClick={handleSignOut}
+                                <DropdownMenuItem
+                                    variant="destructive"
                                     disabled={signingOut}
+                                    onSelect={(event) => {
+                                        event.preventDefault();
+                                        void handleSignOut();
+                                    }}
                                 >
+                                    <LogOut />
                                     {signingOut ? "Keluar…" : "Keluar"}
-                                </Menu.Item>
-                            </Menu.Dropdown>
-                        </Menu>
-                    </Group>
-                </Group>
-            </AppShell.Header>
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
+                </header>
 
-            <AppShell.Navbar p="sm">
-                <DashboardNav
-                    nav={nav}
-                    sectionLabel={sectionLabel}
-                    sectionDescription={sectionDescription}
-                    onNavigate={closeNav}
-                />
-            </AppShell.Navbar>
-
-            <AppShell.Main>
-                <Box maw={1400} mx="auto">
-                    {children}
-                </Box>
-            </AppShell.Main>
-        </AppShell>
+                {/* ── CONTENT ──────────────────────────────────────────────────────── */}
+                <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8">
+                    <div className="mx-auto w-full max-w-[1440px]">{children}</div>
+                </main>
+            </div>
+        </div>
     );
 }
 
-export type { ShellNavEntry };
+/** The sidebar column. Split out so the shell body stays readable. */
+function DashboardNavSlot({
+    nav,
+    sectionLabel,
+    sectionDescription,
+    userName,
+    userEmail,
+}: {
+    nav: ShellNavGroup[];
+    sectionLabel: string;
+    sectionDescription?: string;
+    userName?: string | null;
+    userEmail?: string | null;
+}) {
+    const { setMobileOpen } = useSidebar();
+
+    return (
+        <Sidebar>
+            <DashboardNav
+                nav={nav}
+                sectionLabel={sectionLabel}
+                sectionDescription={sectionDescription}
+                userName={userName}
+                userEmail={userEmail}
+                onNavigate={() => setMobileOpen(false)}
+            />
+        </Sidebar>
+    );
+}
+
+export { SidebarProvider };
+export type { DashboardShellProps };

@@ -15,7 +15,6 @@
 import type {
     OrganizerMemberRole,
     OrganizerMemberStatus,
-    PlatformRole,
 } from "@prisma/client";
 
 /*

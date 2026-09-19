@@ -56,7 +56,15 @@ async function scopeFor() {
 
 let eventSeq = 0;
 
-/** A fresh DRAFT event with a distinctive slug so catalog queries are unambiguous. */
+/**
+ * A fresh DRAFT event with a distinctive slug so catalog queries are unambiguous.
+ *
+ * PHASE 20B (D-P19-05 = A): the helper supplies an `endAt` relative to the `startAt` it was
+ * given, because `publishEvent` now refuses an event without one. The refusal tests below
+ * still fail for the reason each names (no sellable type, a past `startAt`, an unauthorized
+ * tenant) — the new precondition is always satisfied by the fixture, so it can never be the
+ * cause of a refusal a test attributes to something else.
+ */
 async function draftEvent(startAt: Date = FUTURE, tag = "evt") {
     eventSeq += 1;
 
@@ -69,6 +77,7 @@ async function draftEvent(startAt: Date = FUTURE, tag = "evt") {
             title: `P5 Publish ${tag} ${SUFFIX} ${eventSeq}`,
             sportId,
             startAt,
+            endAt: new Date(startAt.getTime() + 3 * 60 * 60 * 1000),
         } as never
     );
 }

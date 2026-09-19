@@ -47,10 +47,10 @@ export type StoredEventImage = {
 /**
  * Directory for processed event imagery.
  *
- * Mirrors the existing retail convention (`UPLOAD_DIR` override, otherwise
- * `storage/uploads/...`) so deployment configuration keeps working unchanged. A
- * separate `events` folder keeps Phase 4 files away from the retail `products` and
- * `affiliate` trees while legacy cleanup is deferred to Phase 14.
+ * Keeps the shared upload convention (`UPLOAD_DIR` override, otherwise
+ * `storage/uploads/...`) so deployment configuration keeps working unchanged. The
+ * `events` folder is now the only image tree the application writes: the retail
+ * `products` and `affiliate` trees were deleted with the retail application.
  */
 function eventImageDir(): string {
     return process.env.UPLOAD_DIR

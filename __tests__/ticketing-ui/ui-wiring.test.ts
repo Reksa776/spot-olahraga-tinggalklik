@@ -15,7 +15,7 @@ import path from "node:path";
  *   • no UI file talks to the database or the payment provider directly;
  *   • the QR is rendered from a server-supplied payload and never assembled in a component;
  *   • the wallet list carries no credential;
- *   • check-in has NOT been implemented (Part C is blocked on unresolved decisions);
+ *   • check-in is a BACK-OFFICE tool, and the buyer's surfaces still carry no control for it;
  *   • the design tokens did not repaint the live retail storefront;
  *   • no UI framework was added.
  */
@@ -216,23 +216,34 @@ describe("H4. the QR is server-supplied and never assembled in the UI", () => {
     });
 });
 
-describe("H5. Part C — check-in is NOT implemented (unresolved decisions)", () => {
-    it("no check-in API route or module was created", () => {
+describe("H5. check-in is a back-office tool, not a buyer-facing one", () => {
+    it("the gate lives under the organizer dashboard, not in the ticketing UI", () => {
         const apiRoutes = walk("app/api").filter((file) =>
             file.endsWith("route.ts")
         );
 
-        expect(apiRoutes.length).toBeGreaterThan(100);
-        expect(apiRoutes.filter((file) => /checkin|check-in|scan/i.test(file))).toEqual(
-            []
-        );
+        // A sanity floor so an empty enumeration cannot make the assertion below
+        // vacuous. The ticketing surface has ~30 route files.
+        expect(apiRoutes.length).toBeGreaterThan(20);
 
-        expect(walk("lib/ticketing").filter((file) => /checkin/i.test(file))).toEqual(
-            []
-        );
+        // Phase 13 added exactly one gate route, and it is an organizer route. The public
+        // ticketing namespace (`app/api/ticketing/**`, which the buyer's session reaches)
+        // gained none: a buyer cannot admit their own ticket.
+        expect(
+            apiRoutes.filter((file) => /checkin|check-in|scan/i.test(file))
+        ).toEqual(["app/api/organizer/events/[id]/check-in/route.ts"]);
+
+        expect(
+            apiRoutes.filter(
+                (file) => file.startsWith("app/api/ticketing/") && /check-?in/i.test(file)
+            )
+        ).toEqual([]);
     });
 
-    it("no page or component offers a scanner, a validate button or a fake check-in state", () => {
+    it("no buyer page or component offers a scanner, a validate button or a fake check-in state", () => {
+        // Unchanged by Phase 13: the gate is rendered from the organizer event page, so the
+        // public ticketing surfaces must still carry no permission, no staff vocabulary and
+        // no state-changing control.
         for (const file of [...TICKETING_PAGES, ...PHASE_9_COMPONENTS]) {
             const source = read(file);
 
@@ -240,6 +251,7 @@ describe("H5. Part C — check-in is NOT implemented (unresolved decisions)", ()
             expect(source).not.toMatch(/StaffEventAssignment/);
             // A gate action would have to be a state-changing control; the e-ticket has none.
             expect(source).not.toMatch(/validateTicket|scanTicket/);
+            expect(source).not.toMatch(/ticketing\/checkin/);
         }
     });
 
@@ -264,9 +276,14 @@ describe("H6. the design tokens did not repaint the live retail storefront", () 
         expect(css).not.toMatch(/--font-geist-(sans|mono):\s*[^v]/);
     });
 
-    it("suppresses the retail footer only on markup that opts in", () => {
-        expect(css).toContain("[data-ticketing-shell]");
-        expect(css).toMatch(/footer\[data-global-footer\]/);
+    it("no longer needs a footer-suppression rule, because there is no global footer", () => {
+        // The retail `<Footer>` used to be mounted by `app/layout.tsx` on every route, and the
+        // ticketing shell suppressed it with a `body:has([data-ticketing-shell])` rule. Both the
+        // component and the global mount point were deleted with retail, so the suppression rule
+        // went with them rather than surviving as dead CSS.
+        expect(css).not.toMatch(/footer\[data-global-footer\]\s*\{/);
+        expect(read("app/layout.tsx")).not.toContain("<Footer");
+        expect(existsSync(path.join(ROOT, "components/Footer.tsx"))).toBe(false);
     });
 });
 

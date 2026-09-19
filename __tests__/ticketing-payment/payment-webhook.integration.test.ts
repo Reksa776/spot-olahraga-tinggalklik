@@ -662,7 +662,9 @@ describe("C. successful settlement", () => {
             extra: { status: "refund" },
         });
 
-        expect(result.result.outcome).toBe("REFUND_OUT_OF_SCOPE");
+        // PHASE 18B (D-P17-04 = B): the production refund rail is a manual bank transfer, so
+        // a refund notification is recorded and acknowledged but can never settle anything.
+        expect(result.result.outcome).toBe("REFUND_MANUAL_RAIL");
         expect(result.result.httpStatus).toBe(200);
         await assertInventoryInvariants(type);
     });

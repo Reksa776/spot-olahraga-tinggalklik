@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 
 /**
@@ -29,6 +29,16 @@ import { useRouter } from "next/navigation";
  * The remaining time is rendered only after mount, because the server and the browser
  * would otherwise disagree on "now" by a few hundred milliseconds and React would report
  * a hydration mismatch on the very first paint.
+ *
+ * ── WHY THE CLOCK IS A `useSyncExternalStore` (PHASE 11) ──────────────────────────
+ * This used to call `setState` synchronously inside the effect body and read `Date.now()`
+ * during render. Both are flagged by the React 19 rules: a synchronous `setState` in an
+ * effect triggers a cascading render, and reading the clock during render is impure.
+ * The clock is an EXTERNAL SYSTEM, which is exactly what `useSyncExternalStore` models:
+ * `Date.now()` is read in the snapshot function, the subscription is a one-second
+ * interval, and the server snapshot is `null` so the first paint is the placeholder and
+ * hydration cannot mismatch. Behaviour is unchanged — still server-derived deadline,
+ * still `router.refresh()` at zero, still no mutation.
  */
 
 type Props = {
@@ -44,34 +54,66 @@ function formatRemaining(ms: number): string {
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
+/**
+ * Cached per whole second so repeated `getSnapshot` reads within one render are stable —
+ * a snapshot that changed on every read would make React warn and could loop.
+ */
+let cachedSecond = -1;
+let cachedSecondStart = 0;
+
+function secondSnapshot(): number {
+    const second = Math.floor(Date.now() / 1000);
+
+    if (second !== cachedSecond) {
+        cachedSecond = second;
+        cachedSecondStart = second * 1000;
+    }
+
+    return cachedSecondStart;
+}
+
+/** Server snapshot: `null` means "not mounted yet", which renders the placeholder. */
+function serverClockSnapshot(): number | null {
+    return null;
+}
+
+function subscribeToSecond(onStoreChange: () => void): () => void {
+    const timer = setInterval(onStoreChange, 1000);
+
+    return () => clearInterval(timer);
+}
+
 export default function ReservationCountdown({ expiresAt }: Props) {
     const router = useRouter();
 
-    const [mounted, setMounted] = useState(false);
-    const [remainingMs, setRemainingMs] = useState<number | null>(null);
+    // `null` during SSR/first paint, the current epoch-second on the client afterwards.
+    const now = useSyncExternalStore(
+        subscribeToSecond,
+        secondSnapshot,
+        serverClockSnapshot
+    );
+
+    const deadline = new Date(expiresAt).getTime();
+    const remainingMs = now === null ? null : deadline - now;
+
+    // Refresh the server component ONCE when the deadline is reached. A ref keyed to the
+    // deadline prevents the still-ticking interval from calling `router.refresh()` every
+    // second after expiry.
+    const refreshedForRef = useRef<string | null>(null);
 
     useEffect(() => {
-        const deadline = new Date(expiresAt).getTime();
+        if (
+            remainingMs !== null &&
+            remainingMs <= 0 &&
+            refreshedForRef.current !== expiresAt
+        ) {
+            refreshedForRef.current = expiresAt;
+            // Revalidate against the server. This is a read, never a release.
+            router.refresh();
+        }
+    }, [remainingMs, expiresAt, router]);
 
-        setMounted(true);
-        setRemainingMs(deadline - Date.now());
-
-        const timer = setInterval(() => {
-            const next = deadline - Date.now();
-
-            setRemainingMs(next);
-
-            if (next <= 0) {
-                clearInterval(timer);
-                // Revalidate against the server. This is a read, never a release.
-                router.refresh();
-            }
-        }, 1000);
-
-        return () => clearInterval(timer);
-    }, [expiresAt, router]);
-
-    if (!mounted || remainingMs === null) {
+    if (remainingMs === null) {
         return (
             <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
                 <p className="text-xs font-bold tracking-wide text-amber-700 uppercase">
@@ -106,7 +148,7 @@ export default function ReservationCountdown({ expiresAt }: Props) {
     return (
         // `role="timer"` is a live region with `aria-live="off"` by default, which is
         // exactly right: a countdown announced every second is unusable. Only the
-        // expired state below is announced.
+        // expired state above is announced.
         <div
             role="timer"
             className={`rounded-2xl border px-4 py-3 ${

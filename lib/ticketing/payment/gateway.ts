@@ -11,7 +11,12 @@ import {
     type PayEnvironment,
 } from "@/lib/payment/config";
 import {
+    channelIsAllowed,
+    findPaymentMethodOption,
+} from "./method-catalog";
+import {
     classifyIpaymuNotification,
+    createDirectPayment,
     createRedirectPayment,
     mapPaymentMethod,
     verifyWebhookSignature,
@@ -170,8 +175,8 @@ export function gatewayEnvironmentName(): PayEnvironment {
  * must be derived from the **same** value as the gateway's own expiry ... Verify against
  * sandbox before Phase 7."
  *
- * The repository contains no sandbox evidence that settles the unit: `grep` finds
- * `expired: 1` in the live retail route and in two diagnostic scripts, and the create
+ * The repository contains no sandbox evidence that settles the unit: the (since deleted)
+ * retail route sent `expired: 1` and two diagnostic scripts still do, and the create
  * response (`IpaymuResponse.Data`) carries only `SessionId` and `Url` — no expiry — so
  * the value cannot be read back either. §31.6 lists the sandbox verification as
  * explicit Phase 7 gate work and it has not been performed (see the report).
@@ -238,7 +243,207 @@ export type GatewaySession = {
     channel: string;
     /** The raw value sent as the provider's own session-expiry parameter. */
     expiryValueSent: number;
+    /** Always `REDIRECT`: this result means the buyer finishes on the provider's page. */
+    flow: "REDIRECT";
 };
+
+/* ==================================================================================
+ * PAYMENT METHODS THAT CAN ACTUALLY BE OFFERED
+ * ==================================================================================
+ *
+ * The catalog itself lives in `./method-catalog`, unchanged, and is re-exported here so
+ * every server-side consumer keeps importing the payment seam rather than reaching into a
+ * leaf module. It is NOT defined in this file because the buyer's method picker is a client
+ * component and this file imports `@prisma/client` and Node's `crypto` — importing the
+ * catalog from here would drag both into the browser bundle.
+ *
+ * The catalog's provenance (iPaymu's published API v2 collection, method by method and
+ * channel by channel) is documented at its definition, together with what is deliberately
+ * NOT offered and why.
+ */
+
+export {
+    PAYMENT_METHOD_OPTIONS,
+    PURCHASABLE_METHOD_VALUES,
+    channelIsAllowed,
+    findPaymentMethodOption,
+    type PaymentChannelOption,
+    type PaymentMethodOption,
+} from "./method-catalog";
+
+/**
+ * What the direct endpoint gave us, in the platform's own vocabulary.
+ *
+ * `null` on an instruction field means the provider did not return it — never that it
+ * returned an empty string that was coerced. The payment page is required to handle a
+ * missing instruction explicitly rather than render a blank voucher.
+ */
+export type GatewayInstruction = {
+    flow: "DIRECT";
+    method: PaymentMethod;
+    channel: string;
+    environment: PaymentEnvironment;
+    providerSessionId: string | null;
+    providerTransactionId: string | null;
+    /** VA number, retail-outlet payment code, or the QRIS payload. */
+    paymentNumber: string | null;
+    /** QRIS payload, verbatim from `QrString`. */
+    qrString: string | null;
+    /** Provider-hosted QR image for `qrString`. */
+    qrImageUrl: string | null;
+    /** Provider's display name for the instrument. */
+    paymentName: string | null;
+    /** The provider's OWN expiry, when it returned a parseable one. */
+    providerExpiredAt: Date | null;
+};
+
+export type GatewayInstructionInput = {
+    referenceId: string;
+    amount: Prisma.Decimal | string;
+    buyerName: string;
+    buyerEmail: string;
+    buyerPhone: string;
+    notifyUrl: string;
+    method: PaymentMethod;
+    /** Provider channel code, or null for the method's default. */
+    channel: string | null;
+    /** Our reservation window in minutes; advisory to the provider (see the mapper). */
+    ttlMinutes: number;
+};
+
+export type GatewayInstructionResult =
+    | { ok: true; instruction: GatewayInstruction }
+    | { ok: false; reason: "NOT_CONFIGURED" | "NOT_DIRECT" | "REJECTED" | "TRANSPORT_ERROR" };
+
+/**
+ * Parse the provider's `Expired` value (`"YYYY-MM-DD HH:mm:ss"`) into an instant.
+ *
+ * ── THE TIMEZONE ASSUMPTION, STATED PLAINLY ─────────────────────────────────────
+ * The provider returns a bare local timestamp with no offset. iPaymu is an Indonesian
+ * gateway and every timestamp in its own sample payloads (`created_at`, `paid_at`,
+ * `expired_at`) is written in WIB, so the value is read as UTC+07:00. That is an
+ * inference from the provider's own data, not a verified contract, and it is isolated
+ * here so a later correction touches one function.
+ *
+ * ── WHY AN IMPLAUSIBLE VALUE IS REJECTED ────────────────────────────────────────
+ * If the assumption is ever wrong, the failure would be an expiry rendered seven hours
+ * away from the truth — and for a QRIS code that defaults to five minutes, in the
+ * WRONG direction the code would look already expired while it is actually live,
+ * which is worse than showing no countdown at all. So a parsed expiry that is more
+ * than an hour in the past is treated as unparseable and `null` is returned; the
+ * caller then falls back to its own window and the page shows no provider expiry.
+ */
+export function parseProviderExpiry(value: string | null | undefined): Date | null {
+    if (!value) {
+        return null;
+    }
+
+    const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(
+        value.trim()
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    const [, year, month, day, hour, minute, second] = match;
+    const parsed = new Date(
+        `${year}-${month}-${day}T${hour}:${minute}:${second}+07:00`
+    );
+
+    if (Number.isNaN(parsed.getTime())) {
+        return null;
+    }
+
+    if (parsed.getTime() < Date.now() - 60 * 60 * 1000) {
+        return null;
+    }
+
+    return parsed;
+}
+
+/**
+ * `createInstruction` — ask the provider for the payment instrument itself.
+ *
+ * Same result-union discipline as `createSession`: a provider failure becomes a typed
+ * reason so the caller writes a FAILED payment row and answers 503, rather than letting
+ * an opaque throw escape or, far worse, rendering an instruction that was never issued.
+ *
+ * No database work happens here, and none of the returned values are trusted as money:
+ * `amount` is the caller's already-persisted decimal, and the response's `Total`/`Fee`
+ * are NOT used to price anything — they are the provider's own arithmetic and are
+ * recorded, if at all, only as facts. Settlement still comes from the verified webhook.
+ */
+export async function createDirectSession(
+    input: GatewayInstructionInput
+): Promise<GatewayInstructionResult> {
+    if (!isConfigured()) {
+        return { ok: false, reason: "NOT_CONFIGURED" };
+    }
+
+    const option = findPaymentMethodOption(input.method);
+
+    if (!option || option.flow !== "DIRECT") {
+        // A method this catalog does not implement as a direct instruction (credit card,
+        // or anything unknown). Refused here rather than sent to an endpoint that would
+        // answer with a validation error we would then have to interpret.
+        return { ok: false, reason: "NOT_DIRECT" };
+    }
+
+    // The channel must belong to the chosen method. A caller-supplied channel that does
+    // not is refused, not defaulted: see `channelIsAllowed`.
+    const channel =
+        input.channel ?? option.defaultChannel ?? "";
+
+    if (!channelIsAllowed(input.method, channel)) {
+        return { ok: false, reason: "REJECTED" };
+    }
+
+    const amount = requireSafeRupiah(input.amount);
+
+    try {
+        const response = await createDirectPayment({
+            name: input.buyerName,
+            phone: input.buyerPhone,
+            email: input.buyerEmail,
+            amount,
+            notifyUrl: input.notifyUrl,
+            referenceId: input.referenceId,
+            paymentMethod: option.providerMethod as never,
+            paymentChannel: channel as never,
+            // Hours, and advisory: several channels cap or ignore it (QRIS defaults to
+            // five minutes and cannot be customised), so the RESPONSE's `Expired` is what
+            // the platform stores and shows.
+            expired: Math.max(1, Math.ceil(input.ttlMinutes / 60)),
+            comments: `Pembayaran ${input.referenceId}`,
+        });
+
+        const data = response.Data ?? null;
+
+        return {
+            ok: true,
+            instruction: {
+                flow: "DIRECT",
+                method: input.method,
+                channel,
+                environment: await resolvePaymentEnvironment(),
+                providerSessionId: data?.SessionId ?? null,
+                providerTransactionId:
+                    data?.TransactionId === undefined ||
+                    data?.TransactionId === null
+                        ? null
+                        : String(data.TransactionId),
+                paymentNumber: data?.PaymentNo ?? null,
+                qrString: data?.QrString ?? null,
+                qrImageUrl: data?.QrImage ?? null,
+                paymentName: data?.PaymentName ?? null,
+                providerExpiredAt: parseProviderExpiry(data?.Expired),
+            },
+        };
+    } catch {
+        return { ok: false, reason: "TRANSPORT_ERROR" };
+    }
+}
 
 export type GatewayCreateResult =
     | { ok: true; session: GatewaySession }
@@ -247,14 +452,46 @@ export type GatewayCreateResult =
 /**
  * Provider method/channel for an internal `PaymentMethod`.
  *
- * Mirrors the live retail mapping (QUERY-vs-VA) so ticketing behaves the same way at the
- * gateway: `QRIS` and `E_WALLET` both route to QRIS, everything else to a BCA virtual
- * account. A caller may still supply an explicit channel; this is the default.
+ * Follows the same QUERY-vs-VA convention the retail integration used, so ticketing
+ * behaves the same way at the gateway: `QRIS` and `E_WALLET` both route to QRIS,
+ * everything else to a BCA virtual account. A caller may still supply an explicit
+ * channel; this is the default. Where a DIRECT instrument is available, the catalog in
+ * `method-catalog.ts` supersedes this redirect-era default.
  */
 function providerMethodFor(method: PaymentMethod): {
     method: IpaymuPaymentMethod;
     channel: IpaymuPaymentChannel;
 } {
+    const option = findPaymentMethodOption(method);
+
+    // Catalog-driven first, so the hosted page is opened for the method the buyer chose.
+    // The credit-card case is the one that used to be impossible: this function's only two
+    // outcomes were QRIS and BCA VA, so a card request would have silently opened a bank
+    // transfer on a page that the buyer had every reason to believe was a card form.
+    if (option) {
+        if (option.flow === "REDIRECT") {
+            return {
+                method: option.providerMethod as IpaymuPaymentMethod,
+                channel: (option.defaultChannel ?? "") as IpaymuPaymentChannel,
+            };
+        }
+
+        // A DIRECT method routed through the redirect endpoint. The service no longer does
+        // this (it asks for the instrument instead), but the mapping is kept truthful for
+        // any caller that still opens a hosted page for a QR/VA method.
+        if (option.method === "VIRTUAL_ACCOUNT" || option.method === "BANK_TRANSFER") {
+            return { method: "va", channel: "bca" };
+        }
+
+        if (option.method === "RETAIL_OUTLET") {
+            return { method: "cstore", channel: "alfamart" };
+        }
+
+        return { method: "qris", channel: "qris" };
+    }
+
+    // Unmodelled methods (COD, OTHER, legacy BANK_TRANSFER): the historical mapping, kept
+    // unchanged because retail-era callers and their tests depend on it.
     if (method === "QRIS" || method === "E_WALLET") {
         return { method: "qris", channel: "qris" };
     }
@@ -303,6 +540,17 @@ const PROVIDER_CHANNELS: readonly string[] = [
     "danamon",
     "bmi",
     "qris",
+    // The remaining channels the provider documents, so a legitimate code from either
+    // endpoint is passed through rather than silently replaced by a default. Which codes
+    // are valid for which method is enforced separately, by `channelIsAllowed`.
+    "bag",
+    "bpd_bali",
+    "alfamart",
+    "indomaret",
+    "mpm",
+    "cc",
+    "akulaku",
+    "rpx",
 ];
 
 function isProviderChannel(value: string): value is IpaymuPaymentChannel {
@@ -372,6 +620,7 @@ export async function createSession(
                 method: selection.method,
                 channel,
                 expiryValueSent,
+                flow: "REDIRECT",
             },
         };
     } catch {
@@ -384,8 +633,8 @@ export async function createSession(
  *
  * iPaymu posts `application/x-www-form-urlencoded` with snake_case fields
  * (`reference_id`, `trx_id`, `sid`, `status_code`, `sub_total`, `amount`, `fee`, ...).
- * The mapping to `IpaymuNotification` is the same mapping the live retail handler
- * performs (verified by reading it), kept here so the ticketing path shares one
+ * The mapping to `IpaymuNotification` is the same mapping the (since deleted) retail
+ * handler performed, read out of it before deletion so the ticketing path shares one
  * interpretation of the provider's payload instead of re-inventing it.
  */
 function normalizeNotification(raw: Record<string, string>): IpaymuNotification {
@@ -572,9 +821,9 @@ export type SignatureVerification =
  * verification helper is the existing tested one rather than a re-implementation.
  *
  * ── §31.6 item 1 — THE CALLBACK HEADER SET ───────────────────────────────────────
- * The live retail route requires `X-Signature` **and** `X-Timestamp` **and**
- * `X-External-ID`, but only `X-Signature` is cryptographically verified, and its own
- * comment records the open question:
+ * The (since deleted) retail route required `X-Signature` **and** `X-Timestamp` **and**
+ * `X-External-ID`, but only `X-Signature` was cryptographically verified, and its own
+ * comment recorded the open question:
  *
  *   "the exact header set iPaymu sends (X-Signature only vs X-Signature + X-Timestamp +
  *    X-External-ID) must be confirmed against a real sandbox transaction. ... If sandbox
@@ -592,7 +841,31 @@ export function verifyCallbackSignature(
     rawBody: string,
     signatureHeader: string | null
 ): SignatureVerification {
-    if (!signatureHeader) {
+    /*
+     * Where the signature may be, and why BOTH places are accepted.
+     *
+     * The provider posts its signature as a `signature` FIELD in the body and says so in its
+     * own callback documentation ("remove the `signature` parameter from the received data ...
+     * validate the `signature` parameter"). An earlier reading of §31.6 item 1 assumed a
+     * header-only credential, which would have refused every real callback as
+     * `MISSING_SIGNATURE` and left every paid order unsettled.
+     *
+     * Accepting both is not a weakening. Exactly ONE value is ever checked — the header when
+     * present, otherwise the body field — and the comparison is the same fail-closed
+     * HMAC over the same canonical payload. There is still no path that processes an
+     * unverified delivery, which is the property that matters.
+     */
+    let bodySignature: string | null = null;
+
+    try {
+        bodySignature = new URLSearchParams(rawBody).get("signature");
+    } catch {
+        bodySignature = null;
+    }
+
+    const provided = signatureHeader ?? bodySignature;
+
+    if (!provided) {
         return { ok: false, reason: "MISSING_SIGNATURE" };
     }
 
@@ -608,7 +881,7 @@ export function verifyCallbackSignature(
         return { ok: false, reason: "NOT_CONFIGURED" };
     }
 
-    if (!verifyWebhookSignature(rawBody, signatureHeader, va)) {
+    if (!verifyWebhookSignature(rawBody, provided, va)) {
         return { ok: false, reason: "INVALID_SIGNATURE" };
     }
 

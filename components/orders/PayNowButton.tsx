@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { PAYMENT_METHOD_OPTIONS } from "@/lib/ticketing/payment/method-catalog";
+
 /**
  * ==========================================
  * PAY NOW — CREATE OR RESUME A PAYMENT SESSION (design §26.3 / brief §21)
@@ -33,21 +35,16 @@ import { useRouter } from "next/navigation";
  * machine-readable `details.reason`, and the message from the server is shown.
  */
 
-type PayMethod = "QRIS" | "BANK_TRANSFER" | "E_WALLET";
-
-const METHODS: { value: PayMethod; label: string; hint: string }[] = [
-    { value: "QRIS", label: "QRIS", hint: "Scan dengan aplikasi apa pun" },
-    {
-        value: "BANK_TRANSFER",
-        label: "Transfer bank",
-        hint: "Virtual account BCA",
-    },
-    {
-        value: "E_WALLET",
-        label: "E-wallet",
-        hint: "Lewat halaman QRIS penyedia",
-    },
-];
+/**
+ * The methods offered are the ones the gateway integration can actually complete.
+ *
+ * The list is imported from `lib/ticketing/payment/method-catalog` — the SAME module the
+ * server validates against — so the picker cannot advertise a method the server would
+ * refuse, and adding or retiring a method is a one-file change. The previous hand-written
+ * array here named `E_WALLET`, which the gateway never had: e-wallets pay by scanning QRIS,
+ * so that tile promised a payment route that did not exist.
+ */
+const METHODS = PAYMENT_METHOD_OPTIONS;
 
 type Props = {
     orderNumber: string;
@@ -61,9 +58,24 @@ type Props = {
 export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
     const router = useRouter();
 
-    const [method, setMethod] = useState<PayMethod>("QRIS");
+    const [method, setMethod] = useState<string>(METHODS[0]?.method ?? "QRIS");
+    const [channel, setChannel] = useState<string | null>(
+        METHODS[0]?.defaultChannel ?? null
+    );
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+
+    const selected = METHODS.find((option) => option.method === method) ?? METHODS[0];
+
+    /**
+     * Pick a method. The channel resets to that method's default when the picker changes,
+     * because the channels belong to the method: keeping a bank code across a switch to QRIS
+     * would send a channel that method does not have, and the server refuses it.
+     */
+    function chooseMethod(option: (typeof METHODS)[number]) {
+        setMethod(option.method);
+        setChannel(option.defaultChannel);
+    }
 
     async function pay() {
         setSubmitting(true);
@@ -75,8 +87,12 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
                 {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    // The method is a presentation choice; nothing financial is sent.
-                    body: JSON.stringify({ method }),
+                    // The method and channel are presentation choices; nothing financial is
+                    // sent, and the request schema declares no financial field to send.
+                    body: JSON.stringify({
+                        method,
+                        ...(channel ? { channel } : {}),
+                    }),
                 }
             );
 
@@ -95,18 +111,20 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
 
             const url: string | null = payload?.data?.paymentUrl ?? null;
 
-            if (!url) {
-                // A 2xx with no URL means the session could not be handed over. Do not
-                // invent one or navigate anywhere (brief §20).
-                setError(
-                    "Sesi pembayaran belum tersedia. Silakan muat ulang halaman ini."
-                );
-                router.refresh();
+            if (url) {
+                // The provider's own hosted page. Its response is informational only.
+                window.location.href = url;
                 return;
             }
 
-            // The provider's own hosted page. Its response is informational only.
-            window.location.href = url;
+            // ── A DIRECT instruction (QRIS / virtual account / retail code) ───────
+            // There is no URL to follow: the instrument is rendered on this page, so the
+            // freshly written `Payment` row is read back from the server. The returned
+            // payload is NOT used to draw the QR here — the page re-renders the server
+            // component, which is the same data every other visitor of this URL sees, and
+            // keeps the authoritative rendering in one place. If the row really carries no
+            // instruction, the reload shows that state honestly instead of a blank panel.
+            router.refresh();
         } catch {
             setError("Koneksi terputus. Silakan coba lagi.");
         } finally {
@@ -138,15 +156,15 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
                     Pilih metode pembayaran
                 </legend>
 
-                <div className="mt-2.5 grid gap-2 sm:grid-cols-3">
+                <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
                     {METHODS.map((option) => {
-                        const selected = method === option.value;
+                        const isSelected = method === option.method;
 
                         return (
                             <label
-                                key={option.value}
+                                key={option.method}
                                 className={`cursor-pointer rounded-xl border px-3.5 py-3 transition ${
-                                    selected
+                                    isSelected
                                         ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500"
                                         : "border-ink-200 bg-white hover:border-ink-300 hover:bg-ink-50"
                                 }`}
@@ -154,22 +172,48 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
                                 <input
                                     type="radio"
                                     name="paymentMethod"
-                                    value={option.value}
-                                    checked={selected}
-                                    onChange={() => setMethod(option.value)}
+                                    value={option.method}
+                                    checked={isSelected}
+                                    onChange={() => chooseMethod(option)}
                                     className="sr-only"
                                 />
                                 <span className="block text-sm font-bold text-ink-900">
                                     {option.label}
                                 </span>
                                 <span className="mt-0.5 block text-xs text-ink-500">
-                                    {option.hint}
+                                    {option.description}
                                 </span>
                             </label>
                         );
                     })}
                 </div>
             </fieldset>
+
+            {/* The bank picker appears only for a method that actually has channels — the
+                list is the gateway's own channel set, not a local guess. */}
+            {selected && selected.channels.length > 1 ? (
+                <div>
+                    <label
+                        htmlFor="payment-channel"
+                        className="text-xs font-bold tracking-wider text-ink-500 uppercase"
+                    >
+                        Pilih bank
+                    </label>
+
+                    <select
+                        id="payment-channel"
+                        value={channel ?? ""}
+                        onChange={(event) => setChannel(event.currentTarget.value)}
+                        className="mt-1.5 w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-ink-900 focus-visible:border-brand-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                    >
+                        {selected.channels.map((entry) => (
+                            <option key={entry.code} value={entry.code}>
+                                {entry.label}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+            ) : null}
 
             {error ? (
                 <p
@@ -190,8 +234,10 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
             </button>
 
             <p className="text-xs leading-relaxed text-ink-500">
-                Anda akan diarahkan ke halaman pembayaran penyedia. Jumlah yang
-                ditagih dihitung di server dari pesanan ini.
+                {selected?.flow === "REDIRECT"
+                    ? "Anda akan diarahkan ke halaman pembayaran penyedia."
+                    : "Kode pembayaran akan muncul di halaman ini setelah dibuat oleh penyedia."}{" "}
+                Jumlah yang ditagih dihitung di server dari pesanan ini.
             </p>
         </div>
     );

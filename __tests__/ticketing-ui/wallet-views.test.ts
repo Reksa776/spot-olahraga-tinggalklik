@@ -38,6 +38,8 @@ function item(overrides: {
             startAt: overrides.startAt,
             endAt: null,
             venueName: "GOR",
+            venueCity: "Bandung",
+            venueAddress: null,
             sportName: "Basket",
         },
     };

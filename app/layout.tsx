@@ -1,39 +1,37 @@
 import "./globals.css";
 
 import { Toaster } from "react-hot-toast";
+
 import AuthProvider from "@/components/providers/AuthProvider";
-import AnalyticsProvider from "@/components/analytics/AnalyticsProvider";
-import { DialogProvider } from "@/components/ui/Dialog";
-import Footer from "@/components/Footer";
 
+/**
+ * The application root.
+ *
+ * It now carries only what the ticketing product needs: session context and the toast host. The
+ * retail chrome that used to live here — the storefront `Footer`, the TikTok pixel loader and the
+ * legacy `useDialog()` provider — was removed with the retail application. Each surface owns its
+ * own chrome instead: ticketing pages render `<SiteShell />`, and the back offices render their
+ * dashboard shell.
+ */
 export default function RootLayout({
-  children,
+    children,
 }: Readonly<{
-  children: React.ReactNode;
+    children: React.ReactNode;
 }>) {
-  return (
-    <html lang="id">
-      <body>
+    return (
+        <html lang="id">
+            <body>
+                <AuthProvider>
+                    {children}
 
-        <AuthProvider>
-          <AnalyticsProvider />
-          <DialogProvider>
-
-          {children}
-
-          <Footer />
-
-          <Toaster
-            position="top-right"
-            toastOptions={{
-              duration: 3000,
-            }}
-          />
-
-          </DialogProvider>
-        </AuthProvider>
-
-      </body>
-    </html>
-  );
+                    <Toaster
+                        position="top-right"
+                        toastOptions={{
+                            duration: 3000,
+                        }}
+                    />
+                </AuthProvider>
+            </body>
+        </html>
+    );
 }

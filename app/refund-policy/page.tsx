@@ -15,7 +15,6 @@ export const metadata: Metadata = {
 
 export default async function RefundPolicyPage() {
     const setting = await getPublicStoreSetting();
-    const storeName = setting.storeName;
 
     return (
         <main className="min-h-screen bg-gray-50">

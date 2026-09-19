@@ -11,6 +11,10 @@
  * `PUBLIC_API_PREFIXES` and `PROTECTED_API_PREFIXES` falls through
  * unauthenticated. Before this test, three of 115 routes were in that state.
  *
+ * The retail application and its API tree were removed, so the population this guard
+ * enumerates is now the ticketing surface only — roughly a quarter of its former size,
+ * hence the lower sanity floor below.
+ *
  * The fix is not to guess which of them should be protected — it is to make
  * omission impossible to do silently. This test enumerates every route file on
  * disk and fails if any one of them is unclassified, so adding a new route
@@ -110,8 +114,9 @@ function classify(urlPath: string): "PUBLIC" | "PROTECTED" | "UNCLASSIFIED" {
 describe("proxy route classification (phase 0 S-3 / §15)", () => {
     test("the route files were actually found", () => {
         // Guards against a silently-empty enumeration making every test below
-        // vacuously pass.
-        expect(routeFiles.length).toBeGreaterThan(100);
+        // vacuously pass. The ticketing surface has ~30 route files; 20 is a floor,
+        // not an expectation.
+        expect(routeFiles.length).toBeGreaterThan(20);
     });
 
     test("EVERY API route is explicitly classified as public or protected", () => {
@@ -138,17 +143,38 @@ describe("proxy route classification (phase 0 S-3 / §15)", () => {
         expect(PUBLIC_API_PREFIXES).not.toContain("/api/admin/");
     });
 
-    test("payment webhook callbacks stay public (providers cannot authenticate)", () => {
-        for (const provider of ["ipaymu", "midtrans"]) {
-            expect(
-                PUBLIC_API_PREFIXES.some((p) => p.includes(provider))
-            ).toBe(true);
-        }
+    test("the ticketing payment webhook stays public (the provider cannot authenticate)", () => {
+        // The retail provider callbacks (`/api/payment/ipaymu/notification`,
+        // `/api/payment/midtrans/notification`) were deleted with the retail application. The
+        // ticketing webhook is the remaining one, and it must stay reachable unauthenticated —
+        // its trust boundary is the HMAC signature, not a session.
+        expect(PUBLIC_API_PREFIXES).toContain("/api/ticketing/payment/webhook");
+
+        // It is a STRICT sub-path of the protected ticketing prefix, and public prefixes are
+        // matched first, so the webhook is opened while the rest of the purchase surface is not.
+        expect(PROTECTED_API_PREFIXES).toContain("/api/ticketing/");
+        expect(PROTECTED_API_PREFIXES).not.toContain("/api/ticketing/payment/webhook");
     });
 
-    test("the page-route list still covers the protected dashboards", () => {
-        for (const route of ["/admin", "/dashboard", "/profile", "/orders"]) {
+    test("the page-route list covers the single dashboard and the buyer's own pages", () => {
+        // The back office was consolidated into ONE dashboard. `/dashboard` is now a live,
+        // session-gated section, so it belongs in this list (it was absent when the name meant
+        // the deleted retail dashboard).
+        for (const route of ["/dashboard", "/ticketing"]) {
             expect(PROTECTED_PAGE_ROUTES).toContain(route);
+        }
+
+        // The retired dashboard prefixes have no pages any more: next.config.ts redirects them,
+        // so gating them here would redirect an anonymous visitor to /login instead of letting
+        // the redirect carry them to the login-gated dashboard.
+        for (const retired of ["/organizer", "/platform"]) {
+            expect(PROTECTED_PAGE_ROUTES).not.toContain(retired);
+        }
+
+        // The retail page routes (`/admin`, `/profile`, `/orders`, `/cart`, `/checkout`,
+        // `/addresses`, ...) were deleted with the retail application.
+        for (const retailRoute of ["/admin", "/profile", "/orders", "/cart"]) {
+            expect(PROTECTED_PAGE_ROUTES).not.toContain(retailRoute);
         }
     });
 });

@@ -147,50 +147,34 @@ export function getClientIp(request: Request): string {
 /**
  * Pre-configured rate limiters for sensitive endpoints.
  */
+/**
+ * Named buckets, so a caller cannot invent a key or a window.
+ *
+ * NINE BUCKETS WERE DELETED WITH THE RETAIL APPLICATION: `voucherValidation`,
+ * `orderCreation`, `broadcastSend`, `broadcastCreate`, `spin`, `affiliatePayout`,
+ * `refundRequest`, `repayment` and `shippingCost`. Each one existed for exactly one
+ * retail endpoint, and every one of those endpoints is gone — a repository-wide search
+ * for each name returned zero references after the deletion. Leaving them would have
+ * kept a paid-provider limiter (RajaOngkir) and a spin/affiliate limiter alive as
+ * documentation of features that no longer exist.
+ *
+ * `checkRateLimit` itself stays exported: it is the primitive, it is covered by
+ * `__tests__/security/m2-ip-spoofing.test.ts`, and a new route should still use a named
+ * bucket rather than hand-rolling a key.
+ */
 export const rateLimiters = {
     login: (ip: string) =>
         checkRateLimit(`login:${ip}`, 5, 15 * 60 * 1000), // 5 attempts per 15 min
 
-    voucherValidation: (ip: string) =>
-        checkRateLimit(`voucher:${ip}`, 20, 60 * 1000), // 20 per minute
-
-    orderCreation: (userId: string) =>
-        checkRateLimit(`order:${userId}`, 10, 60 * 1000), // 10 per minute
-
     register: (ip: string) =>
         checkRateLimit(`register:${ip}`, 3, 60 * 60 * 1000), // 3 per hour
 
-    broadcastSend: (userId: string) =>
-        checkRateLimit(`broadcast:${userId}`, 5, 60 * 1000), // 5 per minute
-
-    broadcastCreate: (userId: string) =>
-        checkRateLimit(`broadcast-create:${userId}`, 10, 60 * 1000), // 10 per minute
-
-    // Payment creation — prevent rapid-fire payment attempts
+    // Payment creation — prevent rapid-fire payment attempts. Used by the ticketing
+    // payment-create route, which is the only payment surface left.
     paymentCreation: (userId: string) =>
         checkRateLimit(`payment:${userId}`, 5, 5 * 60 * 1000), // 5 per 5 min
-
-    // Spin wheel — prevent rapid spin attempts
-    spin: (userId: string) =>
-        checkRateLimit(`spin:${userId}`, 10, 60 * 1000), // 10 per minute
-
-    // Affiliate payout — prevent rapid withdrawal requests
-    affiliatePayout: (userId: string) =>
-        checkRateLimit(`payout:${userId}`, 3, 60 * 60 * 1000), // 3 per hour
 
     // File upload — prevent upload flooding
     upload: (userId: string) =>
         checkRateLimit(`upload:${userId}`, 20, 60 * 1000), // 20 per minute
-
-    // Refund request — prevent rapid refund attempts
-    refundRequest: (userId: string) =>
-        checkRateLimit(`refund:${userId}`, 3, 60 * 60 * 1000), // 3 per hour
-
-    // Repayment — prevent rapid repayment attempts
-    repayment: (userId: string) =>
-        checkRateLimit(`repay:${userId}`, 5, 5 * 60 * 1000), // 5 per 5 min
-
-    // Shipping cost — public endpoint backed by paid RajaOngkir calls
-    shippingCost: (ip: string) =>
-        checkRateLimit(`shipping:${ip}`, 60, 60 * 1000), // 60 per minute
 };

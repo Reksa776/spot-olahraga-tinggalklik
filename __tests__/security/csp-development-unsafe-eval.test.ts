@@ -171,7 +171,10 @@ describe("CSP: environment-aware unsafe-eval", () => {
     expect(scriptSrc).not.toContain(" 'unsafe-inline' 'unsafe-eval'");
   });
 
-  it("TikTok analytics domain is preserved in script-src", async () => {
+  it("script-src allows no third-party origin", async () => {
+    // This used to assert that the TikTok analytics domain survived the production CSP. The
+    // pixel was a retail component and was deleted with it, so the allowance was removed too —
+    // and the assertion is now the inverse, which is the stronger property.
     Object.defineProperty(process.env, "NODE_ENV", {
       value: "production",
       writable: true,
@@ -181,7 +184,8 @@ describe("CSP: environment-aware unsafe-eval", () => {
     const csp = await getCspValue();
     const scriptSrc = getScriptSrc(csp);
 
-    expect(scriptSrc).toContain("https://analytics.tiktok.com");
+    expect(scriptSrc).not.toContain("analytics.tiktok.com");
+    expect(scriptSrc).not.toMatch(/https?:\/\//);
   });
 
   it("unsafe-inline is preserved in production CSP", async () => {

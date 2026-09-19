@@ -56,7 +56,7 @@ export async function listPublicSports() {
 }
 
 /** Admin view: every sport, including deactivated ones, with usage counts. */
-export async function listSportsForAdmin(scope: AuthzScope) {
+export async function listSportsForAdmin(_scope: AuthzScope) {
     await requirePlatformPermission(PERMISSIONS.SPORT_MANAGE);
 
     const sports = await prisma.sport.findMany({

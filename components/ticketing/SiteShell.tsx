@@ -20,9 +20,19 @@ export default function SiteShell({ children }: Props) {
             data-ticketing-shell
             className="flex min-h-screen flex-col bg-white text-ink-900 antialiased"
         >
-            <SiteHeader />
+            {/* PHASE 16 — the chrome is suppressed on paper. A printed e-ticket is carried to a
+             * gate; navigation, search and the footer are noise there, and the ticket is the
+             * only thing worth the paper. `print:hidden` is presentation only: nothing here
+             * changes what a screen reader or a browser sees on screen. */}
+            <div className="print:hidden">
+                <SiteHeader />
+            </div>
+
             <main className="flex-1">{children}</main>
-            <SiteFooter />
+
+            <div className="print:hidden">
+                <SiteFooter />
+            </div>
         </div>
     );
 }

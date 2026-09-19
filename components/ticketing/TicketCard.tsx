@@ -6,6 +6,7 @@ import {
     formatEventDay,
     formatEventMonthShort,
     formatEventTime,
+    formatVenue,
 } from "@/lib/ticketing/ui/format";
 import { sportSolidTint } from "@/lib/ticketing/ui/sport-tint";
 
@@ -68,8 +69,15 @@ export default function TicketCard({ item }: { item: TicketWalletItem }) {
                     </div>
                     <div className="flex items-center gap-2">
                         <dt className="sr-only">Lokasi</dt>
+                        {/* PHASE 16 — the venue's city is part of the answer to "where am I
+                         * going?", and `formatVenue` already knows how to join the two
+                         * without inventing a separator. A venue with neither a name nor a
+                         * city still reads as the honest placeholder. */}
                         <dd className="truncate">
-                            {item.event.venueName ?? "Lokasi menyusul"}
+                            {formatVenue(
+                                item.event.venueName,
+                                item.event.venueCity
+                            )}
                         </dd>
                     </div>
                     <div className="flex items-center gap-2">

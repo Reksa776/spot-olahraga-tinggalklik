@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Button, Group, Modal, SimpleGrid, Stack, Text, TextInput } from "@mantine/core";
 
 import { apiFetch, ClientApiError } from "@/components/organizer/api";
 import {
@@ -12,6 +11,16 @@ import {
     SectionCard,
     StatusBadge,
 } from "@/components/dashboard/primitives";
+import { Button } from "@/components/dashboard/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input } from "@/components/dashboard/ui/input";
 
 /**
  * Sport master-data manager (requirement brief §15).
@@ -21,12 +30,11 @@ import {
  * sport that historical events used is only possible by deactivating it — deleting is
  * refused while any event references it, and the API says so.
  *
- * PHASE (Mantine body migration): presentation only. The `run()` wrapper, both `apiFetch`
+ * PHASE (shadcn migration): presentation only. The `run()` wrapper, both `apiFetch`
  * payloads, the `busy` gate, `router.refresh()`, the client-side validation attributes
- * (`required`, `minLength={2}`) and the exact error messages are unchanged. The one behavioural
- * refinement is that the delete confirmation is now a Mantine `Modal` instead of
- * `window.confirm`, which the brief asks for explicitly (§13); it still gates the identical
- * `DELETE` call behind the same Yes/No decision.
+ * (`required`, `minLength={2}`) and the exact error messages are unchanged. The delete
+ * confirmation is the shadcn `Dialog`, still gating the identical `DELETE` call behind the same
+ * Yes/No decision.
  */
 
 type Sport = {
@@ -88,7 +96,7 @@ export default function SportManager({ sports }: { sports: Sport[] }) {
     }
 
     return (
-        <Stack gap="lg">
+        <div className="flex flex-col gap-6">
             <SectionCard
                 title="Cabang olahraga"
                 description={`${sports.length} cabang terdaftar`}
@@ -106,29 +114,31 @@ export default function SportManager({ sports }: { sports: Sport[] }) {
                     rows={sports.map((sport) => ({
                         key: sport.id,
                         cells: [
-                            <Text size="sm" fw={600} key="name">
+                            <span className="text-sm font-semibold" key="name">
                                 {sport.name}
-                            </Text>,
-                            <Text size="xs" ff="monospace" key="slug">
+                            </span>,
+                            <span className="font-mono text-xs" key="slug">
                                 {sport.slug}
-                            </Text>,
-                            <Text size="sm" key="order">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="order">
                                 {sport.sortOrder}
-                            </Text>,
-                            <Text size="sm" key="events">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="events">
                                 {sport.eventCount}
-                            </Text>,
+                            </span>,
                             <StatusBadge
                                 key="status"
                                 tone={sport.isActive ? "success" : "neutral"}
                             >
                                 {sport.isActive ? "Aktif" : "Nonaktif"}
                             </StatusBadge>,
-                            <Group gap="xs" justify="flex-end" wrap="nowrap" key="actions">
+                            <div
+                                className="flex flex-nowrap justify-end gap-1"
+                                key="actions"
+                            >
                                 <Button
-                                    variant="subtle"
+                                    variant="ghost"
                                     size="sm"
-                                    color="brand"
                                     disabled={busy}
                                     onClick={() =>
                                         run(() =>
@@ -145,15 +155,15 @@ export default function SportManager({ sports }: { sports: Sport[] }) {
                                 </Button>
 
                                 <Button
-                                    variant="subtle"
+                                    variant="ghost"
                                     size="sm"
-                                    color="red"
                                     disabled={busy}
                                     onClick={() => setPendingDelete(sport)}
+                                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                                 >
                                     Hapus
                                 </Button>
-                            </Group>,
+                            </div>,
                         ],
                     }))}
                 />
@@ -162,62 +172,71 @@ export default function SportManager({ sports }: { sports: Sport[] }) {
             {error ? <ErrorBlock message={error} title="Operasi gagal" /> : null}
 
             <SectionCard title="Tambah cabang olahraga">
-                <form onSubmit={create}>
-                    <Stack gap="md">
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                            <TextInput
-                                label="Nama"
+                <form onSubmit={create} className="flex flex-col gap-5">
+                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <Field label="Nama" required htmlFor="sport-name">
+                            <Input
+                                id="sport-name"
                                 required
                                 minLength={2}
-                                size="md"
                                 value={form.name}
                                 onChange={(event) =>
                                     setForm({ ...form, name: event.currentTarget.value })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Slug (opsional)"
-                                size="md"
-                                ff="monospace"
+                        <Field label="Slug (opsional)" htmlFor="sport-slug">
+                            <Input
+                                id="sport-slug"
+                                className="font-mono"
                                 value={form.slug}
                                 onChange={(event) =>
                                     setForm({ ...form, slug: event.currentTarget.value })
                                 }
                                 placeholder="dibuat otomatis dari nama"
                             />
-                        </SimpleGrid>
+                        </Field>
+                    </div>
 
-                        <Group>
-                            <PrimaryAction loading={busy}>
-                                {busy ? "Menyimpan…" : "Tambah"}
-                            </PrimaryAction>
-                        </Group>
-                    </Stack>
+                    <div>
+                        <PrimaryAction loading={busy}>
+                            {busy ? "Menyimpan…" : "Tambah"}
+                        </PrimaryAction>
+                    </div>
                 </form>
             </SectionCard>
 
-            <Modal
-                opened={pendingDelete !== null}
-                onClose={() => setPendingDelete(null)}
-                title="Hapus cabang olahraga?"
-                centered
+            <Dialog
+                open={pendingDelete !== null}
+                onOpenChange={(open) => {
+                    if (!open) setPendingDelete(null);
+                }}
             >
-                <Text size="sm">
-                    Hapus cabang olahraga &quot;{pendingDelete?.name}&quot;? Cabang yang masih
-                    dipakai event akan ditolak oleh server.
-                </Text>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Hapus cabang olahraga?</DialogTitle>
+                        <DialogDescription>
+                            Hapus cabang olahraga &quot;{pendingDelete?.name}&quot;? Cabang
+                            yang masih dipakai event akan ditolak oleh server.
+                        </DialogDescription>
+                    </DialogHeader>
 
-                <Group justify="flex-end" mt="lg">
-                    <Button variant="default" size="md" onClick={() => setPendingDelete(null)}>
-                        Batal
-                    </Button>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setPendingDelete(null)}>
+                            Batal
+                        </Button>
 
-                    <Button color="red" size="md" loading={busy} onClick={confirmDelete}>
-                        Hapus
-                    </Button>
-                </Group>
-            </Modal>
-        </Stack>
+                        <Button
+                            variant="destructive"
+                            disabled={busy}
+                            onClick={confirmDelete}
+                        >
+                            Hapus
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </div>
     );
 }

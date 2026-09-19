@@ -129,23 +129,18 @@
 }
 
 /*
- * ── PHASE 9: one global footer at a time ───────────────────────────────────────
+ * ── FOOTER SUPPRESSION: REMOVED WITH THE RETAIL FOOTER ────────────────────────
  *
- * The discovery and ticketing pages render their own footer band, and `app/layout.tsx`
- * renders the retail `<Footer>` for every route in the app. Rather than make the layout
- * path-aware — which in Next 16 means a `usePathname` client component, and the docs warn
- * that combination can hydrate mismatched when a Proxy file is present (this project has
- * `proxy.ts`) — the ticketing shell marks itself with `data-ticketing-shell` and the retail
- * footer is suppressed by CSS.
+ * Two `body:has(...) footer[data-global-footer]` rules used to live here. They existed because
+ * `app/layout.tsx` rendered the retail `<Footer>` on every route, so the ticketing shell
+ * (`data-ticketing-shell`) and the dashboard shell (`data-dashboard-shell`) each needed a CSS rule to
+ * suppress it.
  *
- * This is deliberately fail-open and zero-JS: on a browser without `:has()` support the
- * footer simply renders as before, and a retail page (which never contains the marker)
- * is completely unaffected. The only change made to the retail component is a `data-`
- * attribute on its root element.
+ * The retail `<Footer>` component was deleted with the retail application, the root layout no
+ * longer renders it, and each surface now owns its own chrome (`<SiteShell />` for ticketing, the
+ * dashboard shell for the back offices). Both rules targeted a selector that no longer exists in
+ * any markup, so they were removed rather than left as dead styles.
  */
-body:has([data-ticketing-shell]) footer[data-global-footer] {
-  display: none;
-}
 
 /*
  * The two rules below are carried over from the pre-Phase 9 stylesheet, unchanged. They are
@@ -164,3 +159,428 @@ body:has([data-ticketing-shell]) footer[data-global-footer] {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 } */
+
+/* ==============================================================================
+ * SHADCN DASHBOARD THEME SYSTEM
+ * ==============================================================================
+ *
+ * The dashboard's design system. Every colour, radius and chart hue the back office
+ * renders comes from a token declared in this block; no dashboard component hardcodes
+ * a hex value, which is what makes the three user-facing controls work without
+ * touching a single component:
+ *
+ *   1. APPEARANCE   `class="dark"` on <html>            → light / dark / system
+ *   2. ACCENT       `data-accent="violet"` on <html>     → the primary hue
+ *   3. CHART HUE    `data-chart="ocean"` on <html>      → the chart palette
+ *
+ * Attribute selectors rather than JS: swapping a palette is a CSS cascade, so it
+ * repaints instantly, survives hydration, and needs no re-render of the React tree.
+ *
+ * ADDITIVE ONLY. Nothing above this line changes value. The `ink`/`brand` scales and
+ * every Tailwind default stay exactly as they were, because the retail and ticketing
+ * surfaces share this stylesheet. The tokens below are new names in the shadcn
+ * namespace (`--background`, `--primary`, `--sidebar-*`, `--chart-*`) which no
+ * customer-facing component reads.
+ *
+ * WHY THE VALUES ARE HEX, NOT oklch()
+ * ----------------------------------
+ * Upstream shadcn ships oklch literals. This repository's existing scales are hex and
+ * its contrast decisions were made in hex (see the ink/brand block above and the
+ * reports in the repository root), so the dashboard tokens are written in the same
+ * space — one colour space per stylesheet is easier to audit than two.
+ *
+ * DARK MODE IS OPT-IN PER CLASS. No customer-facing component uses a `dark:` variant,
+ * and none reads a token below, so adding `class="dark"` for a dashboard operator
+ * leaves the public site visually identical.
+ */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * @theme maps the tokens into Tailwind's namespaces so `bg-card`, `text-muted-foreground`,
+ * `border-border`, `bg-sidebar`, `ring-ring`, `text-chart-1`, `rounded-card` and
+ * `shadow-card` are real utilities. `inline` keeps the values as `var(...)` references
+ * rather than freezing them, which is what lets `.dark` and the attribute palettes
+ * repaint an already-compiled class.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /*
+   * One extra breakpoint, `xs` (480px). The dashboard's KPI rows and filter bars go from one
+   * column to two well before Tailwind's `sm` (640px), because a 390px phone already has room
+   * for two small tiles and waiting until 640px wastes half the screen.
+   */
+  --breakpoint-xs: 30rem;
+
+  /*
+   * One radius ladder for the whole dashboard: `rounded-field` (controls and inputs),
+   * `rounded-card` (cards, panels, dialogs) and Tailwind's own `rounded-full` for pills.
+   * Centralised here so a card and the input inside it cannot drift apart.
+   */
+  --radius-field: 0.5rem;
+  --radius-card: 0.75rem;
+  --radius-panel: 1rem;
+
+  /*
+   * Two elevations only. `shadow-card` is the resting surface shadow, `shadow-pop` is
+   * for things that float above the page (menus, dialogs, tooltips). A dashboard with
+   * six different shadows reads as a mockup; two read as a product.
+   */
+  --shadow-card: 0 1px 2px 0 rgb(15 23 41 / 0.04), 0 1px 3px 0 rgb(15 23 41 / 0.06);
+  --shadow-pop: 0 10px 30px -12px rgb(15 23 41 / 0.28);
+}
+
+/* ── LIGHT (default) ─────────────────────────────────────────────────────────── */
+:root {
+  --radius: 0.75rem;
+
+  --background: #f5f6f9;
+  --foreground: #0f1729;
+
+  --card: #ffffff;
+  --card-foreground: #0f1729;
+  --popover: #ffffff;
+  --popover-foreground: #0f1729;
+
+  --primary: #b93d07;
+  --primary-foreground: #ffffff;
+
+  --secondary: #eef0f6;
+  --secondary-foreground: #1a2540;
+
+  --muted: #f1f3f8;
+  --muted-foreground: #697586;
+
+  --accent: #fff2e8;
+  --accent-foreground: #93320d;
+
+  --destructive: #d92d20;
+  --destructive-foreground: #ffffff;
+
+  --border: #e4e7ee;
+  --input: #d9dee8;
+  --ring: #f96311;
+
+  /*
+   * The navigation band is deep navy in BOTH modes. It is the dashboard's one dark
+   * surface and the anchor of its identity: a white sidebar beside a white canvas is
+   * what made the previous shell read as an unstyled component library.
+   */
+  --sidebar: #0f1729;
+  --sidebar-foreground: rgb(255 255 255 / 0.72);
+  --sidebar-primary: #e04e05;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(255 255 255 / 0.07);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgb(255 255 255 / 0.09);
+  --sidebar-ring: #f96311;
+
+  /* Default chart palette — five distinguishable hues that all read on white. */
+  --chart-1: #e04e05;
+  --chart-2: #0e7490;
+  --chart-3: #7c3aed;
+  --chart-4: #ca8a04;
+  --chart-5: #1d4ed8;
+}
+
+/* ── DARK ────────────────────────────────────────────────────────────────────── */
+.dark {
+  --background: #0a1120;
+  --foreground: #eef1f7;
+
+  --card: #101a2e;
+  --card-foreground: #eef1f7;
+  --popover: #101a2e;
+  --popover-foreground: #eef1f7;
+
+  /* Filled buttons carry white text, so the dark theme's primary is the lighter shade. */
+  --primary: #ff8038;
+  --primary-foreground: #2a1102;
+
+  --secondary: #1a2540;
+  --secondary-foreground: #e7ebf4;
+
+  --muted: #16203a;
+  --muted-foreground: #9aa9c8;
+
+  --accent: #1f2b48;
+  --accent-foreground: #ffcaaa;
+
+  --destructive: #f97066;
+  --destructive-foreground: #2a0a06;
+
+  --border: #23304f;
+  --input: #2b3a5c;
+  --ring: #ff8038;
+
+  --sidebar: #070d1a;
+  --sidebar-foreground: rgb(255 255 255 / 0.72);
+  --sidebar-primary: #f96311;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: rgb(255 255 255 / 0.08);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgb(255 255 255 / 0.1);
+  --sidebar-ring: #ff8038;
+
+  --chart-1: #ff8038;
+  --chart-2: #22d3ee;
+  --chart-3: #a78bfa;
+  --chart-4: #fbbf24;
+  --chart-5: #60a5fa;
+}
+
+/*
+ * ── ACCENT THEMES ─────────────────────────────────────────────────────────────
+ *
+ * One attribute changes the brand hue everywhere it is used: filled buttons, links, the
+ * active sidebar row, focus rings, selected states and the first chart series. Status
+ * colours are NOT part of this and stay semantic — a failed payment is red in every
+ * accent, which is why `--destructive` is absent from these blocks.
+ *
+ * `orange` is the product default and therefore the `:root` values above; it is listed
+ * here too so the switcher can round-trip to it explicitly.
+ */
+[data-accent="orange"] {
+  --primary: #b93d07;
+  --primary-foreground: #ffffff;
+  --ring: #f96311;
+  --accent: #fff2e8;
+  --accent-foreground: #93320d;
+  --sidebar-primary: #e04e05;
+  --sidebar-ring: #f96311;
+  --chart-1: #e04e05;
+}
+
+[data-accent="blue"] {
+  --primary: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --ring: #3b82f6;
+  --accent: #eff4ff;
+  --accent-foreground: #1e40af;
+  --sidebar-primary: #2563eb;
+  --sidebar-ring: #3b82f6;
+  --chart-1: #2563eb;
+}
+
+[data-accent="violet"] {
+  --primary: #6d28d9;
+  --primary-foreground: #ffffff;
+  --ring: #8b5cf6;
+  --accent: #f5f2ff;
+  --accent-foreground: #5b21b6;
+  --sidebar-primary: #7c3aed;
+  --sidebar-ring: #8b5cf6;
+  --chart-1: #7c3aed;
+}
+
+[data-accent="emerald"] {
+  --primary: #047857;
+  --primary-foreground: #ffffff;
+  --ring: #10b981;
+  --accent: #ecfdf5;
+  --accent-foreground: #065f46;
+  --sidebar-primary: #059669;
+  --sidebar-ring: #10b981;
+  --chart-1: #059669;
+}
+
+[data-accent="rose"] {
+  --primary: #be123c;
+  --primary-foreground: #ffffff;
+  --ring: #f43f5e;
+  --accent: #fff1f4;
+  --accent-foreground: #9f1239;
+  --sidebar-primary: #e11d48;
+  --sidebar-ring: #f43f5e;
+  --chart-1: #e11d48;
+}
+
+[data-accent="slate"] {
+  --primary: #334155;
+  --primary-foreground: #ffffff;
+  --ring: #64748b;
+  --accent: #f1f5f9;
+  --accent-foreground: #1e293b;
+  --sidebar-primary: #475569;
+  --sidebar-ring: #64748b;
+  --chart-1: #475569;
+}
+
+/* Dark counterparts: the filled-button shades have to lighten to keep white-on-primary legible. */
+.dark[data-accent="orange"] {
+  --primary: #ff8038;
+  --primary-foreground: #2a1102;
+  --chart-1: #ff8038;
+}
+
+.dark[data-accent="blue"] {
+  --primary: #60a5fa;
+  --primary-foreground: #0a1120;
+  --chart-1: #60a5fa;
+}
+
+.dark[data-accent="violet"] {
+  --primary: #a78bfa;
+  --primary-foreground: #12071f;
+  --chart-1: #a78bfa;
+}
+
+.dark[data-accent="emerald"] {
+  --primary: #34d399;
+  --primary-foreground: #04160f;
+  --chart-1: #34d399;
+}
+
+.dark[data-accent="rose"] {
+  --primary: #fb7185;
+  --primary-foreground: #1f0208;
+  --chart-1: #fb7185;
+}
+
+.dark[data-accent="slate"] {
+  --primary: #94a3b8;
+  --primary-foreground: #0a1120;
+  --chart-1: #94a3b8;
+}
+
+/*
+ * ── CHART PALETTES ────────────────────────────────────────────────────────────
+ *
+ * The second user-facing control. A chart component never names a colour: it renders
+ * `var(--chart-1)`, `var(--chart-2)`, … (directly, or through shadcn's `--color-<key>`
+ * injection), so selecting a palette repaints every line, area, bar, slice, legend and
+ * tooltip dot in the dashboard at once.
+ *
+ * These deliberately override `--chart-1` even when an accent has set it — an explicit
+ * chart palette wins over the accent's automatic first series, which is what a user who
+ * picks "Monochrome" expects.
+ */
+[data-chart="default"] {
+  --chart-1: #e04e05;
+  --chart-2: #0e7490;
+  --chart-3: #7c3aed;
+  --chart-4: #ca8a04;
+  --chart-5: #1d4ed8;
+}
+
+[data-chart="ocean"] {
+  --chart-1: #0369a1;
+  --chart-2: #0891b2;
+  --chart-3: #14b8a6;
+  --chart-4: #0e7490;
+  --chart-5: #38bdf8;
+}
+
+[data-chart="violet"] {
+  --chart-1: #6d28d9;
+  --chart-2: #8b5cf6;
+  --chart-3: #a855f7;
+  --chart-4: #4c1d95;
+  --chart-5: #c084fc;
+}
+
+[data-chart="emerald"] {
+  --chart-1: #047857;
+  --chart-2: #059669;
+  --chart-3: #10b981;
+  --chart-4: #065f46;
+  --chart-5: #34d399;
+}
+
+[data-chart="sunset"] {
+  --chart-1: #c2410c;
+  --chart-2: #ea580c;
+  --chart-3: #f59e0b;
+  --chart-4: #dc2626;
+  --chart-5: #db2777;
+}
+
+[data-chart="monochrome"] {
+  --chart-1: #1f2937;
+  --chart-2: #475569;
+  --chart-3: #64748b;
+  --chart-4: #94a3b8;
+  --chart-5: #cbd5e1;
+}
+
+.dark[data-chart="default"] {
+  --chart-1: #ff8038;
+  --chart-2: #22d3ee;
+  --chart-3: #a78bfa;
+  --chart-4: #fbbf24;
+  --chart-5: #60a5fa;
+}
+
+.dark[data-chart="ocean"] {
+  --chart-1: #38bdf8;
+  --chart-2: #22d3ee;
+  --chart-3: #2dd4bf;
+  --chart-4: #7dd3fc;
+  --chart-5: #a5f3fc;
+}
+
+.dark[data-chart="violet"] {
+  --chart-1: #c084fc;
+  --chart-2: #a78bfa;
+  --chart-3: #8b5cf6;
+  --chart-4: #e9d5ff;
+  --chart-5: #7c3aed;
+}
+
+.dark[data-chart="emerald"] {
+  --chart-1: #34d399;
+  --chart-2: #10b981;
+  --chart-3: #6ee7b7;
+  --chart-4: #a7f3d0;
+  --chart-5: #059669;
+}
+
+.dark[data-chart="sunset"] {
+  --chart-1: #fb923c;
+  --chart-2: #f97316;
+  --chart-3: #fbbf24;
+  --chart-4: #f87171;
+  --chart-5: #f472b6;
+}
+
+.dark[data-chart="monochrome"] {
+  --chart-1: #e2e8f0;
+  --chart-2: #cbd5e1;
+  --chart-3: #94a3b8;
+  --chart-4: #64748b;
+  --chart-5: #475569;
+}

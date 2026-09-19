@@ -168,11 +168,13 @@ describe("authorization must not use `any`", () => {
         // taken from a request. Phase 3 brief §22 explicitly excludes global
         // cleanup from this phase, so they are reported in
         // TICKETING_PHASE3_REPORT.md §14 instead of being silently rewritten here.
+        //
+        // `lib/admin.ts` was on this list and no longer exists: it was the retail
+        // admin helper and was deleted with the retail application.
         const phase3Files = [
             "types/next-auth.d.ts",
             "auth.ts",
             "lib/csrf.ts",
-            "lib/admin.ts",
             "proxy.ts",
             ...authzFiles,
         ];

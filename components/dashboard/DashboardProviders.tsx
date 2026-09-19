@@ -2,43 +2,52 @@
 
 import type { ReactNode } from "react";
 
-import { MantineProvider } from "@mantine/core";
-
-import { dashboardTheme } from "./mantine-theme";
+import { DashboardThemeProvider, DashboardThemeScript } from "./theme/theme-provider";
 
 /**
  * ==========================================
- * MANTINE PROVIDER — DASHBOARD SCOPE ONLY
+ * DASHBOARD PROVIDERS
  * ==========================================
  *
- * WHY IT IS HERE AND NOT IN `app/layout.tsx`
- * ------------------------------------------
- * `MantineProvider` is client-side infrastructure: it establishes a React context every Mantine
- * component reads, and it ships a baseline stylesheet that sets `body { margin: 0; font-family: … }`.
- * Mounting it at the application root would put both over the customer-facing ticketing and retail
- * surfaces, which this phase must not touch. Mounting it in the three dashboard layouts means:
+ * The single provider stack every back-office surface is wrapped in, mounted by the three layouts
+ * (`/admin`, `/organizer`, `/platform`).
  *
- *   • the Mantine context exists only under `/admin`, `/organizer` and `/platform`;
- *   • the Mantine baseline CSS is bundled only for those routes (Next gives each layout segment
- *     its own CSS), so `/`, `/events`, `/e/[slug]` and `/ticketing/**` keep Tailwind's reset;
- *   • the root layout stays byte-identical, which is the safest possible outcome for Auth.js and
- *     server rendering.
+ *   `DashboardThemeScript`    the pre-paint bootstrap. It applies the stored appearance (with the
+ *                             system preference resolved), accent and chart palette to `<html>`
+ *                             before the first frame, so a personalised dashboard never flashes the
+ *                             default colours on load.
  *
- * Server components can still render inside this provider — a client component may accept
- * server-rendered `children`, and those children render within the provider's React tree, so
- * Mantine context is available even though the children themselves stayed on the server.
+ *   `DashboardThemeProvider`  `next-themes` for light/dark/system, plus the accent and chart-palette
+ *                             context, plus the `data-dashboard-shell` marker the footer suppression
+ *                             keys off.
  *
- * WHY THE COLOR SCHEME IS FORCED
- * ------------------------------
- * `forceColorScheme="light"` makes Mantine ignore storage and the OS preference. That removes the
- * need for `ColorSchemeScript` in `<head>` (which would mean editing the root layout) and removes
- * any chance of a hydration mismatch from a colour scheme the rest of the app cannot express — no
- * other surface in this repository has dark mode.
+ * WHY THERE IS NO LONGER A MANTINE PROVIDER HERE
+ * ----------------------------------------------
+ * Mantine components throw at render time when no provider is in the tree, so during the migration
+ * this file deliberately kept a `MantineProvider` mounted for the pages that had not been ported yet,
+ * and the migration order was provider-LAST: port every consumer off the component library, and only
+ * then remove the provider, the theme module and the component-library stylesheet the layouts
+ * imported.
+ *
+ * That condition is now met — a repository-wide scan finds no dashboard file importing the library,
+ * and `__tests__/ui-consolidation/shadcn-dashboard.test.ts` pins that count at zero. The dashboard's
+ * entire visual system now arrives as CSS custom properties from `app/globals.css` and shadcn
+ * components from `components/dashboard/ui/**`, so the provider stack is only the theme system.
+ *
+ * SERVER/CLIENT BOUNDARY
+ * ----------------------
+ * This is a client component because `next-themes` is, but it is designed to be rendered BY a server
+ * component: the three layouts are server components and pass server-rendered children through it,
+ * which React supports — a client provider may accept server-rendered children. Nothing here takes a
+ * callback or a component reference, so it stays legal at that boundary.
  */
+
 export default function DashboardProviders({ children }: { children: ReactNode }) {
     return (
-        <MantineProvider theme={dashboardTheme} forceColorScheme="light">
-            {children}
-        </MantineProvider>
+        <>
+            <DashboardThemeScript />
+
+            <DashboardThemeProvider>{children}</DashboardThemeProvider>
+        </>
     );
 }

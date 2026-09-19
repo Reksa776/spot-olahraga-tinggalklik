@@ -29,6 +29,16 @@
  * choose a different tier.
  */
 
+/**
+ * PHASE 15 — the grace window is defined ONCE, in `lib/events/lifecycle.ts`, and imported
+ * here so the gate and the completion job read the same number. A second literal would be
+ * the classic way for the two to drift (the gate closing at 30 minutes while completion
+ * happens at 45). This module still performs no I/O — it only reads a constant.
+ */
+export { CHECK_IN_GRACE_MINUTES, CHECK_IN_GRACE_MS } from "./lifecycle";
+
+import { CHECK_IN_GRACE_MS } from "./lifecycle";
+
 export const SALES_STATES = [
     "NOT_STARTED",
     "OPEN",
@@ -230,10 +240,13 @@ export type EventPurchaseGate = {
  * two expressions agree is asserted by test instead.
  */
 export function isEventPurchasable(event: EventPurchaseGate): boolean {
+    // PHASE 15 (P14-D11): `COMPLETED` was removed from this list. Design §10.3 states the
+    // completion effect as "Sales stop", and with completion now automated (at
+    // `endAt + 30m`) a `COMPLETED` event is definitionally over — so selling it would be
+    // selling admission to a finished event. `ONGOING` stays purchasable: it is a TIME
+    // statement, not a commercial one, and the sales window still governs the sale.
     const sellableStatus =
-        event.status === "PUBLISHED" ||
-        event.status === "ONGOING" ||
-        event.status === "COMPLETED";
+        event.status === "PUBLISHED" || event.status === "ONGOING";
 
     return (
         sellableStatus &&
@@ -241,6 +254,83 @@ export function isEventPurchasable(event: EventPurchaseGate): boolean {
         event.archivedAt === null &&
         event.cancelledAt === null
     );
+}
+
+/**
+ * The event statuses at which a gate may admit people (Phase 13).
+ *
+ * Identical to `isEventPurchasable`'s sellable set on purpose: a gate is open while the
+ * event is a live, publicly-facing event (`PUBLISHED`/`ONGOING`/`COMPLETED`). `DRAFT` has
+ * no sold tickets; `CANCELLED` and `ARCHIVED` are dead and must fail closed.
+ */
+export const CHECKIN_OPEN_STATUSES = [
+    "PUBLISHED",
+    "ONGOING",
+    "COMPLETED",
+] as const;
+
+/** The subset of an `Event` row that decides whether its gate may admit.
+ *
+ * `visibility` is deliberately NOT part of this gate: an `UNLISTED` event still has a real
+ * door, and `PRIVATE` is unreachable through the API so it can hold no sold tickets.
+ *
+ * PHASE 15 adds `endAt`: the gate is a TIME window, and a predicate that cannot see the
+ * clock cannot express the grace period (P14-D06).
+ */
+export type EventCheckInGate = {
+    status: string;
+    endAt: Date | null;
+    archivedAt: Date | null;
+    cancelledAt: Date | null;
+};
+
+/**
+ * May this event admit anyone right now? (P14-D06 / P14-D16)
+ *
+ * PHASE 15 — the ONE canonical gate predicate, now time-aware:
+ *
+ *   closed  if `cancelledAt` or `archivedAt` is set (fail-closed, whatever the status)
+ *   closed  for `DRAFT` / `PENDING_REVIEW` / `CANCELLED` / `ARCHIVED`
+ *   open    for `PUBLISHED` / `ONGOING` while `now <= endAt + 30m`
+ *   open    for a live event with `endAt IS NULL` (a running/road event with no fixed end)
+ *   open    for `COMPLETED` only inside the same grace window (a manual completion made
+ *           during the window must not slam the door on people still queueing)
+ *   closed  otherwise — including a `COMPLETED` event whose `endAt` is null
+ *
+ * `now` is a REQUIRED parameter (see the overload below): the previous signature had no
+ * clock at all, which is precisely how a `COMPLETED` event kept its gate open forever.
+ * Every caller — API, dashboard, tests — passes the same predicate and the same instant.
+ *
+ * Pure: no I/O, no clock of its own when `now` is supplied.
+ */
+export function isEventCheckInOpen(
+    event: EventCheckInGate,
+    now: Date = new Date()
+): boolean {
+    if (event.archivedAt !== null || event.cancelledAt !== null) {
+        return false;
+    }
+
+    if (!(CHECKIN_OPEN_STATUSES as readonly string[]).includes(event.status)) {
+        return false;
+    }
+
+    // A `COMPLETED` event is over; its gate survives only for the grace window, and an
+    // `endAt`-less event can never be completed at all (P14-D22), so there is no window.
+    if (event.status === "COMPLETED") {
+        if (event.endAt === null) {
+            return false;
+        }
+
+        return now.getTime() <= event.endAt.getTime() + CHECK_IN_GRACE_MS;
+    }
+
+    // Still live: `PUBLISHED` or `ONGOING`. No fixed end means no end to pass.
+    if (event.endAt === null) {
+        return true;
+    }
+
+    return now.getTime() <= event.endAt.getTime() + CHECK_IN_GRACE_MS;
 }
 
 export function summarizeSales(

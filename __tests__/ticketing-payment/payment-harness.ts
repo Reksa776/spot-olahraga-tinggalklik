@@ -48,6 +48,12 @@ export const SUFFIX = `p7-${Date.now()}-${Math.random()
     .slice(2, 8)}`;
 
 export const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+/**
+ * PHASE 20B (D-P19-05 = A): an event needs an `endAt` before it can be published. A fixture
+ * that published without one would now be refused by the real service — which is the point of
+ * the rule, so the fixture carries a real end time instead of bypassing the precondition.
+ */
+export const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 export const PRICE = "150000.00";
 
 const { auth } = require("@/auth") as { auth: jest.Mock };
@@ -208,6 +214,14 @@ export type GatewayStubCall = {
 const providerUrl = (n: number) =>
     `https://sandbox.ipaymu.com/payment/${SUFFIX}-${n}`;
 
+/** The QRIS PNG the provider hosts for a given transaction (`Data.QrImage`). */
+export const providerQrUrl = (n: number) =>
+    `https://sandbox.ipaymu.com/qr/${SUFFIX}-${n}`;
+
+/** A QRIS payload that looks like the provider's, and is recognisably NOT generated here. */
+export const providerQrPayload = (n: number) =>
+    `00020101021226610014ID.CO.QRIS.WWW${SUFFIX}${n}5204549953033605406100${n}5802ID6304ABCD`;
+
 let providerCallCount = 0;
 
 /**
@@ -277,14 +291,74 @@ export function installGatewayStub(): jest.SpyInstance {
                 : (() => {
                       providerCallCount += 1;
 
+                      /*
+                       * The default reply follows the ENDPOINT, because the two provider
+                       * endpoints answer with different things and the difference is the whole
+                       * point of the direct flow:
+                       *
+                       *   POST /api/v2/payment        → a hosted page (`Data.Url`)
+                       *   POST /api/v2/payment/direct → the instrument itself
+                       *
+                       * A direct reply is shaped per METHOD, exactly as the provider's own
+                       * samples do: QRIS returns `QrString` + `QrImage` + `PaymentNo`;
+                       * virtual account and retail outlet return a `PaymentNo` and the
+                       * issuer's `PaymentName`. That is what lets the suites assert that the
+                       * QR the page renders is the one the gateway sent.
+                       */
+                      const requestBody = call.body as {
+                          paymentMethod?: string;
+                          paymentChannel?: string;
+                      };
+
+                      const isDirect = call.url.endsWith("/api/v2/payment/direct");
+
+                      if (!isDirect) {
+                          return {
+                              status: 200,
+                              payload: {
+                                  Status: 200,
+                                  Message: "Success",
+                                  Data: {
+                                      SessionId: `SES-${SUFFIX}-${providerCallCount}`,
+                                      Url: providerUrl(providerCallCount),
+                                  },
+                              },
+                          };
+                      }
+
+                      const channel = requestBody.paymentChannel ?? "bca";
+                      const isQris = requestBody.paymentMethod === "qris";
+
                       return {
                           status: 200,
                           payload: {
                               Status: 200,
+                              Success: true,
                               Message: "Success",
                               Data: {
                                   SessionId: `SES-${SUFFIX}-${providerCallCount}`,
-                                  Url: providerUrl(providerCallCount),
+                                  TransactionId: 100000 + providerCallCount,
+                                  ReferenceId: `REF-${SUFFIX}-${providerCallCount}`,
+                                  Via: isQris ? "QRIS" : "VA",
+                                  Channel: channel.toUpperCase(),
+                                  ...(isQris
+                                      ? {
+                                            QrString: providerQrPayload(
+                                                providerCallCount
+                                            ),
+                                            QrImage: providerQrUrl(providerCallCount),
+                                            QrTemplate: `${providerQrUrl(providerCallCount)}/template`,
+                                        }
+                                      : {}),
+                                  PaymentNo: isQris
+                                      ? providerQrPayload(providerCallCount)
+                                      : `8808${providerCallCount}${SUFFIX.replace(/\D/g, "").slice(0, 8)}`,
+                                  PaymentName: isQris
+                                      ? "iPaymu"
+                                      : `iPaymu ${channel.toUpperCase()}`,
+                                  Total: 0,
+                                  Fee: 0,
+                                  Expired: "2099-12-31 23:59:59",
                               },
                           },
                       };
@@ -414,6 +488,7 @@ export async function setupFixtures(): Promise<Fixtures> {
         title: `P7 Event A ${SUFFIX}`,
         sportId,
         startAt: FUTURE,
+        endAt: FUTURE_END,
     } as never);
 
     const eventB = await createEvent(
@@ -423,6 +498,7 @@ export async function setupFixtures(): Promise<Fixtures> {
             title: `P7 Event B ${SUFFIX}`,
             sportId,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never
     );
 

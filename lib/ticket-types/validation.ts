@@ -11,6 +11,11 @@ import { z } from "zod";
  *
  * THE MONEY PROBLEM
  * -----------------
+ * PHASE 18B: a price may carry no fractional rupiah (D-P17-05 = A). The DECIMAL(14,2)
+ * representation, the string-based parsing and D-61 are unchanged — only the VALUE is
+ * constrained, so Σ per-ticket `priceSnapshot` equals the order total exactly and a final
+ * ticket can never be stranded by a rounding mismatch. See `WHOLE_RUPIAH_MESSAGE`.
+ *
  * `TicketType.price` is `Decimal(14, 2)` in Prisma. The temptation is
  * `z.coerce.number()`, which is what brief §8's "do not introduce floating-point money
  * arithmetic" rules out: `Number("0.1")` is already inexact, and an amount that round
@@ -44,6 +49,28 @@ import { z } from "zod";
 /** DECIMAL(14,2) — 12 integer digits and 2 decimals. */
 const MAX_INTEGER_DIGITS = 12;
 const MAX_SCALE = 2;
+
+/**
+ * PHASE 18B (D-P17-05 = A) — SELLABLE PRICES ARE WHOLE RUPIAH.
+ *
+ * The column stays `DECIMAL(14,2)` (D-61 is untouched: the storage representation, the
+ * Prisma `Decimal`, the fixed 2-decimal API strings and the gateway's `requireSafeRupiah`
+ * all remain), but a price may no longer carry a FRACTIONAL RUPIAH.
+ *
+ * WHY THIS IS IN THE PARSER AND NOT ELSEWHERE: checkout converts each line with
+ * `roundToRupiah(unitPrice × quantity)` while refund eligibility sums each ticket's
+ * un-rounded `priceSnapshot`. With a fractional unit price the two disagree, and the
+ * disagreement is what stranded a final ticket (its remaining balance smaller than its own
+ * price, so the last legitimate refund was refused) and, under concurrency, could push
+ * `refundedAmount` past `total`. Enforcing whole rupiah at the ONLY two write paths
+ * (`createTicketType`/`updateTicketType`, both fed by `moneyAmount`) makes the two sums
+ * identical by construction: no line is ever rounded, so Σ priceSnapshot == order total.
+ *
+ * It is enforced server-side in the schema that every admin/organizer API route parses,
+ * never by a frontend hint — a crafted request is refused here like any other bad amount.
+ */
+const WHOLE_RUPIAH_MESSAGE =
+    "Harga harus dalam rupiah penuh (tanpa desimal, mis. 150000).";
 
 /** `10^12 - 0.01`, expressed as a string to avoid float rounding at the boundary. */
 const MAX_MONEY = "999999999999.99";
@@ -119,6 +146,13 @@ const moneyAmount = z
                 code: "custom",
                 message: "Harga melebihi batas maksimum.",
             });
+            return;
+        }
+
+        // D-P17-05 = A: a fractional rupiah is refused. `150000.00` is valid (the scale is
+        // padded, not the value); `150000.50` and `150000.25` are not.
+        if (fraction.padEnd(MAX_SCALE, "0") !== "0".repeat(MAX_SCALE)) {
+            ctx.addIssue({ code: "custom", message: WHOLE_RUPIAH_MESSAGE });
         }
     })
     .transform((value) => {
@@ -334,4 +368,5 @@ export const TICKET_TYPE_LIMITS = {
     MAX_SCALE,
     MAX_MONEY,
     MAX_QUOTA,
+    WHOLE_RUPIAH_MESSAGE,
 } as const;

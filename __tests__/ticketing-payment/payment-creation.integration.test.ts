@@ -33,6 +33,8 @@ import {
     gatewayStub,
     installGatewayStub,
     nextRequest,
+    providerQrPayload,
+    providerQrUrl,
     setupFixtures,
     signInAs,
     SUFFIX,
@@ -88,7 +90,7 @@ beforeEach(() => {
  * ========================================================================== */
 
 describe("A. payment creation", () => {
-    it("A1. the owner starts a session, and the provider reference is persisted", async () => {
+    it("A1. the owner starts a QRIS payment, and the GATEWAY's own QR data is persisted", async () => {
         const order = await createOrder({
             buyerId: f.buyerA.id,
             items: [{ ticketTypeId: f.typeSettle.id, quantity: 2 }],
@@ -97,11 +99,25 @@ describe("A. payment creation", () => {
 
         const payload = await pay(f.buyerA.id, order.orderNumber);
 
-        // The response carries the provider's own URL — never one this code built (§20).
+        // The default method is QRIS, which is a DIRECT flow: the buyer scans here rather
+        // than being sent to a hosted page, so there is no URL and there IS an instrument.
         expect(gatewayStub.calls).toHaveLength(1);
-        expect(payload.paymentUrl).toBe(
-            `https://sandbox.ipaymu.com/payment/${SUFFIX}-1`
+        expect(gatewayStub.calls[0].url).toBe(
+            "https://sandbox.ipaymu.com/api/v2/payment/direct"
         );
+        expect(payload.flow).toBe("DIRECT");
+        expect(payload.paymentUrl).toBeNull();
+
+        // THE ASSERTION THAT MATTERS for "never fabricate a QR": the payload the page will
+        // render is the one the gateway sent, byte for byte, and its image is the gateway's
+        // own URL — not a locally drawn substitute.
+        expect(payload.qrString).toBe(providerQrPayload(1));
+        expect(payload.qrImageUrl).toBe(providerQrUrl(1));
+        expect(payload.paymentName).toBe("iPaymu");
+        expect(payload.providerExpiredAt).toBe(
+            new Date("2099-12-31T23:59:59+07:00").toISOString()
+        );
+
         expect(payload.resumed).toBe(false);
         expect(payload.status).toBe("PENDING");
         expect(payload.provider).toBe("ipaymu");
@@ -113,7 +129,11 @@ describe("A. payment creation", () => {
         // …and it is what got stored, not merely returned.
         const rows = await paymentRowsFor(order.orderNumber);
         expect(rows).toHaveLength(1);
-        expect(rows[0].paymentUrl).toBe(payload.paymentUrl);
+        expect(rows[0].paymentUrl).toBeNull();
+        expect(rows[0].providerFlow).toBe("DIRECT");
+        expect(rows[0].qrString).toBe(providerQrPayload(1));
+        expect(rows[0].qrImageUrl).toBe(providerQrUrl(1));
+        expect(rows[0].paymentNumber).toBe(providerQrPayload(1));
         expect(rows[0].status).toBe("PENDING");
         expect(rows[0].paymentReference).toBe(payload.paymentReference);
         expect(rows[0].providerEnvironment).toBe("SANDBOX");
@@ -155,11 +175,15 @@ describe("A. payment creation", () => {
             select: { buyerName: true, buyerEmail: true },
         });
 
-        expect(call!.body.buyerName).toBe(orderRow.buyerName);
-        expect(call!.body.buyerEmail).toBe(orderRow.buyerEmail);
+        // The payer is the buyer of record from the order row. The direct endpoint's field
+        // names are the documented ones (`name`, `email`), not the redirect endpoint's
+        // (`buyerName`, `buyerEmail`) — asserting the wrong one would have passed against a
+        // body the provider never accepts.
+        expect(call!.body.name).toBe(orderRow.buyerName);
+        expect(call!.body.email).toBe(orderRow.buyerEmail);
     });
 
-    it("A3. the provider is told to notify AND return to this platform's own origin", async () => {
+    it("A3. the provider is told to notify this platform's own origin", async () => {
         const order = await createOrder({
             buyerId: f.buyerA.id,
             items: [{ ticketTypeId: f.typeA.id, quantity: 1 }],
@@ -173,13 +197,106 @@ describe("A. payment creation", () => {
         expect(body.notifyUrl).toBe(
             "http://localhost:3000/api/ticketing/payment/webhook"
         );
+        // The provider's window is the platform's own TTL, not a provider default (§13.1).
+        // For the direct endpoint the value is in HOURS (its documented unit), so it is the
+        // ceiling of our minutes — never a raw minute count that would mean 24 hours.
+        expect(typeof body.expired).toBe("number");
+        expect(body.expired).toBeGreaterThanOrEqual(1);
+        expect(body.expired).toBeLessThanOrEqual(24);
+    });
+
+    it("A3b. a bank transfer asks for a VIRTUAL ACCOUNT and stores the number the gateway issued", async () => {
+        const order = await createOrder({
+            buyerId: f.buyerA.id,
+            items: [{ ticketTypeId: f.typeA.id, quantity: 1 }],
+            tag: "p7-a3b",
+        });
+
+        const payload = await pay(f.buyerA.id, order.orderNumber, {
+            method: "VIRTUAL_ACCOUNT",
+            channel: "bni",
+        });
+
+        const body = gatewayStub.lastCall()!.body;
+
+        // The channel the buyer chose is the channel that was sent — not a default.
+        expect(body.paymentMethod).toBe("va");
+        expect(body.paymentChannel).toBe("bni");
+
+        expect(payload.flow).toBe("DIRECT");
+        expect(payload.qrString).toBeNull();
+        expect(payload.paymentNumber).toMatch(/^8808/);
+        expect(payload.paymentName).toBe("iPaymu BNI");
+
+        const rows = await paymentRowsFor(order.orderNumber);
+
+        expect(rows[0].channel).toBe("bni");
+        expect(rows[0].paymentNumber).toBe(payload.paymentNumber);
+    });
+
+    it("A3c. a method the catalog does not implement is refused, and no provider call is made", async () => {
+        const order = await createOrder({
+            buyerId: f.buyerA.id,
+            items: [{ ticketTypeId: f.typeA.id, quantity: 1 }],
+            tag: "p7-a3c",
+        });
+
+        // COD exists at the provider but has nothing to deliver for a digital ticket, so it is
+        // deliberately absent from the catalog. A buyer who asks for it is refused rather than
+        // quietly downgraded onto a method they did not choose.
+        const error = await expectRejection(() =>
+            pay(f.buyerA.id, order.orderNumber, { method: "COD" })
+        );
+
+        expect(error.code).toBe(ERROR_CODES.VALIDATION_ERROR);
+        expect(gatewayStub.calls).toHaveLength(0);
+
+        // …and a channel that does not belong to the chosen method is refused too, because a
+        // buyer who picked QRIS must not be handed a bank account number.
+        const channelError = await expectRejection(() =>
+            pay(f.buyerA.id, order.orderNumber, {
+                method: "QRIS",
+                channel: "bca",
+            })
+        );
+
+        expect(channelError.code).toBe(ERROR_CODES.VALIDATION_ERROR);
+        expect(gatewayStub.calls).toHaveLength(0);
+    });
+
+    it("A3d. a redirect method hands back the provider's own hosted URL", async () => {
+        const order = await createOrder({
+            buyerId: f.buyerA.id,
+            items: [{ ticketTypeId: f.typeA.id, quantity: 1 }],
+            tag: "p7-a3d",
+        });
+
+        const payload = await pay(f.buyerA.id, order.orderNumber, {
+            method: "CREDIT_CARD",
+        });
+
+        // The card form lives on the provider's page: this application must never collect card
+        // data, and it never sees any. The URL is the provider's own, and the response carries
+        // no QR and no account number because there is none.
+        expect(gatewayStub.lastCall()!.url).toBe(
+            "https://sandbox.ipaymu.com/api/v2/payment/"
+        );
+        expect(payload.flow).toBe("REDIRECT");
+        expect(payload.paymentUrl).toBe(
+            `https://sandbox.ipaymu.com/payment/${SUFFIX}-1`
+        );
+        expect(payload.qrString).toBeNull();
+        expect(payload.paymentNumber).toBeNull();
+
+        const body = gatewayStub.lastCall()!.body;
+
+        expect(body.paymentMethod).toBe("cc");
+        expect(body.buyerName).toBeTruthy();
         expect(body.returnUrl).toBe(
             `http://localhost:3000/ticketing/orders/${encodeURIComponent(
                 order.orderNumber
             )}`
         );
-        // The provider's window is the platform's own TTL, not a provider default (§13.1).
-        expect(typeof body.expired).toBe("number");
     });
 
     it("A4. a second request resumes the live session instead of buying a second one (§19)", async () => {

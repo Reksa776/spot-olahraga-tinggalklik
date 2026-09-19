@@ -37,7 +37,7 @@ describe("D1. normalizeCatalogParams", () => {
             page: "2",
             // Everything below is dropped: either not a catalog parameter, or the legacy share
             // attributes that legitimately appear on a public link (design §10.6).
-            ref: "affiliate-9",
+            ref: "share-9",
             utm_source: "whatsapp",
             status: "PAID",
             admin: "1",

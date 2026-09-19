@@ -2,18 +2,18 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-    Button,
-    Group,
-    Modal,
-    NumberInput,
-    SimpleGrid,
-    Stack,
-    Text,
-    TextInput,
-} from "@mantine/core";
 
 import { apiFetch, ClientApiError } from "./api";
+import { Button } from "@/components/dashboard/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input } from "@/components/dashboard/ui/input";
 import {
     DataTable,
     ErrorBlock,
@@ -36,12 +36,12 @@ import {
  * API answers `FORBIDDEN` because the actor lacks the platform permission. The absence
  * of a button is convenience; the permission check is the control.
  *
- * PHASE (Mantine body migration): presentation only. The `payload` shape sent to the API, the
+ * PHASE (shadcn migration): presentation only. The `payload` shape sent to the API, the
  * create-vs-edit branch, `reset()`/`startEdit()` semantics, the `busy` gate, the verbatim
  * error surfacing of the API's own message, and the global-venue read-only rule are unchanged.
- * The delete confirmation moved from `window.confirm` to a Mantine `Modal` gating the same
- * `DELETE` (§13). `capacity` stays a string in state and is converted exactly as before, so the
- * `""` → `null` rule and `Number(...)` coercion are identical.
+ * The delete confirmation is the shadcn `Dialog`, gating the same `DELETE`. `capacity` stays a
+ * string in state and is converted exactly as before, so the `""` → `null` rule and `Number(...)`
+ * coercion are identical.
  */
 
 type Venue = {
@@ -153,7 +153,7 @@ export default function VenueManager({ organizerId, venues }: Props) {
     }
 
     return (
-        <Stack gap="lg">
+        <div className="flex flex-col gap-6">
             <SectionCard
                 title="Daftar venue"
                 description={`${venues.length} venue terbaca untuk organizer ini`}
@@ -171,46 +171,51 @@ export default function VenueManager({ organizerId, venues }: Props) {
                     rows={venues.map((venue) => ({
                         key: venue.id,
                         cells: [
-                            <Text size="sm" fw={600} key="name">
+                            <span className="text-sm font-semibold" key="name">
                                 {venue.name}
-                            </Text>,
-                            <Text size="sm" key="city">
+                            </span>,
+                            <span className="text-sm text-muted-foreground" key="city">
                                 {venue.city ?? "—"}
-                            </Text>,
-                            <Text size="sm" key="capacity">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="capacity">
                                 {venue.capacity?.toLocaleString("id-ID") ?? "—"}
-                            </Text>,
-                            <Text size="sm" key="events">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="events">
                                 {venue.eventCount}
-                            </Text>,
+                            </span>,
                             <StatusBadge key="owner" tone={venue.isGlobal ? "info" : "neutral"}>
                                 {venue.isGlobal ? "Global" : "Milik organizer"}
                             </StatusBadge>,
                             venue.isGlobal ? (
-                                <Text size="xs" c="dimmed" key="managed">
+                                <span
+                                    className="text-xs text-muted-foreground"
+                                    key="managed"
+                                >
                                     Dikelola platform
-                                </Text>
+                                </span>
                             ) : (
-                                <Group gap="xs" justify="flex-end" wrap="nowrap" key="actions">
+                                <div
+                                    className="flex flex-nowrap justify-end gap-1"
+                                    key="actions"
+                                >
                                     <Button
-                                        variant="subtle"
+                                        variant="ghost"
                                         size="sm"
-                                        color="brand"
                                         onClick={() => startEdit(venue)}
                                     >
                                         Ubah
                                     </Button>
 
                                     <Button
-                                        variant="subtle"
+                                        variant="ghost"
                                         size="sm"
-                                        color="red"
                                         disabled={busy}
                                         onClick={() => setPendingDelete(venue.id)}
+                                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                                     >
                                         Hapus
                                     </Button>
-                                </Group>
+                                </div>
                             ),
                         ],
                     }))}
@@ -220,96 +225,106 @@ export default function VenueManager({ organizerId, venues }: Props) {
             {error ? <ErrorBlock message={error} title="Operasi gagal" /> : null}
 
             <SectionCard title={editingId ? "Ubah venue" : "Tambah venue organizer"}>
-                <form onSubmit={submit}>
-                    <Stack gap="md">
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                            <TextInput
-                                label="Nama venue"
+                <form onSubmit={submit} className="flex flex-col gap-5">
+                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <Field label="Nama venue" required htmlFor="venue-name">
+                            <Input
+                                id="venue-name"
                                 required
                                 minLength={2}
-                                size="md"
                                 value={form.name}
                                 onChange={(event) =>
                                     setForm({ ...form, name: event.currentTarget.value })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Kota"
-                                size="md"
+                        <Field label="Kota" htmlFor="venue-city">
+                            <Input
+                                id="venue-city"
                                 value={form.city}
                                 onChange={(event) =>
                                     setForm({ ...form, city: event.currentTarget.value })
                                 }
                             />
-                        </SimpleGrid>
+                        </Field>
+                    </div>
 
-                        <TextInput
-                            label="Alamat"
-                            size="md"
+                    <Field label="Alamat" htmlFor="venue-address">
+                        <Input
+                            id="venue-address"
                             value={form.address}
                             onChange={(event) =>
                                 setForm({ ...form, address: event.currentTarget.value })
                             }
                         />
+                    </Field>
 
-                        <NumberInput
-                            label="Kapasitas"
-                            size="md"
+                    <Field label="Kapasitas" htmlFor="venue-capacity">
+                        <Input
+                            id="venue-capacity"
+                            type="number"
                             min={0}
                             value={form.capacity}
                             // Kept as the raw string so the "" → null rule in the payload is
                             // byte-for-byte the previous behaviour.
-                            onChange={(value) =>
-                                setForm({ ...form, capacity: value === "" ? "" : String(value) })
+                            onChange={(event) =>
+                                setForm({ ...form, capacity: event.currentTarget.value })
                             }
                         />
+                    </Field>
 
-                        <Group>
-                            <PrimaryAction loading={busy}>
-                                {busy
-                                    ? "Menyimpan…"
-                                    : editingId
-                                      ? "Simpan perubahan"
-                                      : "Tambah venue"}
-                            </PrimaryAction>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <PrimaryAction loading={busy}>
+                            {busy
+                                ? "Menyimpan…"
+                                : editingId
+                                  ? "Simpan perubahan"
+                                  : "Tambah venue"}
+                        </PrimaryAction>
 
-                            {editingId ? (
-                                <Button variant="default" size="md" onClick={reset}>
-                                    Batal
-                                </Button>
-                            ) : null}
-                        </Group>
-                    </Stack>
+                        {editingId ? (
+                            <Button type="button" variant="outline" onClick={reset}>
+                                Batal
+                            </Button>
+                        ) : null}
+                    </div>
                 </form>
             </SectionCard>
 
-            <Modal
-                opened={pendingDelete !== null}
-                onClose={() => setPendingDelete(null)}
-                title="Hapus venue ini?"
-                centered
+            <Dialog
+                open={pendingDelete !== null}
+                onOpenChange={(open) => {
+                    if (!open) setPendingDelete(null);
+                }}
             >
-                <Text size="sm">
-                    Venue yang masih dipakai event akan ditolak oleh server, beserta jumlah
-                    event yang memakainya.
-                </Text>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Hapus venue ini?</DialogTitle>
+                        <DialogDescription>
+                            Venue yang masih dipakai event akan ditolak oleh server, beserta
+                            jumlah event yang memakainya.
+                        </DialogDescription>
+                    </DialogHeader>
 
-                <Group justify="flex-end" mt="lg">
-                    <Button variant="default" size="md" onClick={() => setPendingDelete(null)}>
-                        Batal
-                    </Button>
+                    <DialogFooter>
+                        <Button
+                            variant="outline"
+                            onClick={() => setPendingDelete(null)}
+                        >
+                            Batal
+                        </Button>
 
-                    <Button
-                        color="red"
-                        size="md"
-                        loading={busy}
-                        onClick={() => pendingDelete && remove(pendingDelete)}
-                    >
-                        Hapus
-                    </Button>
-                </Group>
-            </Modal>
-        </Stack>
+                        <Button
+                            variant="destructive"
+                            disabled={busy}
+                            onClick={() => pendingDelete && remove(pendingDelete)}
+                        >
+                            Hapus
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </div>
     );
 }

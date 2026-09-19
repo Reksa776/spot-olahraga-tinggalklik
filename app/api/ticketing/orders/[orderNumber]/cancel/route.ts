@@ -12,8 +12,8 @@ import { cancelOwnPendingOrder } from "@/lib/ticketing/orders";
  *
  * PROTECTED (via the `/api/ticketing/` prefix), and state-changing, so the Phase 3
  * same-origin check runs first (D-56). Path differs from the design's
- * `/api/orders/{orderNumber}/cancel` for the collision reason documented in
- * `app/api/ticketing/checkout/route.ts`.
+ * `/api/orders/{orderNumber}/cancel` — it was taken by the retail order tree, since
+ * deleted; see `app/api/ticketing/checkout/route.ts`.
  * The `order.cancel.own` capability plus the ownership predicate are enforced in
  * `cancelOwnPendingOrder`; the URL's `orderNumber` is data.
  *

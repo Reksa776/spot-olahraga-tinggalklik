@@ -13,13 +13,12 @@ import Link from "next/link";
  *
  *   discovery header/footer   components/ticketing/SiteHeader.tsx, SiteFooter.tsx
  *   auth screens              components/auth/LoginForm.tsx, RegisterForm.tsx
- *   retail storefront chrome  (unchanged markup, still retail-owned)
- *   admin sidebar             components/admin/AdminNavbar.tsx
- *   platform back office      app/platform/layout.tsx
- *   organiser back office     app/organizer/layout.tsx
+ *   dashboard shell           components/dashboard/DashboardNav.tsx (and the mobile top bar in
+ *                             components/dashboard/DashboardShell.tsx), used by the ONE
+ *                             dashboard layout at app/dashboard/layout.tsx
  *
  * It lives at `components/Brand.tsx` rather than under `components/ticketing/` because it is no
- * longer a ticketing detail: importing it from the auth or admin layer via a ticketing path
+ * longer a ticketing detail: importing it from the auth or dashboard layer via a ticketing path
  * would state a dependency that does not exist. `components/ticketing/Brand.tsx` re-exports
  * this file so the Phase 9 imports keep working — one implementation, two import paths, no
  * churn.

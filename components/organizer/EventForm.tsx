@@ -3,19 +3,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-import {
-    Alert,
-    Button,
-    List,
-    Select,
-    SimpleGrid,
-    Stack,
-    Switch,
-    Textarea,
-    TextInput,
-} from "@mantine/core";
-
 import { apiFetch, ClientApiError } from "./api";
+import { Alert, AlertDescription, AlertTitle } from "@/components/dashboard/ui/alert";
+import { Button } from "@/components/dashboard/ui/button";
+import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+    Switch,
+} from "@/components/dashboard/ui/select";
 
 /**
  * ==========================================
@@ -35,20 +34,22 @@ import { apiFetch, ClientApiError } from "./api";
  * unambiguous instant.
  *
  * ---------------------------------------------------------------------------
- * PHASE (Mantine body migration): presentation only.
+ * PHASE (shadcn migration): presentation only.
  *
  * Preserved exactly: `EMPTY`, `toLocalInput` / `toIso` (and their `NaN` guards), the initial-state
  * spread, `update`, and `onSubmit` in full — the same field list, the same `|| null` optionals, the
  * same `toIso(values.startAt)` vs `toIso(values.endAt) ?? null` asymmetry, the create-mode
  * `POST /api/organizer/events` with `{ ...payload, organizerId }` and its
- * `router.push(\`/organizer/events/${created.id}\`)` early return, the edit-mode
+ * `router.push(\`/dashboard/events/${created.id}\`)` early return, the edit-mode
  * `PATCH /api/organizer/events/${eventId}` with `setNotice("Perubahan tersimpan.")` and
  * `router.refresh()`, the `ClientApiError` branch including the `caught.details?.fields` mapping to
  * `"path: message"` strings, and the generic "Terjadi kesalahan." fallback.
  *
- * The `required` / `minLength={3}` / `maxLength={200}` constraints on the title, the required sport
- * select and the optional venue select all carry over as Mantine props, so browser-level validation
- * behaves identically.
+ * Native constraint validation is preserved where the browser can enforce it: the title keeps
+ * `required`/`minLength={3}`/`maxLength={200}`, the datetime and contact inputs keep their types, and
+ * the two required selects pass `required` to the Radix Select root, which is what makes Radix render
+ * its hidden native `<select>` and participate in the form's own validation — the same browser-level
+ * behaviour Mantine's Select provided.
  */
 
 type SportOption = { id: string; name: string };
@@ -62,6 +63,12 @@ export type EventFormValues = {
     rules: string;
     startAt: string;
     endAt: string;
+    /** Event-level sales window; a ticket type may override it (design §10.2). */
+    salesStartAt: string;
+    salesEndAt: string;
+    /** Empty string = no event-level ceiling. */
+    maxTicketsPerOrder: string;
+    bannerUrl: string;
     contactName: string;
     contactPhone: string;
     visibility: "PUBLIC" | "UNLISTED";
@@ -86,6 +93,10 @@ const EMPTY: EventFormValues = {
     rules: "",
     startAt: "",
     endAt: "",
+    salesStartAt: "",
+    salesEndAt: "",
+    maxTicketsPerOrder: "",
+    bannerUrl: "",
     contactName: "",
     contactPhone: "",
     visibility: "PUBLIC",
@@ -128,6 +139,13 @@ export default function EventForm({
         ...initial,
         startAt: toLocalInput(initial?.startAt),
         endAt: toLocalInput(initial?.endAt),
+        salesStartAt: toLocalInput(initial?.salesStartAt),
+        salesEndAt: toLocalInput(initial?.salesEndAt),
+        maxTicketsPerOrder:
+            initial?.maxTicketsPerOrder === undefined ||
+            initial?.maxTicketsPerOrder === null
+                ? ""
+                : String(initial.maxTicketsPerOrder),
     });
 
     const [saving, setSaving] = useState(false);
@@ -145,10 +163,30 @@ export default function EventForm({
     async function onSubmit(event: React.FormEvent) {
         event.preventDefault();
 
-        setSaving(true);
         setError(null);
         setFieldErrors([]);
         setNotice(null);
+
+        // Client-side guard so an obviously inverted window fails instantly with a
+        // readable message. The server re-validates against the stored value, so this
+        // is convenience, never the control.
+        const salesStartIso = toIso(values.salesStartAt);
+        const salesEndIso = toIso(values.salesEndAt);
+
+        if (
+            salesStartIso &&
+            salesEndIso &&
+            new Date(salesEndIso).getTime() < new Date(salesStartIso).getTime()
+        ) {
+            setError(
+                "Waktu berakhir penjualan tidak boleh sebelum waktu mulai penjualan."
+            );
+            return;
+        }
+
+        const maxTickets = values.maxTicketsPerOrder.trim();
+
+        setSaving(true);
 
         const payload: Record<string, unknown> = {
             title: values.title,
@@ -156,8 +194,14 @@ export default function EventForm({
             venueId: values.venueId || null,
             description: values.description || null,
             rules: values.rules || null,
+            bannerUrl: values.bannerUrl.trim() || null,
             startAt: toIso(values.startAt),
             endAt: toIso(values.endAt) ?? null,
+            // `null` clears the column, `undefined` would leave it untouched; the form
+            // always sends an explicit value so clearing works (see event validation).
+            salesStartAt: salesStartIso ?? null,
+            salesEndAt: salesEndIso ?? null,
+            maxTicketsPerOrder: maxTickets === "" ? null : Number(maxTickets),
             contactName: values.contactName || null,
             contactPhone: values.contactPhone || null,
             visibility: values.visibility,
@@ -176,7 +220,7 @@ export default function EventForm({
                     }
                 );
 
-                router.push(`/organizer/events/${created.id}`);
+                router.push(`/dashboard/events/${created.id}`);
                 return;
             }
 
@@ -213,177 +257,292 @@ export default function EventForm({
     }
 
     return (
-        <form onSubmit={onSubmit}>
-            <Stack gap="lg">
-                {error ? (
-                    <Alert color="red" variant="light" radius="md" title={error}>
+        <form onSubmit={onSubmit} className="flex flex-col gap-6">
+            {error ? (
+                <Alert variant="danger">
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                        <AlertTitle>{error}</AlertTitle>
+
                         {fieldErrors.length > 0 ? (
-                            <List size="sm" withPadding>
-                                {fieldErrors.map((fieldError) => (
-                                    <List.Item key={fieldError}>
-                                        {fieldError}
-                                    </List.Item>
-                                ))}
-                            </List>
+                            <AlertDescription>
+                                <ul className="list-disc space-y-1 pl-5 text-xs">
+                                    {fieldErrors.map((fieldError) => (
+                                        <li key={fieldError}>{fieldError}</li>
+                                    ))}
+                                </ul>
+                            </AlertDescription>
                         ) : null}
-                    </Alert>
-                ) : null}
+                    </div>
+                </Alert>
+            ) : null}
 
-                {notice ? (
-                    <Alert color="green" variant="light" radius="md">
+            {notice ? (
+                <Alert variant="success">
+                    <AlertDescription className="text-foreground">
                         {notice}
-                    </Alert>
-                ) : null}
+                    </AlertDescription>
+                </Alert>
+            ) : null}
 
-                <TextInput
-                    label="Judul event"
-                    size="md"
-                    radius="md"
+            <Field label="Judul event" required htmlFor="event-title">
+                <Input
+                    id="event-title"
                     required
                     minLength={3}
                     maxLength={200}
                     value={values.title}
                     onChange={(event) => update("title", event.currentTarget.value)}
                 />
+            </Field>
 
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                    <span className="text-[0.8125rem] font-medium leading-none">
+                        Cabang olahraga <span className="text-destructive">*</span>
+                    </span>
+
                     <Select
-                        label="Cabang olahraga"
-                        size="md"
-                        radius="md"
                         required
-                        allowDeselect={false}
-                        placeholder="Pilih cabang olahraga"
-                        value={values.sportId === "" ? null : values.sportId}
-                        onChange={(value) => update("sportId", value ?? "")}
-                        data={sports.map((sport) => ({
-                            value: sport.id,
-                            label: sport.name,
-                        }))}
-                    />
+                        value={values.sportId === "" ? undefined : values.sportId}
+                        onValueChange={(value) => update("sportId", value)}
+                    >
+                        <SelectTrigger aria-label="Cabang olahraga">
+                            <SelectValue placeholder="Pilih cabang olahraga" />
+                        </SelectTrigger>
+
+                        <SelectContent>
+                            {sports.map((sport) => (
+                                <SelectItem key={sport.id} value={sport.id}>
+                                    {sport.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                    <span className="text-[0.8125rem] font-medium leading-none">
+                        Venue (opsional)
+                    </span>
 
                     <Select
-                        label="Venue (opsional)"
-                        size="md"
-                        radius="md"
-                        allowDeselect={false}
-                        placeholder="Tanpa venue"
-                        value={values.venueId === "" ? null : values.venueId}
-                        onChange={(value) => update("venueId", value ?? "")}
-                        data={venues.map((venue) => ({
-                            value: venue.id,
-                            label: venue.isGlobal ? `${venue.name} (global)` : venue.name,
-                        }))}
-                    />
-                </SimpleGrid>
+                        value={values.venueId === "" ? undefined : values.venueId}
+                        onValueChange={(value) => update("venueId", value)}
+                    >
+                        <SelectTrigger aria-label="Venue (opsional)">
+                            <SelectValue placeholder="Tanpa venue" />
+                        </SelectTrigger>
 
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                    <TextInput
-                        label="Mulai"
-                        size="md"
-                        radius="md"
+                        <SelectContent>
+                            {venues.map((venue) => (
+                                <SelectItem key={venue.id} value={venue.id}>
+                                    {venue.isGlobal ? `${venue.name} (global)` : venue.name}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field label="Mulai" required htmlFor="event-start">
+                    <Input
+                        id="event-start"
                         required
                         type="datetime-local"
                         value={values.startAt}
                         onChange={(event) => update("startAt", event.currentTarget.value)}
                     />
+                </Field>
 
-                    <TextInput
-                        label="Selesai (opsional)"
-                        size="md"
-                        radius="md"
+                <Field label="Selesai (opsional)" htmlFor="event-end">
+                    <Input
+                        id="event-end"
                         type="datetime-local"
                         value={values.endAt}
                         onChange={(event) => update("endAt", event.currentTarget.value)}
                     />
-                </SimpleGrid>
+                </Field>
+            </div>
 
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field
+                    label="Mulai penjualan (opsional)"
+                    htmlFor="event-sales-start"
+                    hint="Kosong = langsung dibuka setelah event dipublikasikan."
+                >
+                    <Input
+                        id="event-sales-start"
+                        type="datetime-local"
+                        value={values.salesStartAt}
+                        onChange={(event) =>
+                            update("salesStartAt", event.currentTarget.value)
+                        }
+                    />
+                </Field>
+
+                <Field
+                    label="Akhir penjualan (opsional)"
+                    htmlFor="event-sales-end"
+                    hint="Kosong = penjualan berhenti saat event dimulai."
+                >
+                    <Input
+                        id="event-sales-end"
+                        type="datetime-local"
+                        value={values.salesEndAt}
+                        onChange={(event) =>
+                            update("salesEndAt", event.currentTarget.value)
+                        }
+                    />
+                </Field>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+                Jendela ini berlaku sebagai bawaan untuk semua jenis tiket. Jenis tiket
+                dapat menimpa jendela ini dengan jendela miliknya sendiri.
+            </p>
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field
+                    label="Maks tiket per pesanan (opsional)"
+                    htmlFor="event-max-per-order"
+                    hint="Batas untuk seluruh pesanan, di atas batas per jenis tiket. Kosong = tanpa batas."
+                >
+                    <Input
+                        id="event-max-per-order"
+                        type="number"
+                        min={1}
+                        max={50}
+                        inputMode="numeric"
+                        disabled={saving}
+                        value={values.maxTicketsPerOrder}
+                        onChange={(event) =>
+                            update(
+                                "maxTicketsPerOrder",
+                                event.currentTarget.value
+                            )
+                        }
+                    />
+                </Field>
+
+                <Field
+                    label="URL banner (opsional)"
+                    htmlFor="event-banner-url"
+                    hint="Dipakai untuk kartu katalog dan Open Graph. Jika kosong, gambar pertama yang diunggah dipakai."
+                >
+                    <Input
+                        id="event-banner-url"
+                        type="url"
+                        inputMode="url"
+                        maxLength={2000}
+                        placeholder="https://…"
+                        disabled={saving}
+                        value={values.bannerUrl}
+                        onChange={(event) =>
+                            update("bannerUrl", event.currentTarget.value)
+                        }
+                    />
+                </Field>
+            </div>
+
+            <Field label="Deskripsi" htmlFor="event-description">
                 <Textarea
-                    label="Deskripsi"
-                    size="md"
-                    radius="md"
-                    minRows={5}
-                    maxRows={12}
-                    autosize
+                    id="event-description"
+                    rows={5}
                     value={values.description}
                     onChange={(event) => update("description", event.currentTarget.value)}
                 />
+            </Field>
 
+            <Field label="Peraturan & kebijakan" htmlFor="event-rules">
                 <Textarea
-                    label="Peraturan & kebijakan"
-                    size="md"
-                    radius="md"
-                    minRows={3}
-                    maxRows={10}
-                    autosize
+                    id="event-rules"
+                    rows={3}
                     value={values.rules}
                     onChange={(event) => update("rules", event.currentTarget.value)}
                 />
+            </Field>
 
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                    <TextInput
-                        label="Nama kontak"
-                        size="md"
-                        radius="md"
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <Field label="Nama kontak" htmlFor="event-contact-name">
+                    <Input
+                        id="event-contact-name"
                         value={values.contactName}
-                        onChange={(event) => update("contactName", event.currentTarget.value)}
-                    />
-
-                    <TextInput
-                        label="Nomor kontak"
-                        size="md"
-                        radius="md"
-                        value={values.contactPhone}
-                        onChange={(event) => update("contactPhone", event.currentTarget.value)}
-                    />
-                </SimpleGrid>
-
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                    <Select
-                        label="Visibilitas"
-                        size="md"
-                        radius="md"
-                        allowDeselect={false}
-                        value={values.visibility}
-                        onChange={(value) =>
-                            update(
-                                "visibility",
-                                (value ?? "PUBLIC") as EventFormValues["visibility"]
-                            )
-                        }
-                        data={[
-                            { value: "PUBLIC", label: "Publik (tampil di katalog)" },
-                            {
-                                value: "UNLISTED",
-                                label: "Unlisted (hanya lewat tautan langsung)",
-                            },
-                        ]}
-                    />
-
-                    <Switch
-                        label="Wajib check-in di lokasi"
-                        size="md"
-                        color="green"
-                        checked={values.requiresCheckIn}
                         onChange={(event) =>
-                            update("requiresCheckIn", event.currentTarget.checked)
+                            update("contactName", event.currentTarget.value)
                         }
-                        style={{ alignSelf: "end" }}
                     />
-                </SimpleGrid>
+                </Field>
 
+                <Field label="Nomor kontak" htmlFor="event-contact-phone">
+                    <Input
+                        id="event-contact-phone"
+                        value={values.contactPhone}
+                        onChange={(event) =>
+                            update("contactPhone", event.currentTarget.value)
+                        }
+                    />
+                </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                    <span className="text-[0.8125rem] font-medium leading-none">
+                        Visibilitas
+                    </span>
+
+                    <Select
+                        value={values.visibility}
+                        onValueChange={(value) =>
+                            update("visibility", value as EventFormValues["visibility"])
+                        }
+                    >
+                        <SelectTrigger aria-label="Visibilitas">
+                            <SelectValue />
+                        </SelectTrigger>
+
+                        <SelectContent>
+                            <SelectItem value="PUBLIC">
+                                Publik (tampil di katalog)
+                            </SelectItem>
+                            <SelectItem value="UNLISTED">
+                                Unlisted (hanya lewat tautan langsung)
+                            </SelectItem>
+                        </SelectContent>
+                    </Select>
+                </div>
+
+                <label className="flex cursor-pointer items-center gap-3 self-end pb-2">
+                    <Switch
+                        checked={values.requiresCheckIn}
+                        onCheckedChange={(checked) => update("requiresCheckIn", checked)}
+                    />
+
+                    <span className="text-[0.8125rem] font-medium leading-tight">
+                        Wajib check-in di lokasi
+                    </span>
+                </label>
+            </div>
+
+            <div className="flex self-start">
                 <Button
                     type="submit"
-                    size="md"
-                    radius="md"
                     disabled={saving}
-                    loading={saving}
-                    w={{ base: "100%", sm: "auto" }}
-                    style={{ alignSelf: "flex-start" }}
+                    className="w-full sm:w-auto"
                 >
-                    {saving ? "Menyimpan…" : mode === "create" ? "Simpan draft" : "Simpan perubahan"}
+                    {saving ? (
+                        <span
+                            aria-hidden
+                            className="size-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current"
+                        />
+                    ) : null}
+                    {saving
+                        ? "Menyimpan…"
+                        : mode === "create"
+                          ? "Simpan draft"
+                          : "Simpan perubahan"}
                 </Button>
-            </Stack>
+            </div>
         </form>
     );
 }

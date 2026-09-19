@@ -72,7 +72,7 @@ export default async function SiteHeader() {
                     )}
 
                     <Link
-                        href="/organizer/events"
+                        href="/dashboard/events"
                         className="hidden rounded-xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-ink-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 xl:block"
                     >
                         Buat event
@@ -99,7 +99,7 @@ function MobileMenu({ signedIn }: { signedIn: boolean }) {
         ...(signedIn
             ? [{ href: "/ticketing/tickets", label: "Tiket saya" }]
             : [{ href: "/login", label: "Masuk" }]),
-        { href: "/organizer/events", label: "Buat event" },
+        { href: "/dashboard/events", label: "Buat event" },
     ];
 
     return (

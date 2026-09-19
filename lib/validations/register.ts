@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+/**
+ * The registration contract.
+ *
+ * The optional `referralCode` field was removed with the retail affiliate system. The ticketing
+ * PIC attribution is recorded per event order (`PICAttribution`) and is derived from a PIC link or
+ * code at checkout, so it has no business being collected at signup.
+ */
 export const registerSchema = z
   .object({
     name: z.string().min(2, "Nama minimal 2 karakter"),
@@ -25,10 +32,6 @@ export const registerSchema = z
     confirmPassword: z
       .string()
       .min(8, "Konfirmasi password wajib diisi"),
-
-    referralCode: z
-      .string()
-      .optional(),
   })
   .refine(
     (data) => data.password === data.confirmPassword,

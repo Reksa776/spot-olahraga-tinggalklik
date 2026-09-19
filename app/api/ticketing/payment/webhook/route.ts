@@ -37,7 +37,14 @@ import { handleGatewayWebhook } from "@/lib/ticketing/payment/webhook";
 
 export const runtime = "nodejs";
 
-/** Header carrying the provider's HMAC. Lookup is case-insensitive by HTTP spec. */
+/**
+ * Header carrying the provider's HMAC, when it sends one. Lookup is case-insensitive by HTTP
+ * spec.
+ *
+ * It is NOT the only accepted location: iPaymu documents its signature as a `signature` FIELD in
+ * the callback body, so `verifyCallbackSignature` reads the header first and falls back to that
+ * field. Exactly one of the two is ever checked, so this is a widened source, not a weaker check.
+ */
 const SIGNATURE_HEADER = "x-signature";
 
 export async function POST(request: NextRequest) {

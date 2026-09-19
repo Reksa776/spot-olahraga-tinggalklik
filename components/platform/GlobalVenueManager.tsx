@@ -2,16 +2,6 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-    Button,
-    Group,
-    Modal,
-    NumberInput,
-    SimpleGrid,
-    Stack,
-    Text,
-    TextInput,
-} from "@mantine/core";
 
 import { apiFetch, ClientApiError } from "@/components/organizer/api";
 import {
@@ -21,6 +11,16 @@ import {
     PrimaryAction,
     SectionCard,
 } from "@/components/dashboard/primitives";
+import { Button } from "@/components/dashboard/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input } from "@/components/dashboard/ui/input";
 
 /**
  * Platform-global venue manager (decision D-64).
@@ -29,10 +29,10 @@ import {
  * `venue.manage.global` permission. This component never sends an `organizerId` — the
  * global route does not read one, so ownership cannot be influenced from here.
  *
- * PHASE (Mantine body migration): presentation only. The two payloads, the create-vs-edit
- * branch, `reset()`, the `busy` gate and the verbatim error messages are unchanged; the delete
- * confirmation is a Mantine `Modal` gating the same `DELETE` (§13), and the empty state that the
- * old table drew as one full-width `<td>` is now the shared `EmptyBlock`.
+ * PHASE (shadcn migration): presentation only. The two payloads, the create-vs-edit branch,
+ * `reset()`, the `busy` gate and the verbatim error messages are unchanged; the delete
+ * confirmation is the shadcn `Dialog` gating the same `DELETE`, and the empty state that the old
+ * table drew as one full-width `<td>` is the shared `EmptyBlock`.
  */
 
 type Venue = {
@@ -113,7 +113,7 @@ export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
     }
 
     return (
-        <Stack gap="lg">
+        <div className="flex flex-col gap-6">
             <SectionCard
                 title="Daftar venue global"
                 description={`${venues.length} venue kanonik`}
@@ -136,23 +136,25 @@ export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
                     rows={venues.map((venue) => ({
                         key: venue.id,
                         cells: [
-                            <Text size="sm" fw={600} key="name">
+                            <span className="text-sm font-semibold" key="name">
                                 {venue.name}
-                            </Text>,
-                            <Text size="sm" key="city">
+                            </span>,
+                            <span className="text-sm text-muted-foreground" key="city">
                                 {venue.city ?? "—"}
-                            </Text>,
-                            <Text size="sm" key="capacity">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="capacity">
                                 {venue.capacity?.toLocaleString("id-ID") ?? "—"}
-                            </Text>,
-                            <Text size="sm" key="events">
+                            </span>,
+                            <span className="text-sm tabular-nums" key="events">
                                 {venue.eventCount}
-                            </Text>,
-                            <Group gap="xs" justify="flex-end" wrap="nowrap" key="actions">
+                            </span>,
+                            <div
+                                className="flex flex-nowrap justify-end gap-1"
+                                key="actions"
+                            >
                                 <Button
-                                    variant="subtle"
+                                    variant="ghost"
                                     size="sm"
-                                    color="brand"
                                     onClick={() => {
                                         setEditingId(venue.id);
                                         setForm({
@@ -170,15 +172,15 @@ export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
                                 </Button>
 
                                 <Button
-                                    variant="subtle"
+                                    variant="ghost"
                                     size="sm"
-                                    color="red"
                                     disabled={busy}
                                     onClick={() => setPendingDelete(venue.id)}
+                                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                                 >
                                     Hapus
                                 </Button>
-                            </Group>,
+                            </div>,
                         ],
                     }))}
                 />
@@ -187,89 +189,96 @@ export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
             {error ? <ErrorBlock message={error} title="Operasi gagal" /> : null}
 
             <SectionCard title={editingId ? "Ubah venue global" : "Tambah venue global"}>
-                <form onSubmit={submit}>
-                    <Stack gap="md">
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                            <TextInput
-                                label="Nama venue"
+                <form onSubmit={submit} className="flex flex-col gap-5">
+                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <Field label="Nama venue" required htmlFor="global-venue-name">
+                            <Input
+                                id="global-venue-name"
                                 required
                                 minLength={2}
-                                size="md"
                                 value={form.name}
                                 onChange={(event) =>
                                     setForm({ ...form, name: event.currentTarget.value })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Kota"
-                                size="md"
+                        <Field label="Kota" htmlFor="global-venue-city">
+                            <Input
+                                id="global-venue-city"
                                 value={form.city}
                                 onChange={(event) =>
                                     setForm({ ...form, city: event.currentTarget.value })
                                 }
                             />
-                        </SimpleGrid>
+                        </Field>
+                    </div>
 
-                        <TextInput
-                            label="Alamat"
-                            size="md"
+                    <Field label="Alamat" htmlFor="global-venue-address">
+                        <Input
+                            id="global-venue-address"
                             value={form.address}
                             onChange={(event) =>
                                 setForm({ ...form, address: event.currentTarget.value })
                             }
                         />
+                    </Field>
 
-                        <NumberInput
-                            label="Kapasitas"
-                            size="md"
+                    <Field label="Kapasitas" htmlFor="global-venue-capacity">
+                        <Input
+                            id="global-venue-capacity"
+                            type="number"
                             min={0}
                             value={form.capacity}
-                            onChange={(value) =>
-                                setForm({ ...form, capacity: value === "" ? "" : String(value) })
+                            onChange={(event) =>
+                                setForm({ ...form, capacity: event.currentTarget.value })
                             }
                         />
+                    </Field>
 
-                        <Group>
-                            <PrimaryAction loading={busy}>
-                                {busy ? "Menyimpan…" : editingId ? "Simpan" : "Tambah"}
-                            </PrimaryAction>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <PrimaryAction loading={busy}>
+                            {busy ? "Menyimpan…" : editingId ? "Simpan" : "Tambah"}
+                        </PrimaryAction>
 
-                            {editingId ? (
-                                <Button variant="default" size="md" onClick={reset}>
-                                    Batal
-                                </Button>
-                            ) : null}
-                        </Group>
-                    </Stack>
+                        {editingId ? (
+                            <Button type="button" variant="outline" onClick={reset}>
+                                Batal
+                            </Button>
+                        ) : null}
+                    </div>
                 </form>
             </SectionCard>
 
-            <Modal
-                opened={pendingDelete !== null}
-                onClose={() => setPendingDelete(null)}
-                title="Hapus venue global ini?"
-                centered
+            <Dialog
+                open={pendingDelete !== null}
+                onOpenChange={(open) => {
+                    if (!open) setPendingDelete(null);
+                }}
             >
-                <Text size="sm">
-                    Venue yang masih dipakai event akan ditolak oleh server.
-                </Text>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Hapus venue global ini?</DialogTitle>
+                        <DialogDescription>
+                            Venue yang masih dipakai event akan ditolak oleh server.
+                        </DialogDescription>
+                    </DialogHeader>
 
-                <Group justify="flex-end" mt="lg">
-                    <Button variant="default" size="md" onClick={() => setPendingDelete(null)}>
-                        Batal
-                    </Button>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setPendingDelete(null)}>
+                            Batal
+                        </Button>
 
-                    <Button
-                        color="red"
-                        size="md"
-                        loading={busy}
-                        onClick={() => pendingDelete && remove(pendingDelete)}
-                    >
-                        Hapus
-                    </Button>
-                </Group>
-            </Modal>
-        </Stack>
+                        <Button
+                            variant="destructive"
+                            disabled={busy}
+                            onClick={() => pendingDelete && remove(pendingDelete)}
+                        >
+                            Hapus
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </div>
     );
 }

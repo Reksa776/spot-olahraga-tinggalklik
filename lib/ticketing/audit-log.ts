@@ -17,14 +17,16 @@ import { getClientIp } from "@/lib/rate-limit";
  *
  * WHY BOTH THE LEGACY AND NEW COLUMNS ARE WRITTEN
  * -----------------------------------------------
- * `AdminAuditLog.adminId` is `String` NOT NULL and is used by live retail code, so it
- * cannot be omitted. It is set to the real acting user id here rather than to one of
- * the `"SYSTEM"` / `"PROVIDER"` sentinels the design criticises (§32.1) — the overload
- * is avoided rather than repeated. `actorType` is always `USER` in Phase 4 because
+ * `AdminAuditLog.adminId` is `String` NOT NULL and was introduced for the retail code, so
+ * it cannot be omitted even though those writers are gone. It is set to the real acting
+ * user id here rather than to one of the `"SYSTEM"` / `"PROVIDER"` sentinels the design
+ * criticises (§32.1) — the overload is avoided rather than repeated. `actorType` is always
+ * `USER` in Phase 4 because
  * every audited operation in this phase is user-initiated; the SYSTEM/PROVIDER/JOB
  * values exist for later phases.
  *
- * `entityId` is an `Int` belonging to retail rows and cannot be widened, so — exactly
+ * `entityId` is an `Int` column inherited from the retail rows and cannot be widened, so —
+ * exactly
  * as the Phase 2 comment on the model instructs — the cuid-keyed ticketing entity is
  * recorded in the additive `entityRef` column instead.
  *
@@ -40,7 +42,29 @@ export type TicketingAuditAction =
     | "event.update"
     | "event.publish"
     | "event.unpublish"
+    // ── PHASE 12: the wider event lifecycle ─────────────────────────────────────
+    // Cancellation and archival are the two lifecycle actions design §10.3 defines but
+    // that no earlier phase wrote. Each gets its own action name rather than reusing
+    // `event.unpublish`, because they are materially different events: unpublishing
+    // only hides listings (D-14), while cancelling stops sales and expires unpaid
+    // orders, and archiving is the soft delete that hides the event from every public
+    // surface. An auditor reconstructing "when did this event die, and who did it?"
+    // must be able to filter on the exact action.
+    | "event.cancel"
+    | "event.archive"
     | "event.delete"
+    // ── PHASE 15: the two time-driven lifecycle transitions (P14-D21) ─────────────
+    // `event.ongoing` and `event.complete` are written by the DB-backed tick (JOB 1) and by
+    // the manual completion action. Both are real writers, and they are separate names
+    // because they are separate facts an auditor reconstructs "when did this event run, and
+    // when was it over?" from — a single `event.status_change` would force that reader to
+    // parse a status field instead of filtering by the action.
+    //
+    // A tick that transitions nothing writes NO audit row (a 1-minute cron would otherwise
+    // produce 1440 meaningless rows a day). The run itself is observable through
+    // `JobLock.lastRunAt` / `lastStatus` and the tick response.
+    | "event.ongoing"
+    | "event.complete"
     | "event.image.add"
     | "event.image.remove"
     | "venue.create"
@@ -92,13 +116,64 @@ export type TicketingAuditAction =
     | "payment.success"
     | "payment.failed"
     | "payment.expired"
+    // ── PHASE 10B: the refund lifecycle ──────────────────────────────────────────
+    // Five actions, one per state change that an auditor reconstructs a refund from: the
+    // buyer's request, the two staff decisions, the confirmed settlement and the failure.
+    // They are separate names rather than a single `refund.update` because they have
+    // different actors (buyer, staff, provider) and different money consequences; a reader
+    // filtering "who approved this refund?" must not have to parse a state field.
+    //
+    // A provider-confirmed refund is recorded as `refund.settle` with the `PROVIDER` actor
+    // marker, exactly as `payment.success` is (design §32.1), rather than as a second
+    // action name for the same fact.
+    //
+    // ── PHASE 18B: the manual bank-transfer rail (D-P17-04 = B) ──────────────────
+    // `refund.process` is the sixth action: the operator's `APPROVED -> PROCESSING`
+    // claim, written when a human has taken a refund in hand to make the transfer.
+    // It is deliberately NOT folded into `refund.settle`, because under the manual
+    // rail PROCESSING must NOT be read as "money moved" — only `refund.settle`, which
+    // now requires recorded transfer evidence, may say that.
+    | "refund.request"
+    | "refund.approve"
+    | "refund.reject"
+    | "refund.process"
+    | "refund.settle"
+    | "refund.fail"
     // ── PHASE 8: ticket fulfilment ───────────────────────────────────────────────
     // One action, not four. Issuance is the only ticket transition Phase 8 performs:
     // the status stays `ISSUED` afterwards and reissue/void belong to later phases
     // (design §19.5 lists `ticket.reissue` / `ticket.void`, neither of which is built
     // here). Declaration without a writer would be the same \"vocabulary invented for
     // symmetry\" the earlier phases avoided.
-    | "ticket.issue";
+    | "ticket.issue"
+    // ── PHASE 13: gate admission ─────────────────────────────────────────────────
+    // Two actions, both real writers. `checkin.success` records an accepted admission;
+    // `checkin.rejected` records a refusal the gate could not record as an accepted
+    // `CheckIn` row (a forged/unknown code, a wrong event, a non-issued ticket, or a
+    // closed gate). The `CheckIn` table additionally carries accepted rows and duplicate
+    // attempts, so a reviewer sees both "who got in" and "what was turned away".
+    //
+    // There is deliberately NO `checkin.override`: admitting without a valid ticket is a
+    // distinct capability (`checkin.override`) that Phase 13 did not implement, and
+    // declaring an action with no writer is the "vocabulary invented for symmetry" that
+    // earlier phases rejected.
+    | "checkin.success"
+    | "checkin.rejected"
+    // ── PIC management ───────────────────────────────────────────────────────────
+    // These belong to the PIC surface that replaces the deleted retail Affiliate
+    // programme. They are platform-level (profile lifecycle) and organizer-level
+    // (event assignment) actions, and each one is a distinct authority: creating a
+    // profile, approving/suspending it, attaching it to an event and taking it off
+    // again. `pic.assign.reactivate` is separate from `pic.assign` because the schema
+    // makes (picProfileId, eventId) unique, so re-assigning a previously revoked
+    // pairing UPDATEs the existing row — an auditor reconstructing "when did this PIC
+    // start covering this event?" needs to see that it was a reinstatement rather
+    // than a first assignment.
+    | "pic.create"
+    | "pic.status.update"
+    | "pic.assign"
+    | "pic.assign.reactivate"
+    | "pic.assign.revoke";
 
 /** Keys that must never reach the audit table, whatever a caller passes. */
 const FORBIDDEN_METADATA_KEYS = new Set([
@@ -188,7 +263,10 @@ export type TicketingAuditParams = {
         | "EventOrder"
         | "Payment"
         /** Phase 8. `entityRef` carries the ORDER number, since one call issues N rows. */
-        | "Ticket";
+        | "Ticket"
+        /** PIC surface: the profile row and the event-assignment row. */
+        | "PICProfile"
+        | "PICEventAssignment";
     /** cuid of the affected row (goes into `entityRef`). */
     entityRef?: string | null;
     description: string;

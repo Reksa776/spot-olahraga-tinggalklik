@@ -234,9 +234,16 @@ describe("isEventPurchasable (brief §12)", () => {
         expect(isEventPurchasable(base)).toBe(true);
     });
 
-    test("ONGOING and COMPLETED remain purchasable — the sales window decides closure", () => {
+    test("ONGOING is purchasable — the sales window decides closure", () => {
         expect(isEventPurchasable({ ...base, status: "ONGOING" })).toBe(true);
-        expect(isEventPurchasable({ ...base, status: "COMPLETED" })).toBe(true);
+    });
+
+    test("COMPLETED is NOT purchasable — the event is over", () => {
+        // PHASE 15 (P14-D11). This assertion was the opposite before the decision lock: the
+        // Phase 4/6 list included COMPLETED because the status was unreachable, so the
+        // question never arose. Now that completion is automated at `endAt + 30m`, design
+        // §10.3's "Sales stop" is implemented literally — a completed event is not on sale.
+        expect(isEventPurchasable({ ...base, status: "COMPLETED" })).toBe(false);
     });
 
     test("a DRAFT event is not purchasable", () => {

@@ -73,6 +73,8 @@ const TICKET: TicketWalletItem = {
         startAt: "2026-10-03T12:00:00.000Z",
         endAt: null,
         venueName: "GOR Tridharma",
+        venueCity: "Bandung",
+        venueAddress: null,
         sportName: "Basket",
     },
 };

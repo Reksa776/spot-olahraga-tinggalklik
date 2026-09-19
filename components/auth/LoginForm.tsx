@@ -19,6 +19,27 @@ import {
     FaEyeSlash,
 } from "react-icons/fa";
 
+import { postLoginDestination } from "@/lib/auth/redirect";
+
+/**
+ * Read `callbackUrl` from the current URL.
+ *
+ * Read from `window.location` rather than `useSearchParams()` on purpose: the login page is
+ * statically rendered, and `useSearchParams()` would opt it out of that (or force a Suspense
+ * boundary) for a value that is only ever needed inside an event handler and an effect — both
+ * of which run in the browser, where the query string is available directly.
+ *
+ * The value is UNTRUSTED and is never navigated to as-is; it is always passed through
+ * `postLoginDestination`, which rejects anything that is not a same-origin path.
+ */
+function readCallbackUrl(): string | null {
+    if (typeof window === "undefined") {
+        return null;
+    }
+
+    return new URLSearchParams(window.location.search).get("callbackUrl");
+}
+
 export default function LoginForm() {
     const router = useRouter();
 
@@ -51,11 +72,6 @@ export default function LoginForm() {
                 const session =
                     await getSession();
 
-                console.log(
-                    "LOGIN PAGE SESSION:",
-                    session
-                );
-
                 if (!mounted) {
                     return;
                 }
@@ -76,22 +92,15 @@ export default function LoginForm() {
 
                 /*
                  * SUDAH LOGIN
+                 *
+                 * An already-authenticated visitor goes to the same place a fresh login
+                 * goes: the page they were interrupted on, or the dashboard. The dashboard
+                 * layout is what decides whether they may actually use it, so an account
+                 * without back-office access lands on its denial state rather than being
+                 * silently dropped somewhere else.
                  */
 
-                const role =
-                    (session.user as {
-                        role?: string;
-                    }).role;
-
-                if (role === "ADMIN") {
-                    router.replace(
-                        "/admin"
-                    );
-                } else {
-                    router.replace(
-                        "/home"
-                    );
-                }
+                router.replace(postLoginDestination(readCallbackUrl()));
             } catch (error) {
                 console.error(
                     "CHECK SESSION ERROR:",
@@ -131,6 +140,10 @@ export default function LoginForm() {
                 redirect: false,
             });
 
+            /*
+             * Authentication FAILED (or was throttled). Stay on the login page and keep the
+             * existing error message — a failed login must never navigate anywhere.
+             */
             if (result?.error) {
                 toast.error(
                     "Email / Nomor HP atau Password salah."
@@ -140,21 +153,21 @@ export default function LoginForm() {
                 return;
             }
 
-            // Ambil session setelah login
-            const session = await getSession();
-
-            console.log("SESSION:", session);
-
-            const role = session?.user?.role;
-
             toast.success("Login berhasil 🎉");
 
-            // Redirect berdasarkan role
-            if (role === "ADMIN") {
-                router.replace("/admin");
-            } else {
-                router.replace("/home");
-            }
+            /*
+             * AUTHENTICATED — now go to the back office.
+             *
+             * The destination is the sanitised callback (the page the user was bounced from, e.g.
+             * `/dashboard/events`) or `/dashboard`. It is never `/`, `/platform`, `/organizer` or
+             * `/admin`: the back office is one dashboard now, and those role-specific landing pages
+             * belonged to the retired retail application.
+             *
+             * Authorization has NOT been decided here. This is navigation; `app/dashboard/layout.tsx`
+             * runs the real permission decision on the next render and renders its denial state for an
+             * account without back-office access.
+             */
+            router.replace(postLoginDestination(readCallbackUrl()));
 
             router.refresh();
         } catch (error) {
@@ -173,7 +186,9 @@ export default function LoginForm() {
             setLoading(true);
 
             await signIn("google", {
-                callbackUrl: "/home",
+                // Same sanitised destination as the credentials path: a valid same-origin
+                // callback, otherwise the dashboard.
+                callbackUrl: postLoginDestination(readCallbackUrl()),
             });
         } catch (error) {
             console.error(
@@ -331,7 +346,14 @@ export default function LoginForm() {
 
                     </div>
 
-                    {/* REMEMBER + FORGOT */}
+                    {/*
+                        REMEMBER
+
+                        The "Lupa Password?" link was removed: `/forgot-password` has never
+                        existed in this application, so the login page was offering a 404. A
+                        password-reset flow is a feature, not a link, and inventing a route to
+                        point at would be worse than not offering it.
+                    */}
                     <div className="flex items-center justify-between text-sm">
 
                         <label className="flex items-center gap-2 text-gray-700">
@@ -345,13 +367,6 @@ export default function LoginForm() {
                             Ingat Saya
 
                         </label>
-
-                        <Link
-                            href="/forgot-password"
-                            className="font-medium text-brand-600 hover:underline"
-                        >
-                            Lupa Password?
-                        </Link>
 
                     </div>
 

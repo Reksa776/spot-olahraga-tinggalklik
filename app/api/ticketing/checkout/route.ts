@@ -19,22 +19,19 @@ import {
  * control and the proxy entry is defence in depth.
  *
  * ── WHY THIS IS NOT `POST /api/checkout` ─────────────────────────────────────────
- * Design §25.5 specifies `POST /api/checkout`. That path is **already taken by the live
- * retail checkout route** (`app/api/checkout/route.ts`, a tracked file serving the retail
- * `app/checkout/CheckoutPage.tsx`). Brief §34 forbids modifying retail checkout, and
- * Phase 3 established that live retail request contracts are not silently changed, so the
- * design's path cannot be used without breaking retail.
+ * Design §25.5 specifies `POST /api/checkout`. When this route was built, that path was
+ * already taken by the retail checkout route (`app/api/checkout/route.ts`), and Phase 3
+ * established that live request contracts are not silently changed, so the design's path
+ * could not be used without breaking retail.
  *
- * Phase 4 met the same class of problem with `/api/admin/**` (it is the LEGACY retail
- * admin namespace, gated on `session.user.role`) and resolved it by putting ticketing
- * under `/api/organizer/**`. This applies that precedent: ticketing purchase operations
- * live under `/api/ticketing/**`, which is unambiguous, collision-free and additive.
- * Both replaced paths are recorded in the Phase 6 report as deliberate divergences from
- * the design's sketched paths.
+ * The retail application has since been deleted outright, so the collision is gone — but
+ * the ticketing path is KEPT as `/api/ticketing/**`. It is the shape every ticketing
+ * route (and the proxy classification) is written against, and renaming a live endpoint
+ * to chase a design sketch would break deployed clients for no functional gain.
  *
- * Note this is not merely cosmetic: `/api/orders/[orderNumber]` would also have collided
- * with the existing `/api/orders/[id]` tree, and Next.js rejects two different dynamic
- * segment names at the same position.
+ * Note the collision was not merely cosmetic: `/api/orders/[orderNumber]` would also have
+ * collided with the retail `/api/orders/[id]` tree, and Next.js rejects two different
+ * dynamic segment names at the same position.
  *
  * ── WHAT IT DOES NOT DO ──────────────────────────────────────────────────────────
  * No payment session, no iPaymu call, no ticket rows, no QR. The response is a

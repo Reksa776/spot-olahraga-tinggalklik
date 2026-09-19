@@ -342,6 +342,72 @@ export async function confirmReservation(
     };
 }
 
+export type RestoreResult = {
+    ok: true;
+    ticketTypeId: string;
+    quantity: number;
+    /** How many seats the guard actually returned (may be fewer than requested). */
+    restored: number;
+    reserved: number;
+    sold: number;
+    quota: number;
+    available: number;
+};
+
+/**
+ * Atomically return **sold** seats to availability after a CONFIRMED refund: the
+ * `sold` counterpart of `releaseReservation`, and the deferred half of the note on
+ * `confirmReservation` above ("`sold` is only ever incremented here and decremented by a
+ * refund from a later phase (`Event.returnQuotaOnRefund`, decision D-08)").
+ *
+ * ```sql
+ * UPDATE tickettype
+ *    SET sold = GREATEST(0, sold - n), version = version + 1
+ *  WHERE id = ?
+ * ```
+ *
+ * This primitive is deliberately called **only** from the confirmed-refund settlement and
+ * only when the event opted in via `Event.returnQuotaOnRefund`. Policy D-R06 is the reason
+ * for the timing rule: quota must never come back on a request, an approval, or a provider
+ * call — only after money has provably moved. The `GREATEST(0, …)` guard is load-bearing
+ * for the same reason as in `releaseReservation`: a duplicate confirmation cannot drive
+ * `sold` negative and cannot inflate availability beyond what was ever sold.
+ *
+ * This DOES NOT touch `reserved`: held seats are released by `releaseReservation`, never
+ * here. Calling this on a type whose seats were only ever held (never sold) would be a bug;
+ * the caller reads the sold order items from the database, not from a client.
+ */
+export async function restoreSoldQuota(
+    ticketTypeId: string,
+    quantity: number,
+    db: InventoryDb = prisma
+): Promise<RestoreResult> {
+    assertPositiveQuantity(quantity);
+
+    const before = await readInventory(db, ticketTypeId);
+    const soldBefore = before?.sold ?? 0;
+
+    await db.$executeRaw`
+        UPDATE tickettype
+           SET sold = GREATEST(0, sold - ${quantity}),
+               version = version + 1
+         WHERE id = ${ticketTypeId}
+    `;
+
+    const updated = (await readInventory(db, ticketTypeId)) as InventoryRow;
+
+    return {
+        ok: true,
+        ticketTypeId,
+        quantity,
+        restored: Math.min(quantity, soldBefore),
+        reserved: updated.reserved,
+        sold: updated.sold,
+        quota: updated.quota,
+        available: availableInventory(updated),
+    };
+}
+
 export type ReleaseResult = {
     ok: true;
     ticketTypeId: string;

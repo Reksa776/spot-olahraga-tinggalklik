@@ -35,7 +35,7 @@ const PAYMENT_FILES = fs
     .filter((name) => name.endsWith(".ts"))
     .map((name) => `${PAYMENT_DIR}/${name}`);
 
-const INVENTORY = "lib/ticketing/inventory.ts";
+const _INVENTORY = "lib/ticketing/inventory.ts";
 const RESERVATIONS = "lib/ticketing/reservations.ts";
 const DB_CONTENTION = "lib/ticketing/db-contention.ts";
 const ORDER_PAYLOAD = "lib/ticketing/order-payload.ts";

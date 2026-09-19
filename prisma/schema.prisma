@@ -9,9 +9,23 @@ datasource db {
 }
 
 // ==========================================
-// EXISTING MODELS (UNCHANGED except relations)
+// IDENTITY
 // ==========================================
 
+/// One account, for buyers and for every back-office role.
+///
+/// Two orthogonal role dimensions, deliberately not merged:
+///
+///   * `role`         — the LEGACY column. Still typed by the `Role` enum and sent on the
+///                      session (see `types/next-auth.d.ts`), because the session contract
+///                      predates ticketing. Nothing in the ticketing authorization layer reads
+///                      it: `lib/authz/scope.ts` derives `platformRole` and documents why
+///                      deriving `ADMIN` from this column would be a hidden privilege grant.
+///   * `platformRole` — the ticketing dimension, nullable so no backfill was ever required.
+///
+/// COLUMNS REMOVED WITH THE RETAIL APPLICATION: `referralCode`, `referredBy` (retail affiliate
+/// attribution), and the `cart` / `orders` / `addresses` relations (retail basket, retail order
+/// and shipping address). Ticketing orders live on `EventOrder`; there is no shipping address.
 model User {
   id            String         @id @default(cuid())
   name          String?
@@ -20,35 +34,18 @@ model User {
   password      String?
   image         String?
   role          Role           @default(CUSTOMER)
-  referralCode  String?        @unique
-  referredBy    String?
   emailVerified DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   accounts      Account[]
-  cart          Cart?
-  orders        Order[]
   sessions      Session[]
-  addresses     UserAddress[]
   notifications Notification[]
 
-  // Marketing & Affiliate relations
-  affiliateProfile   AffiliateProfile?
-  flashSalePurchases FlashSalePurchase[]
-  voucherUsages      VoucherUserUsage[]
-
-  // Spin Wheel relations
-  spinWheelSpins SpinWheelSpin[]
-
   // ==========================================
-  // TICKETING FOUNDATION RELATIONS (additive)
+  // TICKETING FOUNDATION RELATIONS
   // ==========================================
   //
-  // Phase 2 — additive database foundation for the Event & Sports
-  // Ticketing domain. Nothing here is read or written by the existing
-  // retail application yet. `platformRole` is intentionally NULLABLE so
-  // no data is backfilled and the legacy `role` column keeps its exact
-  // current semantics; Phase 3 owns the population/backfill.
+  // `platformRole` is intentionally NULLABLE so no data was backfilled.
 
   platformRole PlatformRole?
 
@@ -119,369 +116,51 @@ model VerificationToken {
   @@map("verificationtoken")
 }
 
-model Product {
-  id          Int              @id @default(autoincrement())
-  name        String
-  slug        String           @unique
-  description String?          @db.Text
-  sold        Int              @default(0)
-  rating      Float            @default(0)
-  image       String?          @db.Text
-  category    String?
-  bestseller  Boolean          @default(false)
-  isArchived  Boolean          @default(false)
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  cartItems   CartItem[]
-  orderItems  OrderItem[]
-  variants    ProductVariant[]
 
-  // Marketing relations
-  discounts        ProductDiscount[]
-  flashSales       FlashSale[]
-  bulkDiscounts    BulkDiscount[]
-  campaignProducts CampaignProduct[]
-  voucherProducts  VoucherProduct[]
-  affiliateClicks  AffiliateClick[]
-
-  @@index([isArchived])
-  @@map("product")
-}
-
-model ProductVariant {
-  id         Int         @id @default(autoincrement())
-  name       String
-  price      Decimal     @db.Decimal(12, 2)
-  stock      Int         @default(0)
-  productId  Int
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
-  image      String?     @db.Text
-  weight     Int         @default(100)
-  cartItems  CartItem[]
-  orderItems OrderItem[]
-  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  // Marketing relations
-  discounts      ProductDiscount[]
-  flashSales     FlashSale[]
-  bulkDiscounts  BulkDiscount[]
-
-  @@index([productId])
-  @@map("productvariant")
-}
-
-model Cart {
-  id        Int        @id @default(autoincrement())
-  userId    String     @unique
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items     CartItem[]
-  @@map("cart")
-}
-
-model CartItem {
-  id        Int            @id @default(autoincrement())
-  cartId    Int
-  productId Int
-  variantId Int
-  quantity  Int            @default(1)
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  cart      Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  product   Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
-  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
-
-  @@unique([cartId, variantId])
-  @@index([productId])
-  @@index([variantId])
-  @@map("cartitem")
-}
-
-model UserAddress {
-  id                      String    @id @default(cuid())
-  userId                  String
-  label                   String?
-  recipientName           String
-  phone                   String
-  address                 String    @db.Text
-  province                String?
-  city                    String?
-  district                String?
-  subdistrict             String?
-  postalCode              String?
-  rajaOngkirDestinationId Int?
-  latitude                Decimal?  @db.Decimal(10, 7)
-  longitude               Decimal?  @db.Decimal(10, 7)
-  isDefault               Boolean   @default(false)
-  createdAt               DateTime  @default(now())
-  updatedAt               DateTime  @updatedAt
-  districtId              Int?
-  provinceId              Int?
-  regencyId               Int?
-  villageId               Int?
-  districtRef             District? @relation(fields: [districtId], references: [id])
-  provinceRef             Province? @relation(fields: [provinceId], references: [id])
-  regencyRef              Regency?  @relation(fields: [regencyId], references: [id])
-  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  villageRef              Village?  @relation(fields: [villageId], references: [id])
-
-  @@index([userId])
-  @@index([provinceId])
-  @@index([regencyId])
-  @@index([districtId])
-  @@index([villageId])
-  @@index([rajaOngkirDestinationId])
-  @@map("useraddress")
-}
-
-model Order {
-  id               Int                 @id @default(autoincrement())
-  userId           String
-  orderNumber      String              @unique
-  recipientName    String
-  phone            String
-  address          String              @db.Text
-  note             String?             @db.Text
-  subtotal         Decimal             @db.Decimal(12, 2)
-  shippingCost     Decimal             @db.Decimal(12, 2)
-  total            Decimal             @db.Decimal(12, 2)
-  status           Order_status        @default(PENDING)
-  paymentMethod    Order_paymentMethod @default(COD)
-  paymentStatus    Order_paymentStatus @default(UNPAID)
-  paidAt           DateTime?
-  shippingCourier  String?
-  shippingService  String?
-  trackingNumber   String?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  city             String?
-  district         String?
-  latitude         Decimal?            @db.Decimal(10, 7)
-  longitude        Decimal?            @db.Decimal(10, 7)
-  postalCode       String?
-  province         String?
-  paymentReference String?
-  voucherId        Int?
-  voucherCode      String?
-  discount         Decimal             @default(0) @db.Decimal(12, 2)
-  voucher          Voucher?            @relation(fields: [voucherId], references: [id])
-
-  // Shipping discount attribution (F9): which ongkir promo was applied.
-  shippingDiscountId Int?
-  shippingDiscount   ShippingDiscount? @relation(fields: [shippingDiscountId], references: [id], onDelete: SetNull)
-  shippingDiscountName String?
-  shippingDiscountAmount Decimal? @db.Decimal(12, 2)
-
-  trackingUrl      String?
-  user             User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  items            OrderItem[]
-  notifications    Notification[]
-
-  // Affiliate relation (optional)
-  affiliateConversion AffiliateConversion?
-
-  // Spin Wheel relation (optional)
-  spinWheelSpin SpinWheelSpin?
-
-  // F18: persistence of the EXACT spin consumed at checkout.
-  // Unlike spinWheelSpin.orderId (which is cleared when the spin is
-  // released on cancel), this keeps the identity so repayment can
-  // re-reserve the same spin instead of grabbing a different one.
-  originalSpinWheelSpinId Int?
-  originalSpinWheelSpin   SpinWheelSpin? @relation("OrderOriginalSpin", fields: [originalSpinWheelSpinId], references: [id], onDelete: SetNull)
-
-  // Refund relation (optional)
-  refund Refund?
-
-  @@index([userId])
-  @@index([status])
-  @@index([paymentStatus])
-  @@index([createdAt])
-  @@index([trackingNumber])
-  @@map("order")
-}
-
-model OrderItem {
-  id          Int             @id @default(autoincrement())
-  orderId     Int
-  productId   Int?
-  variantId   Int?
-  productName String
-  variantName String
-  price       Decimal         @db.Decimal(12, 2)
-  quantity    Int
-  subtotal    Decimal         @db.Decimal(12, 2)
-  order       Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product     Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
-  variant     ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
-
-  @@index([orderId])
-  @@index([productId])
-  @@index([variantId])
-  @@map("orderitem")
-}
-
+/// The platform identity singleton (one row, id = 1).
+///
+/// Read by the public legal/support pages (`/kontak`, `/syarat-ketentuan`, `/refund-policy`) through
+/// `lib/store-settings.ts`, which exposes only the fields below and never anything internal.
+///
+/// COLUMNS REMOVED WITH THE RETAIL APPLICATION: `tiktokPixelId` (retail analytics pixel),
+/// `rajaOngkirDestinationId` and the `*Id` region references (the courier origin address), and
+/// `latitude`/`longitude` (the map picker). None of them had a consumer left. The plain-text
+/// address fields stay: they are what the contact and legal pages print.
 model StoreSetting {
-  id        Int     @id @default(1)
-  storeName String
-  logo      String? @db.Text
-  email     String?
-  phone     String?
-  address   String  @db.Text
+  id          Int      @id @default(1)
+  storeName   String
+  logo        String?  @db.Text
+  email       String?
+  phone       String?
+  address     String   @db.Text
+  province    String?
+  city        String?
+  district    String?
+  subdistrict String?
+  postalCode  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  // TikTok Pixel
-  tiktokPixelId String?
-
-  province                String?
-  city                    String?
-  district                String?
-  subdistrict             String?
-  postalCode              String?
-  rajaOngkirDestinationId Int?
-  latitude                Decimal? @db.Decimal(10, 7)
-  longitude               Decimal? @db.Decimal(10, 7)
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
-  cityId                  Int?
-  districtId              Int?
-  provinceId              Int?
-  subdistrictId           Int?
   @@map("storesetting")
 }
 
-model Province {
-  id        Int           @id
-  name      String
-  regencies Regency[]
-  addresses UserAddress[]
-
-  @@index([name])
-  @@map("province")
-}
-
-model Regency {
-  id         Int           @id
-  provinceId Int
-  name       String
-  districts  District[]
-  province   Province      @relation(fields: [provinceId], references: [id], onDelete: Cascade)
-  addresses  UserAddress[]
-
-  @@index([provinceId])
-  @@index([name])
-  @@map("regency")
-}
-
-model District {
-  id        Int           @id
-  regencyId Int
-  name      String
-  regency   Regency       @relation(fields: [regencyId], references: [id], onDelete: Cascade)
-  addresses UserAddress[]
-  villages  Village[]
-
-  @@index([regencyId])
-  @@index([name])
-  @@map("district")
-}
-
-model Village {
-  id         Int           @id
-  districtId Int
-  name       String
-  postalCode String?
-  addresses  UserAddress[]
-  district   District      @relation(fields: [districtId], references: [id], onDelete: Cascade)
-
-  @@index([districtId])
-  @@index([name])
-  @@index([postalCode])
-  @@map("village")
-}
-
-model RajaOngkirRegion {
-  id            Int      @id @default(autoincrement())
-  destinationId Int      @unique
-  provinceId    Int?
-  province      String?
-  cityId        Int?
-  city          String?
-  districtId    Int?
-  district      String?
-  subdistrictId Int?
-  subdistrict   String?
-  postalCode    String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  @@map("rajaongkirregion")
-}
-
-model Voucher {
-  id          Int          @id @default(autoincrement())
-  code        String       @unique
-  description String?
-  type        Voucher_type
-  value       Decimal      @db.Decimal(12, 2)
-
-  /**
-   * Cap nominal maksimal diskon, khusus tipe PERCENTAGE.
-   * Contoh: diskon 20% tapi maksimal Rp 50.000.
-   * Diabaikan kalau type = FIXED.
-   */
-  maxDiscount Decimal? @db.Decimal(12, 2)
-
-  /**
-   * Minimal subtotal belanja supaya voucher bisa dipakai.
-   * null = tidak ada minimal.
-   */
-  minPurchase Decimal? @db.Decimal(12, 2)
-
-  /**
-   * Kuota total pemakaian voucher ini (semua user).
-   * null = tidak terbatas.
-   */
-  quota     Int?
-  usedCount Int  @default(0)
-
-  isActive  Boolean   @default(true)
-  startDate DateTime?
-  endDate   DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  orders Order[]
-
-  // Marketing & Voucher extension relations
-  campaignId           Int?
-  campaign             Campaign?          @relation(fields: [campaignId], references: [id])
-  maxUsagePerUser      Int?
-  eligibility          VoucherEligibility @default(ALL)
-  productRestrictions  VoucherProduct[]
-  categoryRestrictions VoucherCategory[]
-  userUsages           VoucherUserUsage[]
-
-  @@index([isActive])
-  @@map("voucher")
-}
-
 // ==========================================
-// EXISTING ENUMS (UNCHANGED)
+// LEGACY ROLE ENUM
 // ==========================================
 
-enum Voucher_type {
-  PERCENTAGE
-  FIXED
-}
-
-enum VoucherEligibility {
-  ALL
-  NEW_USER
-  RETURNING_USER
-}
-
+/// The legacy `User.role` enum.
+///
+/// KEPT DELIBERATELY, WITH ITS FULL VALUE SET. `User.role` is NOT NULL with a `CUSTOMER` default and
+/// is typed on the Auth.js session contract (`types/next-auth.d.ts`), so the enum has to exist.
+///
+/// Its retail-era values are retained rather than trimmed because removing an enum value is an
+/// `ALTER TABLE ... MODIFY COLUMN` against a live column — a destructive migration, which this
+/// change deliberately does not perform. `AFFILIATOR` in particular belonged to the deleted retail
+/// affiliate programme: nothing reads or writes it any more (the affiliate role, its dashboards and
+/// its registration path were all removed), so it is a dormant value on a dormant column.
+///
+/// Authority in the ticketing product is carried by `platformRole` plus `lib/authz`, never by this
+/// enum — see `lib/authz/scope.ts`.
 enum Role {
   ADMIN
   SELLER
@@ -489,68 +168,35 @@ enum Role {
   AFFILIATOR
 }
 
-enum Order_status {
-  PENDING
-  PAID
-  PROCESSING
-  SHIPPED
-  COMPLETED
-  CANCELLED
-  REFUND_PENDING
-}
-
-enum Order_paymentStatus {
-  UNPAID
-  PENDING
-  PAID
-  FAILED
-  EXPIRED
-  REFUNDED
-}
-
-enum Order_paymentMethod {
-  COD
-  BANK_TRANSFER
-  E_WALLET
-  QRIS
-}
-
-enum Notification_status {
-  QUEUED
-  PROCESSING
-  SENT
-  FAILED
-}
-
+/// Outbound notification record, and the parent of `NotificationDelivery`.
+///
+/// This row used to be written by the retail order-status notifier, which is why it carried
+/// `orderId` (the retail order), a free-text `notificationType` and a `Notification_status`
+/// enqueue state. All three were removed with that writer: the ticketing side is described by the
+/// typed columns below (`category`, `recipientType`, `eventOrderId`, `ticketId`, `eventId`,
+/// `organizerId`, `picProfileId`) and per-channel state lives on `NotificationDelivery`.
+///
+/// No ticketing code writes this table yet — it is the documented delivery foundation (design §22),
+/// kept because `NotificationDelivery` references it and because deleting it would remove that
+/// foundation rather than dead retail code.
 model Notification {
-  id                Int                 @id @default(autoincrement())
-  orderId           Int?
+  id                Int      @id @default(autoincrement())
   userId            String?
   channel           String
-  notificationType  String
   recipient         String
-  idempotencyKey    String              @unique
+  idempotencyKey    String   @unique
   providerMessageId String?
-  payload           String?             @db.Text
-  status            Notification_status @default(QUEUED)
+  payload           String?  @db.Text
   errorCode         String?
-  errorMessage      String?             @db.Text
-  retryCount        Int                 @default(0)
-  maxRetries        Int                 @default(3)
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-
-  order Order? @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  user  User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  errorMessage      String?  @db.Text
+  retryCount        Int      @default(0)
+  maxRetries        Int      @default(3)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   // ==========================================
-  // TICKETING FOUNDATION (additive, nullable)
+  // TICKETING SUBJECT (all nullable)
   // ==========================================
-  //
-  // Event & Sports Ticketing notifications (e-ticket delivery, payment
-  // events, PIC fee events). All columns are nullable so the existing
-  // retail notification writer keeps working unchanged. `orderId` keeps
-  // its retail meaning (Order); `eventOrderId` is the ticketing order.
 
   eventOrderId  String?
   ticketId      String?
@@ -562,6 +208,7 @@ model Notification {
   templateKey   String?
   priority      Int?
 
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
   eventOrder EventOrder? @relation(fields: [eventOrderId], references: [id], onDelete: SetNull)
   ticket     Ticket?     @relation(fields: [ticketId], references: [id], onDelete: SetNull)
   event      Event?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
@@ -570,567 +217,28 @@ model Notification {
 
   deliveries NotificationDelivery[]
 
-  @@index([orderId])
   @@index([userId])
-  @@index([status])
   @@index([channel])
-  @@index([notificationType])
   @@index([eventOrderId])
   @@index([ticketId])
   @@index([organizerId])
   @@map("notification")
 }
-
 // ==========================================
-// MARKETING CORE — NEW MODELS
-// ==========================================
-
-// ------------------------------------------
-// 2.1 CAMPAIGN
-// ------------------------------------------
-
-model Campaign {
-  id          Int     @id @default(autoincrement())
-  name        String
-  slug        String  @unique
-  description String? @db.Text
-  bannerUrl   String? @db.Text
-  code        String? @unique
-
-  type   CampaignType   @default(GENERAL)
-  status CampaignStatus @default(DRAFT)
-
-  startAt DateTime
-  endAt   DateTime
-
-  // Campaign-wide discount configuration
-  discountType  Voucher_type?
-  discountValue Decimal?      @db.Decimal(12, 2)
-  maxDiscount   Decimal?      @db.Decimal(12, 2)
-
-  priority Int @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  products   CampaignProduct[]
-  categories CampaignCategory[]
-  vouchers   Voucher[]
-
-  @@index([status])
-  @@index([startAt, endAt])
-  @@map("campaign")
-}
-
-model CampaignProduct {
-  id         Int      @id @default(autoincrement())
-  campaignId Int
-  productId  Int
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([campaignId, productId])
-  @@index([campaignId])
-  @@index([productId])
-  @@map("campaignproduct")
-}
-
-model CampaignCategory {
-  id         Int      @id @default(autoincrement())
-  campaignId Int
-  category   String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-
-  @@unique([campaignId, category])
-  @@index([campaignId])
-  @@map("campaigncategory")
-}
-
-enum CampaignType {
-  GENERAL
-  FLASH_SALE
-  CATEGORY_DISCOUNT
-  PRODUCT_DISCOUNT
-}
-
-enum CampaignStatus {
-  DRAFT
-  SCHEDULED
-  ACTIVE
-  ENDED
-  CANCELLED
-}
-
-// ------------------------------------------
-// 3. PRODUCT DISCOUNT
-// ------------------------------------------
-
-model ProductDiscount {
-  id        Int  @id @default(autoincrement())
-  productId Int
-  variantId Int?
-
-  type        Voucher_type
-  value       Decimal      @db.Decimal(12, 2)
-  maxDiscount Decimal?     @db.Decimal(12, 2)
-
-  startAt  DateTime
-  endAt    DateTime
-  isActive Boolean  @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
-  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
-
-  @@index([productId])
-  @@index([variantId])
-  @@index([isActive, startAt, endAt])
-  @@map("productdiscount")
-}
-
-// ------------------------------------------
-// 4. FLASH SALE
-// ------------------------------------------
-
-model FlashSale {
-  id        Int    @id @default(autoincrement())
-  name      String
-  productId Int
-  variantId Int
-
-  salePrice     Decimal @db.Decimal(12, 2)
-  saleStock     Int
-  soldCount     Int     @default(0)
-  purchaseLimit Int?    @default(1)
-
-  startAt  DateTime
-  endAt    DateTime
-  isActive Boolean  @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  product   Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
-  variant   ProductVariant      @relation(fields: [variantId], references: [id], onDelete: Cascade)
-  purchases FlashSalePurchase[]
-
-  @@unique([variantId])
-  @@index([isActive, startAt, endAt])
-  @@index([variantId])
-  @@map("flashsale")
-}
-
-model FlashSalePurchase {
-  id          Int    @id @default(autoincrement())
-  flashSaleId Int
-  userId      String
-  quantity    Int
-
-  createdAt DateTime @default(now())
-
-  flashSale FlashSale @relation(fields: [flashSaleId], references: [id], onDelete: Cascade)
-  user      User      @relation(fields: [userId], references: [id])
-
-  @@unique([flashSaleId, userId])
-  @@index([flashSaleId])
-  @@index([userId])
-  @@map("flashsalepurchase")
-}
-
-// ------------------------------------------
-// 6. PROMOTION / BANNER
-// ------------------------------------------
-
-model Promotion {
-  id        Int                @id @default(autoincrement())
-  title     String
-  imageUrl  String             @db.Text
-  link      String?            @db.Text
-  placement PromotionPlacement @default(HOMEPAGE)
-
-  priority Int     @default(0)
-  isActive Boolean @default(true)
-
-  startAt DateTime?
-  endAt   DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([placement, isActive])
-  @@index([startAt, endAt])
-  @@map("promotion")
-}
-
-enum PromotionPlacement {
-  HOMEPAGE
-  CAMPAIGN
-  CATEGORY
-  PRODUCT
-}
-
-// ==========================================
-// VOUCHER EXTENSIONS — NEW MODELS
-// ------------------------------------------
-// 7.1 VOUCHER PRODUCT
-// ------------------------------------------
-
-model VoucherProduct {
-  id        Int     @id @default(autoincrement())
-  voucherId Int
-  productId Int
-  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
-  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([voucherId, productId])
-  @@index([voucherId])
-  @@index([productId])
-  @@map("voucherproduct")
-}
-
-// ------------------------------------------
-// 7.2 VOUCHER CATEGORY
-// ------------------------------------------
-
-model VoucherCategory {
-  id        Int     @id @default(autoincrement())
-  voucherId Int
-  category  String
-  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
-
-  @@unique([voucherId, category])
-  @@index([voucherId])
-  @@map("vouchercategory")
-}
-
-// ------------------------------------------
-// 7.3 VOUCHER USER USAGE
-// ------------------------------------------
-
-model VoucherUserUsage {
-  id         Int    @id @default(autoincrement())
-  voucherId  Int
-  userId     String
-  usageCount Int    @default(1)
-
-  voucher Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id])
-
-  @@unique([voucherId, userId])
-  @@index([voucherId])
-  @@index([userId])
-  @@map("voucheruserusage")
-}
-
-// ==========================================
-// BULK DISCOUNT (BELI BANYAK LEBIH HEMAT)
+// AUDIT LOG
 // ==========================================
 
-model BulkDiscount {
-  id        Int    @id @default(autoincrement())
-  name      String
-  productId Int
-  variantId Int?
-
-  minQuantity Int
-  type        Voucher_type
-  value       Decimal @db.Decimal(12, 2)
-  maxDiscount Decimal? @db.Decimal(12, 2)
-
-  startAt  DateTime
-  endAt    DateTime
-  isActive Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  product Product         @relation(fields: [productId], references: [id], onDelete: Cascade)
-  variant ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
-
-  @@index([productId])
-  @@index([variantId])
-  @@index([isActive, startAt, endAt])
-  @@map("bulkdiscount")
-}
-
-// ==========================================
-// SHIPPING DISCOUNT (DISKON ONGKIR)
-// ==========================================
-
-model ShippingDiscount {
-  id             Int     @id @default(autoincrement())
-  name           String
-  code           String? @unique
-
-  type           Voucher_type
-  value          Decimal @db.Decimal(12, 2)
-  maxDiscount    Decimal? @db.Decimal(12, 2)
-  minPurchase    Decimal? @db.Decimal(12, 2)
-
-  /**
-   * Kuota total pemakaian diskon ongkir (semua user).
-   * null = tidak terbatas.
-   */
-  quota Int?
-  usedCount Int @default(0)
-  maxUsagePerUser Int?
-
-  startAt  DateTime
-  endAt    DateTime
-  isActive Boolean @default(true)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  orders Order[]
-
-  @@index([isActive, startAt, endAt])
-  @@index([code])
-  @@map("shippingdiscount")
-}
-
-// ==========================================
-// BROADCAST SYSTEM
-// ==========================================
-
-model Broadcast {
-  id          Int    @id @default(autoincrement())
-  name        String
-  type        BroadcastType
-  channel     NotificationChannel
-
-  subject     String? @db.Text
-  message     String  @db.Text
-  imageUrl    String? @db.Text
-  link        String? @db.Text
-
-  status      BroadcastStatus @default(DRAFT)
-  scheduledAt DateTime?
-  sentAt      DateTime?
-
-  audienceCount Int @default(0)
-  sentCount     Int @default(0)
-  failedCount   Int @default(0)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([type])
-  @@index([status])
-  @@index([createdAt])
-  @@map("broadcast")
-}
-
-enum BroadcastType {
-  BEST_SELLER
-  NEW_PRODUCT
-  BUY_AGAIN
-  INACTIVE_BUYER
-  PRICE_DROP
-  CART_REMINDER
-  CHECKOUT_REMINDER
-  THANK_YOU
-}
-
-enum NotificationChannel {
-  whatsapp
-  email
-  sms
-  push
-}
-
-enum BroadcastStatus {
-  DRAFT
-  SCHEDULED
-  SENDING
-  COMPLETED
-  FAILED
-}
-
-// ==========================================
-// AFFILIATE SYSTEM — NEW MODELS
-// ==========================================
-
-// ------------------------------------------
-// 8.1 AFFILIATE PROFILE
-// ------------------------------------------
-
-model AffiliateProfile {
-  id             Int             @id @default(autoincrement())
-  userId         String          @unique
-  status         AffiliateStatus @default(PENDING)
-  affiliateCode  String          @unique
-  commissionRate Decimal         @default(5.00) @db.Decimal(5, 2)
-
-  rejectionReason String?
-  approvedAt      DateTime?
-  approvedBy      String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user        User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  kyc         AffiliateKyc?
-  clicks      AffiliateClick[]
-  conversions AffiliateConversion[]
-  payouts     AffiliatePayout[]
-
-  @@index([status])
-  @@map("affiliateprofile")
-}
-
-enum AffiliateStatus {
-  PENDING
-  APPROVED
-  REJECTED
-  SUSPENDED
-}
-
-// ------------------------------------------
-// 8.2 AFFILIATE KYC
-// ------------------------------------------
-
-model AffiliateKyc {
-  id          Int @id @default(autoincrement())
-  affiliateId Int @unique
-
-  // KTP (ID card)
-  ktpImageUrl String? @db.Text
-  ktpName     String?
-  ktpNumber   String?
-
-  // Social media
-  socialMediaPlatform String?
-  socialMediaUsername String?
-  socialMediaUrl      String? @db.Text
-
-  // Bank account
-  bankName          String
-  bankAccountName   String
-  bankAccountNumber String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  affiliate AffiliateProfile @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
-  @@map("affiliatekyc")
-}
-
-// ------------------------------------------
-// 9. AFFILIATE CLICKS / TRACKING
-// ------------------------------------------
-
-model AffiliateClick {
-  id          Int     @id @default(autoincrement())
-  affiliateId Int
-  code        String
-  sessionId   String?
-  productId   Int?
-  landingUrl  String? @db.Text
-
-  createdAt DateTime @default(now())
-
-  affiliate AffiliateProfile @relation(fields: [affiliateId], references: [id], onDelete: Cascade)
-  product   Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
-
-  @@index([affiliateId])
-  @@index([code])
-  @@index([sessionId])
-  @@index([createdAt])
-  @@map("affiliateclick")
-}
-
-// ------------------------------------------
-// 10. AFFILIATE CONVERSION
-// ------------------------------------------
-
-model AffiliateConversion {
-  id            Int    @id @default(autoincrement())
-  affiliateId   Int
-  orderId       Int    @unique
-  affiliateCode String
-
-  orderSubtotal    Decimal @db.Decimal(12, 2)
-  commissionRate   Decimal @db.Decimal(5, 2)
-  commissionAmount Decimal @db.Decimal(12, 2)
-
-  status AffiliateConversionStatus @default(PENDING)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  affiliate AffiliateProfile @relation(fields: [affiliateId], references: [id], onDelete: Restrict)
-  order     Order            @relation(fields: [orderId], references: [id], onDelete: Restrict)
-
-  @@index([affiliateId])
-  @@index([status])
-  @@map("affiliateconversion")
-}
-
-enum AffiliateConversionStatus {
-  PENDING
-  APPROVED
-  CANCELLED
-  REVERSED
-  PAID
-}
-
-// ------------------------------------------
-// 11. AFFILIATE PAYOUT
-// ------------------------------------------
-
-model AffiliatePayout {
-  id          Int                   @id @default(autoincrement())
-  affiliateId Int
-  amount      Decimal               @db.Decimal(12, 2)
-  status      AffiliatePayoutStatus @default(PENDING)
-
-  // Bank info snapshot
-  bankName          String
-  bankAccountName   String
-  bankAccountNumber String
-
-  requestedAt     DateTime  @default(now())
-  processedAt     DateTime?
-  processedBy     String?
-  rejectionReason String?
-
-  // Provider/disbursement fields
-  providerTransactionId String?
-  providerReference     String?
-  idempotencyKey        String?   @unique
-  paidAt                DateTime?
-  failedAt              DateTime?
-  failureReason         String?   @db.Text
-  providerStatus        String?
-  proofFilePath         String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  affiliate AffiliateProfile @relation(fields: [affiliateId], references: [id], onDelete: Restrict)
-
-  @@index([affiliateId])
-  @@index([status])
-  @@index([providerTransactionId])
-  @@map("affiliatepayout")
-}
-
-enum AffiliatePayoutStatus {
-  PENDING
-  PROCESSING
-  PAID
-  REJECTED
-  FAILED
-  CANCELLED
-}
-
-// ------------------------------------------
-// 12. ADMIN AUDIT LOG
-// ------------------------------------------
-
+/// Append-only administrative audit trail.
+///
+/// Written by `lib/ticketing/audit-log.ts`. Two columns predate ticketing and are RETAINED rather
+/// than dropped, because removing them is a destructive column drop on a live table:
+///
+///   * `adminId`   — NOT NULL string; the ticketing writer records the acting user id in it.
+///   * `entityId`  — `Int`, sized for the retail autoincrement ids. Ticketing entities are cuid
+///                   strings, so they use the additive `entityRef` column instead.
+///
+/// The columns that remove the `adminId = "SYSTEM"|"PROVIDER"` overload (`actorType`,
+/// `actorUserId`, ...) were already present and are unchanged.
 model AdminAuditLog {
   id          Int      @id @default(autoincrement())
   adminId     String
@@ -1140,19 +248,6 @@ model AdminAuditLog {
   description String
   metadata    Json?
   createdAt   DateTime @default(now())
-
-  // ==========================================
-  // TICKETING FOUNDATION (additive, nullable)
-  // ==========================================
-  //
-  // `adminId` stays required for the existing retail writer. The new
-  // columns remove the "adminId = SYSTEM/PROVIDER" overload by recording
-  // an explicit actor type, and add tenant scope plus before/after state
-  // for future financial auditing.
-  //
-  // `entityId` is Int and cannot be widened without altering the retail
-  // column, so new (cuid-keyed) entities use the additive `entityRef`
-  // column instead.
 
   actorType        AuditActorType?
   actorUserId      String?
@@ -1182,133 +277,51 @@ model AdminAuditLog {
 }
 
 // ==========================================
-// SPIN WHEEL PROMO SYSTEM
+// TICKETING REFUND
 // ==========================================
 
-model SpinWheelCampaign {
-  id              Int      @id @default(autoincrement())
-  name            String
-  slug            String   @unique
-  description     String?  @db.Text
-  minimumSpend    Decimal  @db.Decimal(12, 2) @default(0)
-  maxSpinsPerUser Int      @default(0) // 0 or 1 = no cap; >1 = lifetime cap
-  startAt         DateTime
-  endAt           DateTime
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  rewards SpinWheelReward[]
-  spins   SpinWheelSpin[]
-
-  @@index([isActive])
-  @@index([startAt, endAt])
-  @@map("spinwheelcampaign")
-}
-
-model SpinWheelReward {
-  id            Int                    @id @default(autoincrement())
-  campaignId    Int
-  name          String
-  type          SpinWheelRewardType
-  value         Decimal                @db.Decimal(12, 2)
-  maxDiscount   Decimal?               @db.Decimal(12, 2)
-  weight        Int                    @default(1)
-  totalQuantity Int?
-  usedQuantity  Int                    @default(0)
-  isActive      Boolean                @default(true)
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
-
-  campaign SpinWheelCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  spins    SpinWheelSpin[]
-
-  @@index([campaignId])
-  @@index([isActive])
-  @@map("spinwheelreward")
-}
-
-model SpinWheelSpin {
-  id         Int                   @id @default(autoincrement())
-  campaignId Int
-  userId     String
-  rewardId   Int
-  status     SpinWheelSpinStatus   @default(AVAILABLE)
-  expiresAt  DateTime?
-  usedAt     DateTime?
-  orderId    Int?    @unique
-  createdAt  DateTime              @default(now())
-  updatedAt  DateTime              @updatedAt
-
-  campaign SpinWheelCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reward   SpinWheelReward    @relation(fields: [rewardId], references: [id], onDelete: Restrict)
-  order    Order?             @relation(fields: [orderId], references: [id], onDelete: SetNull)
-
-  // F18: orders whose ORIGINAL spin this record was (identity kept
-  // across release-on-cancel so repayment can reuse this exact spin).
-  originatedOrders Order[] @relation("OrderOriginalSpin")
-
-  @@index([campaignId])
-  @@index([userId])
-  @@index([status])
-  @@map("spinwheelspin")
-}
-
-enum SpinWheelRewardType {
-  PERCENTAGE
-  FIXED
-  FREE_SHIPPING
-  CASHBACK
-  ZONK
-}
-
-enum SpinWheelSpinStatus {
-  AVAILABLE
-  USED
-  EXPIRED
-  CANCELLED
-}
-
-// ==========================================
-// REFUND SYSTEM
-// ==========================================
-
+/// The refund header. `RefundItem` carries the per-ticket lines and `PICFeeLedger` carries the
+/// fee treatment, so this row is the group they hang from.
+///
+/// Ticketing refunds are addressed by `eventOrderId`. The retail `Order` columns
+/// (`orderId`, `amount`, `status`, `requestedBy`, `processedBy`, `providerRef`) were removed
+/// with the retail application; the ticketing lifecycle columns below were added by Phase 10B.
+///
+/// MONEY SEMANTICS (D-R14): `requestedAmount` is what the requester asked for,
+/// `confirmedAmount` is what the provider actually confirmed. `EventOrder.refundedAmount`
+/// is advanced ONLY from `confirmedAmount`, in the settlement transaction.
 model Refund {
-  id          Int          @id @default(autoincrement())
-  orderId     Int          @unique
-  amount      Decimal      @db.Decimal(12, 2)
-  reason      String?      @db.Text
-  status      RefundStatus @default(PENDING)
-  requestedBy String       // userId or "ADMIN"
-  processedBy String?      // admin userId who approved/processed
-  providerRef String?      // provider refund transaction reference
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-
-  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
-
-  // ==========================================
-  // TICKETING FOUNDATION (additive, nullable)
-  // ==========================================
-  //
-  // The retail refund path (orderId + amount + status) is untouched.
-  // These columns exist so a future ticketing refund can be recorded per
-  // ticket. `orderId` stays NOT NULL UNIQUE for retail; ticketing refunds
-  // reference `eventOrderId`. No retail refund behaviour changes and no
-  // business rule is applied by adding these columns.
-  //
-  // NOTE: the existing RefundStatus enum is deliberately NOT modified
-  // (adding REJECTED would alter the retail column definition). See the
-  // Phase 2 report, section 9.
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   refundNumber      String?              @unique
   organizerId       String?
   eventOrderId      String?
   requestedByUserId String?
   requestedByRole   String?
+  requestedAmount   Decimal              @default(0) @db.Decimal(14, 2)
+  confirmedAmount   Decimal              @default(0) @db.Decimal(14, 2)
+  reason            String?              @db.Text
+  status            RefundStatus         @default(PENDING)
   approvedByUserId  String?
   approvedAt        DateTime?
+  /// The staff member who ran execution (D-R02: the buyer can never be this).
+  processedByUserId String?
+  processedAt       DateTime?
+  /// The provider's own refund reference, persisted when it returns one (D-R12).
+  ///
+  /// PHASE 18B (D-P17-04 = B): the production refund rail is a MANUAL BANK TRANSFER, so
+  /// this column carries the operator's bank/transfer reference instead — the reference
+  /// a buyer would quote in a dispute. It is still written only by the settlement path.
+  providerRef       String?
+  completedAt       DateTime?
+  failedAt          DateTime?
+  failureReason     String?              @db.Text
+  /// PHASE 18B: the operator's evidence note for a manually settled refund. A refund may
+  /// only reach REFUNDED once the operator has recorded transfer evidence (reference +
+  /// this note), so the row itself explains how the money left the platform.
+  evidenceNote      String?              @db.Text
   feeTreatment      RefundFeeTreatment?
   idempotencyKey    String?              @unique
 
@@ -1317,27 +330,24 @@ model Refund {
   items      RefundItem[]
   feeEntries PICFeeLedger[]
 
-  @@index([status])
   @@index([createdAt])
   @@index([organizerId])
   @@index([eventOrderId])
+  @@index([organizerId, status, createdAt])
+  @@index([status])
   @@map("refund")
 }
 
-enum RefundStatus {
-  PENDING
-  PROCESSING
-  COMPLETED
-  FAILED
-}
 
 // =====================================================================
-// =====================================================================
 //
-//   EVENT & SPORTS TICKETING FOUNDATION  (Phase 2 — additive)
+//   EVENT & SPORTS TICKETING DOMAIN
 //
-//   Everything below is NEW. No existing model, column, enum, index or
-//   relation above this line is renamed, dropped or re-typed by it.
+//   Everything below is the ticketing product. The retail marketplace that
+//   used to sit above it — products, variants, cart, shipping addresses,
+//   courier regions, shipping/bulk discounts, vouchers, campaigns, flash
+//   sales, promotions, broadcasts, the affiliate programme and the spin
+//   wheel — was removed from both the application and this schema.
 //
 //   Design source of truth: TICKETING_PHASE1_DESIGN.md
 //   Audit baseline:         TICKETING_REBUILD_AUDIT.md
@@ -1346,15 +356,20 @@ enum RefundStatus {
 //   Tenant: every organizer-owned table carries `organizerId`.
 //   Unresolved commercial decisions are NOT encoded as data defaults.
 //
-// =====================================================================
+//   NOTE ON DATABASE MIGRATIONS: the retail tables still exist physically in
+//   the deployed MySQL database. Dropping them is a destructive migration and
+//   was deliberately NOT performed here — see the final report. Removing the
+//   models from this file is what removes the code paths; the tables can be
+//   dropped separately, with a backup, when the operator decides to.
+//
 // =====================================================================
 
 // ---------------------------------------------------------------------
 // TICKETING ENUMS
 // ---------------------------------------------------------------------
 
-/// Platform-wide role, orthogonal to the legacy retail `UserRole`.
-/// NULLABLE on User so the retail `role` column is untouched.
+/// Platform-wide role — the authority dimension `lib/authz` reads.
+/// NULLABLE on User, and deliberately independent of the legacy `Role` column.
 enum PlatformRole {
   CUSTOMER
   ADMIN
@@ -1481,6 +496,11 @@ enum CheckInMethod {
 
 /// Every distinguishable outcome, including failures, so rejected scans
 /// are also auditable (design §20.2).
+///
+/// `REFUND_PENDING` (Phase 15, decision D-28 / P14-D15) records the refusal of a ticket
+/// that is claimed by an OPEN refund request (`PENDING | APPROVED | PROCESSING`). The
+/// value is appended rather than inserted, so existing rows keep their ordinal meaning.
+/// Migration: `20260919000000_add_event_lifecycle_and_joblock`.
 enum CheckInResult {
   SUCCESS
   DUPLICATE
@@ -1489,6 +509,7 @@ enum CheckInResult {
   WRONG_EVENT
   UNPAID
   TICKET_NOT_FOUND
+  REFUND_PENDING
 }
 
 enum PICStatus {
@@ -1578,6 +599,27 @@ enum RefundFeeTreatment {
   REVERSED
   RETAINED
   ADJUSTED
+}
+
+/// Ticketing refund lifecycle (design §18.2 / business policy D-R07).
+///
+///   PENDING     requested by the buyer or staff, awaiting a decision
+///   APPROVED    authorised; quota has NOT moved yet
+///   REJECTED    refused; terminal, nothing moved
+///   PROCESSING  execution started; the provider call is in flight
+///   REFUNDED    provider confirmed settlement; quota restored, ledger reversed
+///   FAILED      provider refused / unavailable; nothing moved, retryable
+///
+/// `REFUNDED` is the ONLY state in which money, quota and ticket status are treated
+/// as reversed (D-R06 / D-R14 / D-R15). A `PENDING` or `APPROVED` refund never
+/// restores inventory.
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSING
+  REFUNDED
+  FAILED
 }
 
 enum NotificationRecipientType {
@@ -1855,6 +897,12 @@ model Event {
   publishedAt     DateTime?
   cancelledAt     DateTime?
   cancelReason    String?         @db.Text
+  /// When the platform OBSERVED the transition to COMPLETED (Phase 15, P14-D04/D20).
+  /// The scheduled instant stays derivable as `endAt + 30 minutes`; this column records
+  /// the observation, exactly as `Ticket.checkedInAt` records the server clock.
+  /// There is deliberately no `ongoingAt`: ONGOING is derived from `startAt` and needs
+  /// no stored trace.
+  completedAt     DateTime?
   archivedAt      DateTime?
   createdByUserId String
   createdAt       DateTime        @default(now())
@@ -2171,6 +1219,32 @@ model Payment {
   paymentReference    String             @unique
   paymentUrl          String?            @db.Text
   expiresAt           DateTime?
+  /// ── DIRECT-PAYMENT INSTRUCTIONS (iPaymu Direct Payment API) ────────────────
+  /// Which provider flow produced this row's instruction. `DIRECT` means iPaymu
+  /// returned the payment instrument itself (QR/VA) and this application renders
+  /// it; `REDIRECT` means the provider returned a hosted page URL and the buyer
+  /// pays there. Recorded as a value rather than inferred from which columns are
+  /// populated, so an old payment can still be explained after a provider change.
+  providerFlow        String?
+  /// The instrument number: the virtual-account number or convenience-store
+  /// payment code, or — for QRIS — the provider's `PaymentNo` payload. NULL for a
+  /// redirect session.
+  paymentNumber       String?
+  /// QRIS payload exactly as returned (`QrString`). NOT re-generated locally and
+  /// NOT derived from `paymentNumber`: the gateway's bytes are the only ones a
+  /// buyer's wallet can decode, so they are stored verbatim.
+  qrString            String?            @db.Text
+  /// Provider-hosted QR image for `qrString` (`QrImage`).
+  qrImageUrl          String?            @db.Text
+  /// The provider's own display name for the instrument (`PaymentName`, e.g.
+  /// "iPaymu PT DEMO IPAYMU"), shown beside the number so the buyer can see
+  /// which merchant/bank issued it.
+  paymentName         String?
+  /// The provider's OWN expiry instant, parsed from the direct response's
+  /// `Expired`. Distinct from `expiresAt`, which is this platform's reservation
+  /// window; both are kept because they answer different questions and only the
+  /// first is a statement the provider made.
+  providerExpiredAt   DateTime?
   createdByUserId     String?
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
@@ -2595,6 +1669,36 @@ model IdempotencyKey {
   @@unique([userId, scope, key])
   @@index([expiresAt])
   @@map("idempotencykey")
+}
+
+/// ==========================================
+/// JOB RUNNER LEASE (Phase 15 — P14-D09 / P14-D10)
+/// ==========================================
+///
+/// ONE ROW PER JOB. The DB-backed tick route (`POST /api/internal/jobs/tick`) runs two
+/// jobs — `event-lifecycle` and `reservation-reaper` — and each one claims its row with a
+/// conditional UPDATE:
+///
+///     UPDATE joblock SET lockedUntil = :lease WHERE name = :name
+///       AND (lockedUntil IS NULL OR lockedUntil < :now)
+///
+/// `count === 1` means this invocation owns the job; a second concurrent invocation cannot
+/// claim an active lease, and a crashed run's lease is taken over once it expires. The
+/// lease is an efficiency/observability guard only: correctness comes from the conditional
+/// status updates each job performs, so two runs would still be a no-op rather than a
+/// double transition.
+///
+/// This replaces the alternative of an in-process timer, a process-local mutex or Redis —
+/// all of which the Phase 14 decision lock forbids on a single-VPS deployment.
+model JobLock {
+  name        String    @id @db.VarChar(64)
+  lockedUntil DateTime?
+  lockedBy    String?   @db.VarChar(64)
+  lastRunAt   DateTime?
+  lastStatus  String?   @db.VarChar(32)
+  updatedAt   DateTime  @updatedAt
+
+  @@map("joblock")
 }
 
 /// Single-row platform configuration. No fee percentage is seeded: the

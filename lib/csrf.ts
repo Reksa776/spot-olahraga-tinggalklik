@@ -27,11 +27,11 @@ import { auth } from "@/auth";
  *
  * ADOPTION
  * --------
- * `requireSameOrigin` is deliberately NOT wired into existing retail routes.
- * Phase 3 owns the authorization boundary, and silently changing the request
- * contract of live retail endpoints is exactly what the phase 3 brief §14 tells
- * us to avoid. New ticketing routes should call it for state-changing methods;
- * the existing routes are documented as a follow-up in
+ * `requireSameOrigin` was deliberately NOT wired into the retail routes that existed when
+ * Phase 3 owned the authorization boundary, because silently changing the request contract
+ * of live endpoints was exactly what the phase 3 brief §14 told us to avoid. Those retail
+ * routes have since been deleted with the rest of the retail application, so today every
+ * state-changing route in the tree calls it; the original follow-up is recorded in
  * TICKETING_PHASE3_REPORT.md §14.
  */
 

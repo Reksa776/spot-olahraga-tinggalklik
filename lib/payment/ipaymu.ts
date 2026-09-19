@@ -153,7 +153,25 @@ export type IpaymuPaymentChannel =
     | "cimb"
     | "danamon"
     | "bmi"
-    | "qris";
+    | "qris"
+    // Channel codes the DIRECT endpoint documents and the redirect endpoint does not. They
+    // are part of this union because the same channel value travels to whichever endpoint
+    // the chosen method uses, and a code that is valid for one is not a type error for the
+    // other — the provider, not this union, is what validates it:
+    //   va       → bag, bpd_bali
+    //   cstore   → alfamart, indomaret
+    //   qris     → mpm
+    //   cc       → cc
+    //   paylater → akulaku
+    //   cod      → rpx
+    | "bag"
+    | "bpd_bali"
+    | "alfamart"
+    | "indomaret"
+    | "mpm"
+    | "cc"
+    | "akulaku"
+    | "rpx";
 
 export type IpaymuCartItem = {
     product: string;
@@ -198,6 +216,142 @@ export type IpaymuResponse = {
 };
 
 /* ==========================================
+ * TYPES — DIRECT PAYMENT
+ * ========================================== */
+
+/**
+ * The methods `POST /api/v2/payment/direct` documents.
+ *
+ * Copied from iPaymu's published API v2 collection ("Direct Payment" →
+ * `paymentMethod`): VA, Convenience Store, COD, QRIS, Credit Card, Pay Later. This
+ * is the PROVIDER's vocabulary, not ours — the internal `PaymentMethod` enum is a
+ * different set, and `lib/ticketing/payment/gateway.ts` owns the translation.
+ *
+ * `cod` is declared because the endpoint accepts it, and deliberately NOT used for
+ * ticket sales: cash-on-delivery has nothing to deliver for a digital ticket.
+ */
+export type IpaymuDirectMethod =
+    | "va"
+    | "cstore"
+    | "cod"
+    | "qris"
+    | "cc"
+    | "paylater";
+
+/** Every channel code the direct endpoint documents, per method. */
+export type IpaymuDirectChannel =
+    // va
+    | "bag"
+    | "bca"
+    | "bpd_bali"
+    | "bni"
+    | "cimb"
+    | "mandiri"
+    | "bmi"
+    | "bri"
+    | "bsi"
+    | "permata"
+    | "danamon"
+    // cstore
+    | "alfamart"
+    | "indomaret"
+    // cod
+    | "rpx"
+    // qris
+    | "mpm"
+    // cc
+    | "cc"
+    // paylater
+    | "akulaku";
+
+/**
+ * The direct-payment request, field for field as documented.
+ *
+ * Mandatory per the collection: `name`, `phone`, `email`, `amount`, `notifyUrl`,
+ * `referenceId`, `paymentMethod`, `paymentChannel`. Everything after those is
+ * optional and is only sent when this application actually has a value for it — a
+ * field sent with a guessed value is a field the provider will believe.
+ */
+export type IpaymuDirectRequest = {
+    name: string;
+    phone: string;
+    email: string;
+    /** Whole rupiah. The provider's wire format is a JSON number. */
+    amount: number;
+    notifyUrl: string;
+    referenceId: string;
+    paymentMethod: IpaymuDirectMethod;
+    paymentChannel: IpaymuDirectChannel;
+    /**
+     * Lifetime in HOURS. The collection states "Custom expired payment code in
+     * hours" and then constrains individual channels (BSI VA max 3h, BRI VA max
+     * 2h, BCA VA cannot be customised at all). Because those ceilings are real, this
+     * value is advisory: the authoritative expiry is the `Expired` instant the
+     * response returns, which is what the platform stores and shows.
+     */
+    expired?: number;
+    comments?: string;
+    feeDirection?: "MERCHANT" | "BUYER";
+    /**
+     * Redirect targets. The collection marks these as used by the redirect-style
+     * methods (Akulaku and Credit Card); they are omitted for QR/VA/cstore, which
+     * are completed entirely in-app.
+     */
+    successUrl?: string;
+    cancelUrl?: string;
+};
+
+/**
+ * `Data` of a successful direct payment.
+ *
+ * Field presence is per-method, taken from the two sample responses in the
+ * provider's own collection:
+ *
+ *   VA   → SessionId, TransactionId, ReferenceId, Via, Channel, PaymentNo,
+ *          PaymentName, Total, Fee, Expired
+ *   QRIS → the same, plus QrString, QrImage, QrTemplate, SubTotal, FeeDirection,
+ *          Terminal, NNSCode
+ *
+ * Everything is optional here because the shape is method-dependent and this
+ * application must not assume a field exists to avoid crashing on a channel that
+ * does not return it. Consumers are required to treat a missing instruction as
+ * "the provider did not give us one" rather than as an empty value.
+ */
+export type IpaymuDirectData = {
+    SessionId?: string;
+    TransactionId?: number | string;
+    ReferenceId?: string;
+    Via?: string;
+    Channel?: string;
+    /** VA number, cstore payment code, or the QRIS payload. */
+    PaymentNo?: string;
+    /** QRIS only: the payload string a wallet decodes. */
+    QrString?: string;
+    /** QRIS only: provider-hosted PNG of `QrString`. */
+    QrImage?: string;
+    /** QRIS only: provider-hosted print template image. */
+    QrTemplate?: string;
+    PaymentName?: string;
+    SubTotal?: number | string;
+    Fee?: number | string;
+    Total?: number | string;
+    FeeDirection?: string;
+    /** `YYYY-MM-DD HH:mm:ss` in the provider's timezone. */
+    Expired?: string;
+    Terminal?: string;
+    NNSCode?: string;
+};
+
+export type IpaymuDirectResponse = {
+    Status: number;
+    Success?: boolean;
+    Message: string;
+    Data?: IpaymuDirectData | null;
+    /** Present on `Status: 400` — field-keyed validation messages. */
+    Error?: Record<string, string[]>;
+};
+
+/* ==========================================
  * PAYMENT CREATION (Redirect)
  * ==========================================
  *
@@ -206,6 +360,11 @@ export type IpaymuResponse = {
  * Creates a hosted payment page. Customer
  * is redirected to Data.Url to complete
  * payment.
+ *
+ * NOTE: this returns NO payment instrument — no QR, no VA number, no bank name.
+ * Those exist only in the Direct Payment response below. That is why the ticket
+ * payment page renders QRIS/VA from `createDirectPayment` rather than trying to
+ * derive them from a redirect session.
  */
 
 /* ==========================================
@@ -318,31 +477,37 @@ export async function createRedirectPayment(
         );
 
         clearTimeout(timeoutId);
-    } catch (fetchError: any) {
+    } catch (fetchError: unknown) {
+        const error = fetchError as {
+            name?: string;
+            message?: string;
+            cause?: { code?: string };
+        };
+
         // ==========================================
         // NETWORK-LEVEL ERRORS (no HTTP response)
         // ==========================================
-        if (fetchError.name === "AbortError") {
+        if (error.name === "AbortError") {
             throw new Error(
                 "[TIMEOUT] iPaymu request timeout (30s). Pembayaran tidak dapat dibuat saat ini."
             );
         }
 
-        if (fetchError.cause?.code === "ENOTFOUND") {
+        if (error.cause?.code === "ENOTFOUND") {
             throw new Error(
                 "[DNS_ERROR] iPaymu domain tidak dapat di-resolve. Periksa koneksi internet."
             );
         }
 
-        if (fetchError.cause?.code === "ECONNREFUSED") {
+        if (error.cause?.code === "ECONNREFUSED") {
             throw new Error(
                 "[CONNECTION_REFUSED] iPaymu server menolak koneksi."
             );
         }
 
         if (
-            fetchError.cause?.code === "ECONNRESET" ||
-            fetchError.message?.includes("socket hang up")
+            error.cause?.code === "ECONNRESET" ||
+            error.message?.includes("socket hang up")
         ) {
             throw new Error(
                 "[CONNECTION_RESET] iPaymu connection terputus."
@@ -350,9 +515,9 @@ export async function createRedirectPayment(
         }
 
         if (
-            fetchError.cause?.code?.startsWith("ERR_TLS") ||
-            fetchError.message?.includes("SSL") ||
-            fetchError.message?.includes("TLS")
+            error.cause?.code?.startsWith("ERR_TLS") ||
+            error.message?.includes("SSL") ||
+            error.message?.includes("TLS")
         ) {
             throw new Error(
                 "[TLS_ERROR] iPaymu TLS/SSL handshake gagal."
@@ -361,7 +526,7 @@ export async function createRedirectPayment(
 
         // Generic network error
         throw new Error(
-            `[NETWORK_ERROR] iPaymu: ${fetchError.message}`
+            `[NETWORK_ERROR] iPaymu: ${error.message}`
         );
     }
 
@@ -426,6 +591,159 @@ export async function createRedirectPayment(
     if (!result.Data?.Url) {
         throw new Error(
             "[IPAYMU_API_ERROR] iPaymu returned success but no payment URL."
+        );
+    }
+
+    return result;
+}
+
+/* ==========================================
+ * PAYMENT CREATION (Direct)
+ * ==========================================
+ *
+ * Endpoint: POST /api/v2/payment/direct
+ *
+ * Returns the payment INSTRUMENT itself instead of a hosted-page URL:
+ *
+ *   VA            -> Data.PaymentNo (virtual-account number) + PaymentName
+ *   QRIS          -> Data.QrString (payload) + Data.QrImage (PNG) + PaymentNo
+ *   Convenience   -> Data.PaymentNo (payment code)
+ *
+ * Contract notes that are load-bearing for the caller:
+ *
+ *   * It THROWS on transport, HTTP and provider-level failure, exactly like
+ *     `createRedirectPayment`, so callers keep one failure model. Business-level
+ *     refusal (`Status !== 200`) is an exception, never a partially-filled result,
+ *     because a caller that received a half-populated `Data` could render an
+ *     instruction the provider never issued.
+ *   * Unlike the redirect call it does NOT require `Data.Url` — a direct payment has
+ *     no URL at all for QR/VA/cstore. It requires that the response carry an
+ *     instruction this application can show: either a `PaymentNo` or a `QrString`.
+ *     A success without either is a provider contract violation and is refused here
+ *     rather than surfaced as an empty payment page.
+ *   * `Expired` is returned as `YYYY-MM-DD HH:mm:ss` in the provider's own
+ *     timezone. It is returned as a STRING and is not converted here: parsing it is
+ *     a decision about which timezone the provider meant, and that decision belongs
+ *     to the caller that persists it (see `parseProviderExpiry`), where it is made
+ *     once and covered by a test.
+ *
+ * Signature: identical mechanism to the redirect call —
+ * `HMAC-SHA256("POST:<VA>:<sha256(body)>:<apiKey>", apiKey)` with `va`, `signature`
+ * and `timestamp` headers — because the provider documents one signature scheme for
+ * both endpoints.
+ */
+export async function createDirectPayment(
+    request: IpaymuDirectRequest
+): Promise<IpaymuDirectResponse> {
+    // FAIL-CLOSED: misconfigured servers throw before any request is sent.
+    const { apiKey, va, baseUrl } = getIpaymuConfig();
+
+    if (!apiKey || !va) {
+        throw new Error("iPaymu credentials belum dikonfigurasi.");
+    }
+
+    if (!Number.isFinite(request.amount) || request.amount <= 0) {
+        throw new Error(`iPaymu amount tidak valid: ${request.amount}`);
+    }
+
+    if (!request.referenceId) {
+        throw new Error("iPaymu referenceId wajib diisi.");
+    }
+
+    if (!request.notifyUrl) {
+        throw new Error("iPaymu notifyUrl wajib diisi.");
+    }
+
+    const body = JSON.stringify(request);
+    const signature = generateSignature(body, va, apiKey);
+    const timestamp = generateTimestamp();
+
+    // SECURITY: never log the API key, the signature, or buyer contact details.
+    if (process.env.NODE_ENV !== "production") {
+        console.log("[iPaymu] CREATE DIRECT PAYMENT:", {
+            url: `${baseUrl}/api/v2/payment/direct`,
+            amount: request.amount,
+            referenceId: request.referenceId,
+            method: request.paymentMethod,
+            channel: request.paymentChannel,
+        });
+    }
+
+    let response: Response;
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(
+            () => controller.abort(),
+            IPAYMU_REQUEST_TIMEOUT_MS
+        );
+
+        response = await fetch(`${baseUrl}/api/v2/payment/direct`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                va,
+                signature,
+                timestamp,
+                Accept: "application/json",
+            },
+            body,
+            signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+    } catch (fetchError: unknown) {
+        const error = fetchError as { name?: string; message?: string };
+
+        if (error?.name === "AbortError") {
+            throw new Error(
+                "[TIMEOUT] iPaymu direct payment timeout (30s). Pembayaran tidak dapat dibuat saat ini."
+            );
+        }
+
+        throw new Error(`[NETWORK_ERROR] iPaymu direct: ${error?.message}`);
+    }
+
+    let result: IpaymuDirectResponse;
+
+    try {
+        result = await response.json();
+    } catch {
+        throw new Error(
+            `[INVALID_JSON] iPaymu returned non-JSON response (HTTP ${response.status})`
+        );
+    }
+
+    if (response.status === 401) {
+        throw new Error(
+            "[AUTH_ERROR] iPaymu authentication gagal. Periksa API key dan VA."
+        );
+    }
+
+    if (response.status >= 500) {
+        throw new Error(
+            `[IPAYMU_SERVER_ERROR] iPaymu server error (HTTP ${response.status}). Coba lagi nanti.`
+        );
+    }
+
+    // 400 carries field-keyed validation messages, which are useful in DEVELOPMENT
+    // logs only: the message names provider parameters, and echoing it to a buyer
+    // would expose the integration's shape.
+    if (response.status !== 200 || result.Status !== 200) {
+        const detail =
+            process.env.NODE_ENV === "production"
+                ? ""
+                : ` ${result.Message ?? ""} ${JSON.stringify(result.Error ?? {})}`;
+
+        throw new Error(
+            `[IPAYMU_API_ERROR] Gagal membuat pembayaran langsung (HTTP ${response.status}/${result.Status}).${detail}`
+        );
+    }
+
+    // A success must carry an instruction. See the contract note above.
+    if (!result.Data?.PaymentNo && !result.Data?.QrString) {
+        throw new Error(
+            "[IPAYMU_API_ERROR] iPaymu direct payment returned success without a payment instruction."
         );
     }
 
@@ -890,6 +1208,22 @@ export function verifyWebhookSignature(
             raw[key] = value;
         });
 
+        /*
+         * iPaymu's callback documentation, step 1 of the verification mechanism:
+         *
+         *   "Remove the `signature` parameter from the received data. Sort the data by keys in
+         *    ascending order (ksort). Convert the sorted data to a JSON string. Generate the
+         *    HMAC-SHA256 hash using the JSON string and your Secret Key (VA)."
+         *
+         * So the signature may arrive as a FIELD IN THE BODY, and it must be removed before
+         * the canonical JSON is built — otherwise the payload being hashed is not the payload
+         * the provider signed, and every legitimate callback fails. It is removed here (rather
+         * than only at the call site) so no caller can forget: this is the one place that
+         * decides what the provider signed.
+         */
+        const bodySignature = raw.signature ?? null;
+        delete raw.signature;
+
         // Compute canonical JSON
         const canonicalJson = computeCanonicalJson(raw);
 
@@ -899,8 +1233,14 @@ export function verifyWebhookSignature(
             merchantVa
         );
 
+        // A signature from the body is accepted as well as one from a header, because the
+        // provider documents the body field. The header remains first: if both are present and
+        // only one verifies, the header is what the caller believed it was checking.
         // Safe comparison using timingSafeEqual
-        const receivedBuf = Buffer.from(receivedSignature, "utf8");
+        const receivedBuf = Buffer.from(
+            bodySignature ?? receivedSignature,
+            "utf8"
+        );
         const expectedBuf = Buffer.from(expectedSignature, "utf8");
 
         if (receivedBuf.length !== expectedBuf.length) {
@@ -987,10 +1327,10 @@ export async function verifyPaymentStatus(
 
         const result = await response.json();
         return result;
-    } catch (error: any) {
+    } catch (error: unknown) {
         clearTimeout(timeoutId);
 
-        if (error.name === "AbortError") {
+        if ((error as { name?: string })?.name === "AbortError") {
             throw new Error("iPaymu status verification timeout.");
         }
         throw error;

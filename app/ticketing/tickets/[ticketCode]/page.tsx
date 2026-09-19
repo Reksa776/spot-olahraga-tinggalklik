@@ -37,6 +37,21 @@ import { sportLabel, sportSolidTint } from "@/lib/ticketing/ui/sport-tint";
  * ── PRIVACY ─────────────────────────────────────────────────────────────────────
  * Brief §25/§37: an opaque code does not make a ticket page public, and another buyer's code renders
  * as 404 — the same answer as a code that was never issued.
+ *
+ * ── PHASE 16 — WHAT AN EVENT-AWARE VERDICT MEANS HERE ───────────────────────────
+ * `admission.scannable` now answers both halves of the gate's own question (is the TICKET still a
+ * credential, and is the EVENT still admitting), so a ticket for a cancelled, archived or
+ * completed-and-past-grace event shows the blocked explanation instead of a live QR that the
+ * check-in API would refuse with `EVENT_NOT_OPEN`. The buyer still reaches the ticket, the code and
+ * the record of what they bought — the page merely stops claiming the door is open when it is not.
+ *
+ * ── PRINT ────────────────────────────────────────────────────────────────────────
+ * There is deliberately NO print button: `__tests__/ui-consolidation/checkin-gate.test.ts` pins this
+ * file (and its siblings) as free of interactive controls, so that no buyer surface can grow a
+ * check-in affordance by accident. Printing is therefore the browser's own (Ctrl/Cmd + P) plus
+ * `print:` utilities that drop the site chrome and the action row and keep the QR, the code and the
+ * venue on the sheet — which is the "browser-print-friendly view" the brief allows, with no PDF
+ * engine and no new dependency.
  */
 
 export const dynamic = "force-dynamic";
@@ -58,6 +73,13 @@ const BLOCKED_REASONS: Record<string, string> = {
     TICKET_REFUNDED: "Tiket ini sudah dikembalikan dananya dan tidak berlaku lagi.",
     NOT_PAID: "Pembayaran pesanan ini belum dikonfirmasi.",
     UNKNOWN_STATUS: "Status tiket ini tidak dikenal. Hubungi penyelenggara.",
+    // PHASE 16 — the event half of the verdict, decided server-side by the same predicate the
+    // check-in API uses. It covers every way an event stops admitting (cancelled, archived, or
+    // past `endAt + 30 minutes`) without pretending to know which one applies, because naming a
+    // reason the buyer cannot act on differently would be noise. "Hubungi penyelenggara" is the
+    // honest next step for all of them.
+    EVENT_NOT_OPEN:
+        "Event ini sudah selesai, dibatalkan, atau belum dibuka, sehingga QR tidak lagi dipindai di pintu masuk. Hubungi penyelenggara bila Anda memerlukan informasi lebih lanjut.",
 };
 
 type Props = { params: Promise<{ ticketCode: string }> };
@@ -86,13 +108,13 @@ export default async function TicketDetailPage({ params }: Props) {
             <div className="mx-auto max-w-2xl px-4 py-8 sm:px-6 lg:py-12">
                 <Link
                     href="/ticketing/tickets"
-                    className="inline-flex items-center gap-2 text-sm font-semibold text-ink-500 transition hover:text-ink-900"
+                    className="inline-flex items-center gap-2 text-sm font-semibold text-ink-500 transition hover:text-ink-900 print:hidden"
                 >
                     <span aria-hidden>←</span> Tiket saya
                 </Link>
 
                 {/* ── The ticket itself ─────────────────────────────────────────── */}
-                <article className="mt-4 overflow-hidden rounded-3xl border border-ink-100 bg-white shadow-card">
+                <article className="mt-4 overflow-hidden rounded-3xl border border-ink-100 bg-white shadow-card print:mt-0 print:rounded-none print:border-0 print:shadow-none">
                     <header
                         className={`relative px-6 py-6 text-white ${sportSolidTint(
                             ticket.event.sportName
@@ -124,8 +146,16 @@ export default async function TicketDetailPage({ params }: Props) {
                                     Lokasi
                                 </dt>
                                 <dd className="mt-1 font-semibold text-ink-900">
-                                    {formatVenue(ticket.event.venueName, null)}
+                                    {formatVenue(
+                                        ticket.event.venueName,
+                                        ticket.event.venueCity
+                                    )}
                                 </dd>
+                                {ticket.event.venueAddress ? (
+                                    <dd className="mt-0.5 text-xs leading-relaxed text-ink-500">
+                                        {ticket.event.venueAddress}
+                                    </dd>
+                                ) : null}
                             </div>
                             <div>
                                 <dt className="text-[0.7rem] font-bold tracking-wider text-ink-400 uppercase">
@@ -187,6 +217,14 @@ export default async function TicketDetailPage({ params }: Props) {
                                 </p>
                             ) : null}
 
+                            {/* The QR is the credential and the code below it is the
+                             * keyboard-wedge/manual fallback, so a printout carries both. The
+                             * advice is on screen only — on paper the reader already holds the
+                             * ticket. */}
+                            <p className="mt-2 hidden text-center text-[0.7rem] text-ink-500 print:block">
+                                Bila QR tidak terbaca, sebutkan atau ketik kode di atas.
+                            </p>
+
                             <p className="mt-5 font-mono text-lg font-extrabold tracking-[0.15em] text-ink-900">
                                 {ticket.ticketCode}
                             </p>
@@ -233,7 +271,7 @@ export default async function TicketDetailPage({ params }: Props) {
                     </footer>
                 </article>
 
-                <div className="mt-5 flex flex-wrap items-center gap-3">
+                <div className="mt-5 flex flex-wrap items-center gap-3 print:hidden">
                     <Link
                         href={`/ticketing/orders/${encodeURIComponent(
                             ticket.orderNumber
@@ -253,9 +291,11 @@ export default async function TicketDetailPage({ params }: Props) {
                     ) : null}
                 </div>
 
-                <p className="mt-5 text-xs leading-relaxed text-ink-500">
+                <p className="mt-5 text-xs leading-relaxed text-ink-500 print:hidden">
                     E-tiket ini bersifat pribadi. Jangan bagikan tangkapan layarnya —
-                    siapa pun yang memiliki kode QR dapat memakainya untuk masuk.
+                    siapa pun yang memiliki kode QR dapat memakainya untuk masuk. Ingin
+                    versi cetak? Gunakan cetak halaman dari peramban Anda (Ctrl/Cmd + P)
+                    untuk mencetak atau menyimpan tiket sebagai PDF.
                 </p>
             </div>
         </SiteShell>

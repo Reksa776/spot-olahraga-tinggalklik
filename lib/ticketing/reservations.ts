@@ -179,7 +179,7 @@ export type ReservationTransitionSummary = {
 async function heldReservationsForOrder(
     tx: Prisma.TransactionClient,
     orderId: string,
-    now: Date
+    _now: Date
 ) {
     return tx.ticketReservation.findMany({
         where: { orderId, status: RESERVATION_INITIAL_STATUS },

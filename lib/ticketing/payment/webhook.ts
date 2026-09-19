@@ -75,8 +75,14 @@ import { MAX_WEBHOOK_BODY_BYTES } from "./validation";
  * ── WHAT THIS HANDLER DELIBERATELY DOES NOT DO ───────────────────────────────────
  *   * No ticket issuance / QR — Phase 8 (design §40.11).
  *   * No PIC attribution, fee ledger or fee snapshot — Phase 9.
- *   * No refunds. A refund notification is recorded and ignored, because refund
- *     authorisation and execution are Phase 9 work and `Refund` has its own lifecycle.
+ *   * No refund AUTHORISATION and, since Phase 18B, no refund CONFIRMATION either. The
+ *     production refund rail is a manual bank transfer (D-P17-04 = B), so no provider can
+ *     be the authority on a refund: a refund is never created from an inbound notification,
+ *     and it is never settled by one. A refund-shaped delivery is recorded in the ledger
+ *     and acknowledged (`REFUND_MANUAL_RAIL`); the refund's own lifecycle is untouched by
+ *     anything a provider can unilaterally trigger. The branch previously resolved a refund
+ *     by `(order, PROCESSING)` + amount, which Phase 18A forbade — removing the rail removed
+ *     the need for that guess rather than replacing it with a better one.
  *   * No notifications / WhatsApp / email — Phase 8/11.
  *   * No provider `verifyPaymentStatus` call. A server-side status poll is not a settlement
  *     trigger in §31.3's flow, and design §31.5 rule 3 makes the verified notification the
@@ -455,7 +461,13 @@ export async function handleGatewayWebhook(params: {
     }
 
     // ── 4. Amount (design §13.3 step 3) ──────────────────────────────────────────
-    const verdict = amountVerdict(callback, target.total);
+    // A refund callback legitimately reports less than the order total (a partial refund),
+    // so the order-total comparison only applies to payment notifications. The refund's own
+    // amount is validated against the in-flight refund by `confirmInboundRefund`, which is
+    // the only amount that is meaningful for a refund (D-R09).
+    const verdict = callback.isRefund
+        ? "MATCH"
+        : amountVerdict(callback, target.total);
 
     if (verdict === "MISMATCH") {
         const ledgerId = await claimLedgerRow(
@@ -519,19 +531,7 @@ export async function handleGatewayWebhook(params: {
 
     // ── 6. Classify and act (design §31.3 step 5) ────────────────────────────────
     if (callback.isRefund) {
-        // Refunds are Phase 9. Recorded so the delivery is visible, and never acted on:
-        // `Refund` has its own lifecycle and authorisation, and inventing a settlement-side
-        // refund would be exactly the scope expansion the brief forbids.
-        await advanceLedgerRow(ledgerId, {
-            processingStatus: "IGNORED",
-            processingResult: "ignored_refund_flow_is_phase_9",
-        });
-
-        return {
-            httpStatus: 200,
-            message: "Notifikasi refund dicatat.",
-            outcome: "REFUND_OUT_OF_SCOPE",
-        };
+        return applyRefundOutcome(ledgerId);
     }
 
     if (callback.verdict === "UNKNOWN") {
@@ -581,6 +581,39 @@ export async function handleGatewayWebhook(params: {
             : await settleOutcomeSafe(target, callback);
 
     return applySettlementOutcome(ledgerId, settlement, callback);
+}
+
+/**
+ * Record a refund-shaped notification and never act on it (Phase 18B, D-P17-04 = B).
+ *
+ * ── WHY NOTHING IS SETTLED FROM HERE ─────────────────────────────────────────────
+ * The production refund rail is a MANUAL BANK TRANSFER. There is no outbound refund for a
+ * provider to acknowledge, so a refund callback carries no authoritative fact about our
+ * money — and the one thing this branch used to do (resolve the in-flight refund by
+ * `(orderId, amount)` and settle it) is exactly the identification Phase 18A forbade.
+ *
+ * The delivery is still recorded, because an unexpected refund notification is evidence
+ * somebody must be able to see, and it is still acknowledged with 200 so the provider does
+ * not retry a callback that can never be actioned. The security boundary in front of this
+ * branch is untouched: the body bound, the timing-safe signature verification and the
+ * replay ledger all still run before it (see `handleGatewayWebhook`).
+ *
+ * Refund state can therefore only be advanced by an authenticated operator through
+ * `executeRefund` / `settleRefund` / `failRefund`.
+ */
+async function applyRefundOutcome(ledgerId: string): Promise<WebhookResult> {
+    await advanceLedgerRow(ledgerId, {
+        processingStatus: "IGNORED",
+        processingResult: "ignored_refund_rail_is_manual",
+        errorMessage:
+            "refund notifications cannot settle a refund: the production rail is a manual bank transfer",
+    });
+
+    return {
+        httpStatus: 200,
+        message: "Notifikasi refund dicatat; refund diproses manual oleh operator.",
+        outcome: "REFUND_MANUAL_RAIL",
+    };
 }
 
 /**

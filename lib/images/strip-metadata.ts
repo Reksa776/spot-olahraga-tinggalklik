@@ -90,9 +90,6 @@ const JPEG_STANDALONE_MARKERS = new Set([
     0xd9, // EOI
 ]);
 
-/** APP0/JFIF — retained (density only, no metadata). */
-const JPEG_RETAINED_APP_MARKER = 0xe0;
-
 function isMetadataJpegMarker(marker: number): boolean {
     if (marker === 0xfe) {
         return true; // COM

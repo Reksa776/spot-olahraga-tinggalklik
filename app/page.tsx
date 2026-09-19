@@ -1,7 +1,5 @@
 import Link from "next/link";
 
-import ReferralTracker from "./ReferralTracker";
-
 import EventRow from "@/components/ticketing/EventRow";
 import SearchBar from "@/components/ticketing/SearchBar";
 import SectionHeader from "@/components/ticketing/SectionHeader";
@@ -43,10 +41,6 @@ import { listPublicSports } from "@/lib/sports/service";
  * `listPublicEvents` so the visibility rule is enforced once. The page is `force-dynamic`, matching
  * `/events`: it renders live inventory state (sold out, sales closed) and must not be cached into
  * staleness.
- *
- * The retail affiliate tracker is kept mounted on `/` exactly as it was, so replacing this route
- * does not drop referral attribution (the retail marketplace itself is untouched and still lives at
- * `/home`, `/products`, `/cart`, `/orders`).
  */
 
 export const dynamic = "force-dynamic";
@@ -91,8 +85,6 @@ export default async function DiscoveryHomePage() {
 
     return (
         <SiteShell>
-            <ReferralTracker />
-
             <Hero totalEvents={totalEvents} sports={sports.items} />
 
             <div className="mx-auto max-w-7xl space-y-14 px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
@@ -106,7 +98,7 @@ export default async function DiscoveryHomePage() {
                             muncul di sini. Punya event? Publikasikan sekarang.
                         </p>
                         <Link
-                            href="/organizer/events"
+                            href="/dashboard/events"
                             className="mt-6 inline-block rounded-xl bg-brand-600 px-6 py-3 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
                         >
                             Publikasikan event
@@ -257,7 +249,7 @@ function OrganizerBand() {
                 </div>
 
                 <Link
-                    href="/organizer/events"
+                    href="/dashboard/events"
                     className="shrink-0 rounded-xl bg-brand-600 px-6 py-3.5 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-400"
                 >
                     Mulai buat event

@@ -460,12 +460,40 @@ describe("Phase 8 did not drift into later phases", () => {
         }
     });
 
-    test("no retail model was renamed or repurposed", () => {
+    test("the retail models are gone and no ticketing model took their names over", () => {
         const schema = read("prisma/schema.prisma");
 
-        // The legacy names still exist exactly as they were, and no ticketing model took
-        // one of them over (brief §3).
-        for (const model of ["model Order ", "model OrderItem ", "model Product ", "model FlashSale "]) {
+        // This assertion was originally the inverse: the legacy retail models had to still exist,
+        // because the ticketing work was additive and retail was live. The product is a ticketing
+        // platform, the retail application was removed, and its models were removed with it — so
+        // the guarantee is now that they are absent AND that no ticketing model was renamed into
+        // one of the freed names (`Ticket` is not `Order`, `TicketType` is not `Product`).
+        for (const model of [
+            "model Order ",
+            "model OrderItem ",
+            "model Product ",
+            "model ProductVariant ",
+            "model FlashSale ",
+            "model Cart ",
+            "model UserAddress ",
+            "model Voucher ",
+            "model AffiliateProfile ",
+            "model SpinWheelSpin ",
+            "model ShippingDiscount ",
+            "model Broadcast ",
+        ]) {
+            expect(schema).not.toContain(model);
+        }
+
+        // The ticketing models are the ones that exist, under their own names.
+        for (const model of [
+            "model Event ",
+            "model EventOrder ",
+            "model EventOrderItem ",
+            "model TicketType ",
+            "model Ticket ",
+            "model Payment ",
+        ]) {
             expect(schema).toContain(model);
         }
 

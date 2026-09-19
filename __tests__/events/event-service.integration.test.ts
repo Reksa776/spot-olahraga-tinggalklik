@@ -19,6 +19,8 @@ import { AuthzErrorCode, PERMISSIONS, requireOrganizerAccess } from "@/lib/authz
 import { AppError } from "@/lib/api/errors";
 import { PERMISSIONS as P } from "@/lib/authz";
 import {
+    archiveEvent,
+    cancelEvent,
     createEvent,
     deleteEvent,
     getOrganizerEvent,
@@ -27,6 +29,9 @@ import {
     unpublishEvent,
     updateEvent,
 } from "@/lib/events/service";
+import { getPublicEventBySlug } from "@/lib/events/catalog";
+
+const ORIGIN = "https://tinggalklik.test";
 
 const { auth } = require("@/auth") as { auth: jest.Mock };
 
@@ -36,6 +41,13 @@ const SUFFIX = `p4e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 const PAST = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+/**
+ * PHASE 20B (D-P19-05 = A): `publishEvent` refuses an event with no `endAt`, so every fixture
+ * that publishes carries a real end time. Fixtures that stay DRAFT keep no end time on
+ * purpose — a draft may still be saved before the schedule is settled, which is exactly why
+ * the requirement lives at publish rather than at create.
+ */
+const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 
 let userA: { id: string };
 let userB: { id: string };
@@ -410,6 +422,90 @@ describe("updateEvent", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("publishEvent — design §10.3 preconditions", () => {
+    /*
+     * PHASE 20B (D-P19-05 = A) — `endAt` IS REQUIRED BEFORE PUBLICATION.
+     *
+     * The rule exists because an event without an end time can never complete: not
+     * automatically (`P14-D22`) and not manually (`completeEventManually`). It would therefore
+     * stay live forever, and its gate — which under D-P19-03 Option A has no start-time term —
+     * would stay open forever too. The two tests below pin both halves: the refusal is real and
+     * server-side, and the requirement is deliberately NOT imposed at create time, so a draft
+     * can still be saved before the schedule is settled.
+     */
+    test("refuses to publish an event with no endAt, naming the precondition", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const event = await createEvent(scope!, orgA.id, {
+            title: `No End ${SUFFIX}`,
+            sportId: sport.id,
+            startAt: FUTURE,
+            // No `endAt` on purpose — this is the whole scenario.
+        } as never);
+
+        // Give it a sellable type so the end time is the ONLY unmet precondition.
+        await prisma.ticketType.create({
+            data: { eventId: event.id, name: "Reguler", price: 100000, quota: 10 },
+        });
+
+        try {
+            await publishEvent(scope!, event.id);
+            throw new Error("publish should have thrown");
+        } catch (error) {
+            expect(error).toBeInstanceOf(AppError);
+            const appError = error as AppError;
+            expect(appError.code).toBe("CONFLICT");
+            expect(appError.httpStatus).toBe(409);
+            expect(appError.details?.preconditions).toEqual(
+                expect.arrayContaining([expect.stringContaining("Waktu selesai")])
+            );
+        }
+
+        // Nothing was published: the row is still a DRAFT with no publishedAt.
+        const fresh = await prisma.event.findUniqueOrThrow({
+            where: { id: event.id },
+            select: { status: true, publishedAt: true },
+        });
+
+        expect(fresh.status).toBe("DRAFT");
+        expect(fresh.publishedAt).toBeNull();
+    });
+
+    test("still saves a DRAFT with no endAt — the requirement is at publish, not create", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        // Create and update both succeed without an end time, because requiring it at create
+        // would force an organizer to guess a schedule before they know one. `endAt` stays
+        // editable through DRAFT, PUBLISHED and ONGOING (P14-D12), so the value only has to
+        // be right by the time the event goes live.
+        const draft = await createEvent(scope!, orgA.id, {
+            title: `Incomplete Draft ${SUFFIX}`,
+            sportId: sport.id,
+            startAt: FUTURE,
+        } as never);
+
+        expect(draft.endAt).toBeNull();
+
+        const updated = await updateEvent(scope!, draft.id, {
+            description: "Schedule still being decided",
+        } as never);
+
+        expect(updated.endAt).toBeNull();
+        expect(updated.status).toBe("DRAFT");
+
+        // …and supplying the end time later is what unblocks publication.
+        await prisma.ticketType.create({
+            data: { eventId: draft.id, name: "Reguler", price: 100000, quota: 10 },
+        });
+
+        await updateEvent(scope!, draft.id, { endAt: FUTURE_END } as never);
+
+        const published = await publishEvent(scope!, draft.id);
+
+        expect(published.event.status).toBe("PUBLISHED");
+    });
+
     test("refuses to publish an event with no active ticket type, naming the precondition", async () => {
         signInAs(userA.id);
         const scope = await scopeFor(userA.id);
@@ -418,6 +514,9 @@ describe("publishEvent — design §10.3 preconditions", () => {
             title: `No Tickets ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            // Present so the ONLY unmet precondition is the missing ticket type — otherwise
+            // this test would pass for the wrong reason.
+            endAt: FUTURE_END,
         } as never);
 
         try {
@@ -447,6 +546,8 @@ describe("publishEvent — design §10.3 preconditions", () => {
                 slug: `past-publish-${SUFFIX}`,
                 eventCode: `TKL-EVT-P-${SUFFIX}`.slice(0, 40),
                 startAt: PAST,
+                // Set so the ONLY unmet precondition is the past start time.
+                endAt: new Date(PAST.getTime() + 3 * 60 * 60 * 1000),
                 createdByUserId: userA.id,
                 ticketTypes: {
                     create: {
@@ -482,6 +583,7 @@ describe("publishEvent — design §10.3 preconditions", () => {
             title: `Publishable ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never);
 
         // Ticket types are Phase 5 work; the precondition is a read-only count, so a
@@ -514,6 +616,7 @@ describe("publishEvent — design §10.3 preconditions", () => {
             title: `Double Publish ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never);
 
         await prisma.ticketType.create({
@@ -535,6 +638,7 @@ describe("publishEvent — design §10.3 preconditions", () => {
             title: `Republish ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never);
 
         await prisma.ticketType.create({
@@ -569,6 +673,7 @@ describe("unpublishEvent — decision D-14", () => {
             title: `Unpublish ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
             description: "Preserved description",
         } as never);
 
@@ -657,6 +762,7 @@ describe("deleteEvent", () => {
             title: `Published Keep ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never);
 
         await prisma.ticketType.create({
@@ -935,6 +1041,7 @@ describe("audit trail", () => {
             title: `Audited ${SUFFIX}`,
             sportId: sport.id,
             startAt: FUTURE,
+            endAt: FUTURE_END,
         } as never);
 
         await prisma.ticketType.create({
@@ -986,5 +1093,474 @@ describe("audit trail", () => {
                 }
             }
         }
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 12 — ARCHIVE (design §10.2/§10.3 soft delete)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A PUBLISHED event with one sellable ticket type, seeded directly. */
+async function seedPublishedEvent(tag: string, quota = 10) {
+    const event = await prisma.event.create({
+        data: {
+            organizerId: orgA.id,
+            sportId: sport.id,
+            title: `Lifecycle ${tag} ${SUFFIX}`,
+            slug: `lifecycle-${tag}-${SUFFIX}`,
+            eventCode: `TKL-EVT-L-${tag}-${SUFFIX}`.slice(0, 40),
+            startAt: FUTURE,
+            status: "PUBLISHED",
+            publishedAt: new Date(),
+            createdByUserId: userA.id,
+        },
+        select: { id: true, slug: true },
+    });
+
+    const ticketType = await prisma.ticketType.create({
+        data: { eventId: event.id, name: "Reguler", price: 100000, quota },
+        select: { id: true },
+    });
+
+    return { event, ticketType };
+}
+
+/** A settled order with one issued ticket — the commercial history archive/cancel must not disturb. */
+async function seedPaidOrder(
+    eventId: string,
+    ticketTypeId: string,
+    tag: string
+) {
+    const order = await prisma.eventOrder.create({
+        data: {
+            orderNumber: `EVT-L-${tag}-${SUFFIX}`.slice(0, 40),
+            organizerId: orgA.id,
+            eventId,
+            userId: userA.id,
+            buyerName: `Buyer ${tag}`,
+            status: "PAID",
+            paymentStatus: "PAID",
+            paidAt: new Date(),
+            subtotal: 100000,
+            total: 100000,
+            organizerNetAmount: 100000,
+        },
+        select: { id: true },
+    });
+
+    const item = await prisma.eventOrderItem.create({
+        data: {
+            orderId: order.id,
+            ticketTypeId,
+            nameSnapshot: "Reguler",
+            priceSnapshot: 100000,
+            quantity: 1,
+            subtotal: 100000,
+        },
+        select: { id: true },
+    });
+
+    const ticket = await prisma.ticket.create({
+        data: {
+            ticketCode: `TCK-L-${tag}-${SUFFIX}`.slice(0, 40),
+            qrTokenHash: `hash-L-${tag}-${SUFFIX}`,
+            orderId: order.id,
+            orderItemId: item.id,
+            sequenceNo: 1,
+            ticketTypeId,
+            eventId,
+            organizerId: orgA.id,
+            holderUserId: userA.id,
+            status: "ISSUED",
+            issuedAt: new Date(),
+        },
+        select: { id: true },
+    });
+
+    return { order, item, ticket };
+}
+
+describe("archiveEvent — soft delete", () => {
+    test("hides the event from public surfaces, keeps every commercial row, and audits", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event, ticketType } = await seedPublishedEvent("arch1");
+        const seed = await seedPaidOrder(event.id, ticketType.id, "arch1");
+
+        const result = await archiveEvent(scope!, event.id);
+
+        expect(result.alreadyArchived).toBe(false);
+        expect(result.event.status).toBe("ARCHIVED");
+        expect(result.event.archivedAt).not.toBeNull();
+
+        // Retained, not deleted.
+        const fresh = await prisma.event.findUniqueOrThrow({
+            where: { id: event.id },
+            select: { status: true, archivedAt: true, title: true },
+        });
+        expect(fresh.title).toContain("Lifecycle arch1");
+
+        // Gone from the public detail (and therefore the catalog).
+        await expect(
+            getPublicEventBySlug(event.slug, ORIGIN)
+        ).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+        // No financial row moved.
+        const orderRow = await prisma.eventOrder.findUniqueOrThrow({
+            where: { id: seed.order.id },
+            select: { status: true, paymentStatus: true, refundedAmount: true },
+        });
+        expect(orderRow.status).toBe("PAID");
+        expect(orderRow.paymentStatus).toBe("PAID");
+        expect(Number(orderRow.refundedAmount)).toBe(0);
+
+        const ticketRow = await prisma.ticket.findUniqueOrThrow({
+            where: { id: seed.ticket.id },
+            select: { status: true, voidedAt: true },
+        });
+        expect(ticketRow.status).toBe("ISSUED");
+        expect(ticketRow.voidedAt).toBeNull();
+
+        const audit = await prisma.adminAuditLog.findFirst({
+            where: { entityRef: event.id, action: "event.archive" },
+            select: { actorUserId: true, organizerId: true },
+        });
+        expect(audit?.actorUserId).toBe(userA.id);
+        expect(audit?.organizerId).toBe(orgA.id);
+    });
+
+    test("is idempotent: a second archive keeps the first timestamp and writes no second audit row", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event } = await seedPublishedEvent("arch2");
+
+        const first = await archiveEvent(scope!, event.id);
+        const second = await archiveEvent(scope!, event.id);
+
+        expect(second.alreadyArchived).toBe(true);
+        expect(second.event.archivedAt?.toISOString()).toBe(
+            first.event.archivedAt?.toISOString()
+        );
+
+        const auditRows = await prisma.adminAuditLog.count({
+            where: { entityRef: event.id, action: "event.archive" },
+        });
+        expect(auditRows).toBe(1);
+    });
+
+    test("refuses while an open refund is still moving money, then allows it", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event } = await seedPublishedEvent("arch3");
+
+        const order = await prisma.eventOrder.create({
+            data: {
+                orderNumber: `EVT-L-arch3-${SUFFIX}`.slice(0, 40),
+                organizerId: orgA.id,
+                eventId: event.id,
+                userId: userA.id,
+                buyerName: `Buyer arch3`,
+                subtotal: 100000,
+                total: 100000,
+                organizerNetAmount: 100000,
+            },
+            select: { id: true },
+        });
+
+        const refund = await prisma.refund.create({
+            data: {
+                eventOrderId: order.id,
+                organizerId: orgA.id,
+                status: "PENDING",
+            },
+            select: { id: true },
+        });
+
+        try {
+            await expect(
+                archiveEvent(scope!, event.id)
+            ).rejects.toMatchObject({ code: "CONFLICT" });
+
+            await prisma.refund.update({
+                where: { id: refund.id },
+                data: { status: "REJECTED" },
+            });
+
+            const ok = await archiveEvent(scope!, event.id);
+            expect(ok.event.status).toBe("ARCHIVED");
+        } finally {
+            await prisma.refund.delete({ where: { id: refund.id } });
+        }
+    });
+
+    test("denies cross-tenant, staff and unauthenticated callers", async () => {
+        signInAs(userA.id);
+        const scopeA = await scopeFor(userA.id);
+
+        const foreign = await seedEvent(orgB.id, "arch-foreign");
+
+        await expect(archiveEvent(scopeA!, foreign.id)).rejects.toMatchObject({
+            code: AuthzErrorCode.ORGANIZER_ACCESS_DENIED,
+        });
+
+        const { event } = await seedPublishedEvent("arch4");
+
+        // A CHECKIN_STAFF member holds no `event.publish` capability.
+        signInAs(staffUser.id);
+        await expect(
+            archiveEvent(
+                {
+                    userId: staffUser.id,
+                    platformRole: "CUSTOMER",
+                    organizerScopes: [],
+                    grants: [],
+                },
+                event.id
+            )
+        ).rejects.toMatchObject({ code: AuthzErrorCode.FORBIDDEN });
+
+        signInAs(null);
+        await expect(archiveEvent(scopeA!, event.id)).rejects.toMatchObject({
+            code: AuthzErrorCode.UNAUTHORIZED,
+        });
+
+        // Nothing was archived by any denied caller.
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: event.id },
+            select: { status: true, archivedAt: true },
+        });
+        expect(row.status).toBe("PUBLISHED");
+        expect(row.archivedAt).toBeNull();
+    });
+
+    test("an archived event can no longer be published, unpublished or updated", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event } = await seedPublishedEvent("arch5");
+        await archiveEvent(scope!, event.id);
+
+        await expect(publishEvent(scope!, event.id)).rejects.toMatchObject({
+            code: "CONFLICT",
+        });
+        await expect(unpublishEvent(scope!, event.id)).rejects.toMatchObject({
+            code: "CONFLICT",
+        });
+        await expect(
+            updateEvent(scope!, event.id, { title: "Nope" } as never)
+        ).rejects.toMatchObject({ code: "CONFLICT" });
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 12 — CANCEL (design §10.3 PUBLISHED → CANCELLED)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("cancelEvent — sales stop, no money moves", () => {
+    test("cancels a published event, records the reason, and writes no financial change", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event } = await seedPublishedEvent("can1");
+
+        const result = await cancelEvent(scope!, event.id, {
+            reason: "Cuaca buruk",
+        });
+
+        expect(result.event.status).toBe("CANCELLED");
+        expect(result.event.cancelledAt).not.toBeNull();
+
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: event.id },
+            select: { status: true, cancelReason: true, publishedAt: true },
+        });
+        expect(row.status).toBe("CANCELLED");
+        expect(row.cancelReason).toBe("Cuaca buruk");
+        // Publication history is retained, not erased.
+        expect(row.publishedAt).not.toBeNull();
+
+        // The public page resolves and clearly says the event is unavailable.
+        const detail = await getPublicEventBySlug(event.slug, ORIGIN);
+        expect(detail.status).toBe("CANCELLED");
+        expect(detail.isAvailable).toBe(false);
+        expect(detail.unavailableReason).toContain("dibatalkan");
+
+        const audit = await prisma.adminAuditLog.findFirst({
+            where: { entityRef: event.id, action: "event.cancel" },
+            select: { actorUserId: true, organizerId: true, reason: true },
+        });
+        expect(audit?.actorUserId).toBe(userA.id);
+        expect(audit?.organizerId).toBe(orgA.id);
+        expect(audit?.reason).toBe("Cuaca buruk");
+    });
+
+    test("is idempotent: a second cancel keeps the first timestamp and writes no second audit row", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event } = await seedPublishedEvent("can2");
+
+        const first = await cancelEvent(scope!, event.id, { reason: "First" });
+        const second = await cancelEvent(scope!, event.id, { reason: "Second" });
+
+        expect(second.alreadyCancelled).toBe(true);
+        expect(second.expiredOrders).toBe(0);
+        expect(second.event.cancelledAt?.toISOString()).toBe(
+            first.event.cancelledAt?.toISOString()
+        );
+
+        const auditRows = await prisma.adminAuditLog.count({
+            where: { entityRef: event.id, action: "event.cancel" },
+        });
+        expect(auditRows).toBe(1);
+
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: event.id },
+            select: { cancelReason: true },
+        });
+        expect(row.cancelReason).toBe("First");
+    });
+
+    test("auto-expires the event's unpaid orders and returns their seats", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event, ticketType } = await seedPublishedEvent("can3", 10);
+
+        const order = await prisma.eventOrder.create({
+            data: {
+                orderNumber: `EVT-L-can3-${SUFFIX}`.slice(0, 40),
+                organizerId: orgA.id,
+                eventId: event.id,
+                userId: userA.id,
+                buyerName: `Buyer can3`,
+                subtotal: 200000,
+                total: 200000,
+                organizerNetAmount: 200000,
+            },
+            select: { id: true },
+        });
+
+        await prisma.ticketReservation.create({
+            data: {
+                orderId: order.id,
+                ticketTypeId: ticketType.id,
+                eventId: event.id,
+                quantity: 2,
+                expiresAt: new Date(Date.now() + 30 * 60_000),
+            },
+        });
+
+        await prisma.ticketType.update({
+            where: { id: ticketType.id },
+            data: { reserved: 2 },
+        });
+
+        const result = await cancelEvent(scope!, event.id, {
+            reason: "Force majeure",
+        });
+
+        expect(result.expiredOrders).toBe(1);
+
+        const expiredOrder = await prisma.eventOrder.findUniqueOrThrow({
+            where: { id: order.id },
+            select: { status: true },
+        });
+        expect(expiredOrder.status).toBe("EXPIRED");
+
+        const reservation = await prisma.ticketReservation.findFirstOrThrow({
+            where: { orderId: order.id },
+            select: { status: true },
+        });
+        expect(reservation.status).toBe("EXPIRED");
+
+        const counters = await prisma.ticketType.findUniqueOrThrow({
+            where: { id: ticketType.id },
+            select: { reserved: true, sold: true, quota: true },
+        });
+        expect(counters.reserved).toBe(0);
+        // `sold` is untouched: the seat was only ever held, never sold.
+        expect(counters.sold).toBe(0);
+        expect(counters.quota).toBe(10);
+    });
+
+    test("does not touch a paid order, its issued ticket, or its refundedAmount", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const { event, ticketType } = await seedPublishedEvent("can4");
+        const seed = await seedPaidOrder(event.id, ticketType.id, "can4");
+
+        const result = await cancelEvent(scope!, event.id, {
+            reason: "Test",
+        });
+
+        // No PENDING_PAYMENT order existed, so nothing expired.
+        expect(result.expiredOrders).toBe(0);
+
+        const order = await prisma.eventOrder.findUniqueOrThrow({
+            where: { id: seed.order.id },
+            select: {
+                status: true,
+                paymentStatus: true,
+                refundedAmount: true,
+                cancelledAt: true,
+            },
+        });
+        expect(order.status).toBe("PAID");
+        expect(order.paymentStatus).toBe("PAID");
+        expect(Number(order.refundedAmount)).toBe(0);
+        expect(order.cancelledAt).toBeNull();
+
+        const ticket = await prisma.ticket.findUniqueOrThrow({
+            where: { id: seed.ticket.id },
+            select: { status: true, voidedAt: true },
+        });
+        expect(ticket.status).toBe("ISSUED");
+        expect(ticket.voidedAt).toBeNull();
+
+        // PHASE 18B (D-P17-09 = A): cancellation creates NO refund rows. A refund on a
+        // cancelled event is the buyer's own request through the normal workflow — the
+        // platform never batches one on the buyer's behalf, and no money moves here.
+        expect(
+            await prisma.refund.count({
+                where: { eventOrderId: seed.order.id },
+            })
+        ).toBe(0);
+    });
+
+    test("refuses to cancel a draft event", async () => {
+        signInAs(userA.id);
+        const scope = await scopeFor(userA.id);
+
+        const event = await createEvent(scope!, orgA.id, {
+            title: `Draft Cancel ${SUFFIX}`,
+            sportId: sport.id,
+            startAt: FUTURE,
+        } as never);
+
+        await expect(cancelEvent(scope!, event.id)).rejects.toMatchObject({
+            code: "CONFLICT",
+        });
+    });
+
+    test("a member of A cannot cancel B's event", async () => {
+        signInAs(userA.id);
+        const scopeA = await scopeFor(userA.id);
+
+        const foreign = await seedEvent(orgB.id, "can-foreign", "PUBLISHED");
+
+        await expect(cancelEvent(scopeA!, foreign.id)).rejects.toMatchObject({
+            code: AuthzErrorCode.ORGANIZER_ACCESS_DENIED,
+        });
+
+        const row = await prisma.event.findUniqueOrThrow({
+            where: { id: foreign.id },
+            select: { status: true },
+        });
+        expect(row.status).toBe("PUBLISHED");
     });
 });

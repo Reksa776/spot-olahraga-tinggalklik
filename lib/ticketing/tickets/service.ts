@@ -21,9 +21,9 @@ import type { TicketWalletQuery } from "./validation";
  * ==========================================
  *
  * Design §26.5 (`GET /api/tickets`) and §26.6 (`GET /api/tickets/{ticketCode}`) with one
- * substitution, forced by the live tree: the routes live under `/api/ticketing/**` because
- * `/api/**`'s retail siblings already own `/api/orders/**`, and brief §3 keeps ticketing
- * namespaced rather than moving retail.
+ * substitution, forced by the tree as it stood: the routes live under `/api/ticketing/**`
+ * because the retail siblings owned `/api/orders/**`. Retail is gone now, but ticketing
+ * stays namespaced rather than renaming live endpoints.
  *
  * ── OWNERSHIP IS STRUCTURAL, NOT A CHECK ─────────────────────────────────────────
  * Every query below carries `holderUserId: <session user>` in its `where` clause. That is
@@ -121,10 +121,16 @@ export async function listOwnTickets(
  * Brief §37 is explicit that an opaque code buys no anonymity: "Never make
  * `/api/ticketing/tickets/[ticketCode]` public merely because ticketCode is opaque."
  * Hence the same session + ownership predicate as the list.
+ *
+ * PHASE 16 — `now` is injectable for the same reason every other time-dependent predicate in
+ * this tree takes one (`isEventCheckInOpen`, `advanceEventLifecycleBatch`, `expireDueReservations`):
+ * the QR verdict depends on the clock, and a test must be able to assert a boundary exactly
+ * instead of racing it. Production callers omit it and get the server clock.
  */
 export async function getOwnTicket(
     ticketCode: string,
-    actor: AuthzScope
+    actor: AuthzScope,
+    now: Date = new Date()
 ): Promise<TicketDetail> {
     if (!actor?.userId) {
         throw AppError.validation("Pemanggil tidak terautentikasi.");
@@ -149,5 +155,5 @@ export async function getOwnTicket(
         throw AppError.notFound("Tiket tidak ditemukan.");
     }
 
-    return buildTicketDetail(row);
+    return buildTicketDetail(row, now);
 }

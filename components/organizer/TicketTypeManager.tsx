@@ -4,26 +4,24 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-    Alert,
-    Button,
-    Group,
-    List,
-    Modal,
-    Paper,
-    SimpleGrid,
-    Stack,
-    Switch,
-    Text,
-    Textarea,
-    TextInput,
-} from "@mantine/core";
-
-import {
     DataTable,
     EmptyBlock,
     SectionCard,
     StatusBadge,
 } from "@/components/dashboard/primitives";
+import { Alert, AlertDescription } from "@/components/dashboard/ui/alert";
+import { Button } from "@/components/dashboard/ui/button";
+import { Card } from "@/components/dashboard/ui/card";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
+import { Switch } from "@/components/dashboard/ui/select";
 
 import { apiFetch, ClientApiError } from "./api";
 
@@ -60,7 +58,7 @@ import { apiFetch, ClientApiError } from "./api";
  * convenience rather than the control.
  *
  * ---------------------------------------------------------------------------
- * PHASE (Mantine body migration): presentation only.
+ * PHASE (shadcn migration): presentation only.
  *
  * Preserved exactly: `toLocalInput` / `toIso`, `formatMoney` (same `Number()` read-only formatting
  * with `minimumFractionDigits: 0` / `maximumFractionDigits: 2`), `EMPTY_FORM` and all of its
@@ -72,12 +70,12 @@ import { apiFetch, ClientApiError } from "./api";
  * is the toggled one) and `remove` (the DELETE endpoint, the same reset rule, and the API's verbatim
  * "cannot delete an ordered type" message).
  *
- * `price` stays a **string** in the form state and in the payload — the Mantine field is a
- * `TextInput`, never a `NumberInput`, precisely so no numeric round trip is introduced.
+ * `price` stays a **string** in the form state and in the payload, and its field stays a text input
+ * with `inputMode="decimal"` — never a number field — precisely so no numeric round trip is
+ * introduced.
  *
- * The delete confirmation was `window.confirm`; it is now a Mantine `Modal` with the identical
- * wording (`Hapus jenis tiket "<name>"?`), which is what the brief requires for dashboard
- * confirmations.
+ * The delete confirmation is the shadcn `Dialog` carrying the identical wording
+ * (`Hapus jenis tiket "<name>"?`).
  */
 
 type TicketType = {
@@ -106,6 +104,18 @@ type TicketType = {
 type Props = {
     eventId: string;
     eventStartAt: string;
+    /**
+     * PHASE 20B (D-P19-05 = A): `publishEvent` refuses an event with no end time, so the
+     * readiness preview has to know whether one exists — otherwise the list would report
+     * "ready" for an event the server will refuse. `null` means no end time is set.
+     */
+    eventEndAt: string | null;
+    /**
+     * The server's "now", passed in so the readiness preview can compare against it
+     * without reading the clock during render (which is impure and can make the render
+     * non-idempotent). See the component note below.
+     */
+    serverNow: string;
     ticketTypes: TicketType[];
 };
 
@@ -170,6 +180,8 @@ function formatMoney(price: string, currency: string): string {
 export default function TicketTypeManager({
     eventId,
     eventStartAt,
+    eventEndAt,
+    serverNow,
     ticketTypes,
 }: Props) {
     const router = useRouter();
@@ -188,11 +200,21 @@ export default function TicketTypeManager({
      *
      * Only the ticket-type condition is evaluated here; the "start time in the future"
      * condition is shown too because it is one line and is the other common blocker.
+     *
+     * PHASE 20B (D-P19-05 = A) adds the third: an event needs an `endAt` to be published,
+     * because an `endAt`-less event can never complete. The preview is a convenience — the
+     * server re-evaluates every condition on publish — but it must not report "ready" for
+     * an event the server will refuse, so the new condition is listed here too.
      */
     const activeWithQuota = ticketTypes.filter(
         (type) => type.isActive && type.inventory.quota > 0
     );
-    const startInFuture = new Date(eventStartAt).getTime() > Date.now();
+
+    // Compared against the SERVER's clock (passed as `serverNow`), not the browser's:
+    // reading `Date.now()` during render is impure and can make this render
+    // non-idempotent. The value is advisory anyway — `publishEvent` re-evaluates the
+    // precondition server-side, so a slightly stale `serverNow` cannot publish anything.
+    const startInFuture = new Date(eventStartAt).getTime() > new Date(serverNow).getTime();
 
     const readiness = [
         {
@@ -202,6 +224,10 @@ export default function TicketTypeManager({
         {
             label: "Minimal satu jenis tiket aktif dengan kuota lebih dari 0",
             met: activeWithQuota.length > 0,
+        },
+        {
+            label: "Waktu selesai event sudah diisi",
+            met: eventEndAt !== null,
         },
     ];
 
@@ -352,39 +378,43 @@ export default function TicketTypeManager({
     }
 
     return (
-        <Stack gap="lg">
+        <div className="flex flex-col gap-6">
             {/* Publish readiness preview (brief §27). Advisory only. */}
 
-            <Paper withBorder radius="md" p="md" bg="gray.0">
-                <List size="sm" spacing={4}>
+            <Card className="bg-muted/40 p-4">
+                <ul className="flex flex-col gap-2">
                     {readiness.map((item) => (
-                        <List.Item key={item.label}>
-                            <Group gap="xs" wrap="nowrap" align="flex-start">
-                                <Text
-                                    component="span"
-                                    fw={700}
-                                    c={item.met ? "green.7" : "red.7"}
+                        <li key={item.label}>
+                            <div className="flex flex-nowrap items-start gap-2">
+                                <span
                                     aria-hidden
+                                    className={
+                                        item.met
+                                            ? "font-bold text-emerald-600 dark:text-emerald-400"
+                                            : "font-bold text-destructive"
+                                    }
                                 >
                                     {item.met ? "✓" : "✗"}
-                                </Text>
+                                </span>
 
-                                <Text
-                                    component="span"
-                                    size="sm"
-                                    c={item.met ? "dimmed" : undefined}
+                                <span
+                                    className={
+                                        item.met
+                                            ? "text-sm text-muted-foreground"
+                                            : "text-sm"
+                                    }
                                 >
                                     {item.label}
-                                </Text>
-                            </Group>
-                        </List.Item>
+                                </span>
+                            </div>
+                        </li>
                     ))}
-                </List>
+                </ul>
 
-                <Text size="xs" c="dimmed" mt="xs">
+                <p className="mt-2 text-xs text-muted-foreground">
                     Syarat ini diperiksa ulang oleh server saat publikasi dijalankan.
-                </Text>
-            </Paper>
+                </p>
+            </Card>
 
             {/* TICKET TYPES */}
 
@@ -411,75 +441,85 @@ export default function TicketTypeManager({
                         rows={ticketTypes.map((type) => ({
                             key: type.id,
                             cells: [
-                                <Stack gap={0} key="name">
-                                    <Text size="sm" fw={500}>
+                                <div className="flex flex-col" key="name">
+                                    <span className="text-sm font-medium">
                                         {type.name}
-                                    </Text>
+                                    </span>
 
-                                    <Text size="xs" c="dimmed">
+                                    <span className="text-xs text-muted-foreground">
                                         urutan {type.sortOrder} · min {type.minPerOrder}
                                         {type.maxPerOrder === null
                                             ? ""
                                             : ` · maks ${type.maxPerOrder}`}
-                                    </Text>
-                                </Stack>,
+                                    </span>
+                                </div>,
 
-                                <Text key="price" size="sm" style={{ whiteSpace: "nowrap" }}>
+                                <span className="whitespace-nowrap text-sm" key="price">
                                     {formatMoney(type.price, type.currency)}
-                                </Text>,
+                                </span>,
 
-                                <Text key="quota" size="sm">
+                                <span className="text-sm tabular-nums" key="quota">
                                     {type.inventory.quota.toLocaleString("id-ID")}
-                                </Text>,
+                                </span>,
 
-                                <Text key="sold" size="sm">
+                                <span className="text-sm tabular-nums" key="sold">
                                     {type.inventory.sold.toLocaleString("id-ID")}
-                                </Text>,
+                                </span>,
 
-                                <Text key="reserved" size="sm">
+                                <span className="text-sm tabular-nums" key="reserved">
                                     {type.inventory.reserved.toLocaleString("id-ID")}
-                                </Text>,
+                                </span>,
 
-                                <Text key="available" size="sm" fw={500}>
+                                <span
+                                    className="text-sm font-medium tabular-nums"
+                                    key="available"
+                                >
                                     {type.inventory.available.toLocaleString("id-ID")}
-                                </Text>,
+                                </span>,
 
-                                <Stack gap={2} key="sales">
-                                    <Text size="xs">
+                                <div className="flex flex-col gap-0.5" key="sales">
+                                    <span className="text-xs">
                                         {type.salesState}
                                         {type.isSoldOut ? " · habis" : ""}
-                                    </Text>
+                                    </span>
 
-                                    <Text size="xs" c="dimmed">
+                                    <span className="text-xs text-muted-foreground">
                                         {type.salesStartAt
-                                            ? new Date(type.salesStartAt).toLocaleString("id-ID")
+                                            ? new Date(type.salesStartAt).toLocaleString(
+                                                  "id-ID"
+                                              )
                                             : "mengikuti event"}
                                         {" → "}
                                         {type.salesEndAt
-                                            ? new Date(type.salesEndAt).toLocaleString("id-ID")
+                                            ? new Date(type.salesEndAt).toLocaleString(
+                                                  "id-ID"
+                                              )
                                             : "mengikuti event"}
-                                    </Text>
-                                </Stack>,
+                                    </span>
+                                </div>,
 
-                                <StatusBadge key="status" tone={type.isActive ? "success" : "neutral"}>
+                                <StatusBadge
+                                    key="status"
+                                    tone={type.isActive ? "success" : "neutral"}
+                                >
                                     {type.isActive ? "Aktif" : "Nonaktif"}
                                 </StatusBadge>,
 
-                                <Group justify="flex-end" gap="xs" wrap="nowrap" key="actions">
+                                <div
+                                    className="flex flex-nowrap justify-end gap-1"
+                                    key="actions"
+                                >
                                     <Button
-                                        variant="subtle"
-                                        size="compact-sm"
-                                        radius="md"
+                                        variant="ghost"
+                                        size="sm"
                                         onClick={() => startEdit(type)}
                                     >
                                         Ubah
                                     </Button>
 
                                     <Button
-                                        variant="subtle"
-                                        size="compact-sm"
-                                        radius="md"
-                                        color="ink"
+                                        variant="ghost"
+                                        size="sm"
                                         disabled={busy}
                                         onClick={() => setActive(type, !type.isActive)}
                                     >
@@ -487,16 +527,15 @@ export default function TicketTypeManager({
                                     </Button>
 
                                     <Button
-                                        variant="subtle"
-                                        size="compact-sm"
-                                        radius="md"
-                                        color="red"
+                                        variant="ghost"
+                                        size="sm"
                                         disabled={busy}
                                         onClick={() => setDeleteTarget(type)}
+                                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                                     >
                                         Hapus
                                     </Button>
-                                </Group>,
+                                </div>,
                             ],
                         }))}
                     />
@@ -504,14 +543,14 @@ export default function TicketTypeManager({
             )}
 
             {error ? (
-                <Alert color="red" variant="light" radius="md">
-                    {error}
+                <Alert variant="danger">
+                    <AlertDescription className="text-foreground">{error}</AlertDescription>
                 </Alert>
             ) : null}
 
             {notice ? (
-                <Alert color="blue" variant="light" radius="md">
-                    {notice}
+                <Alert variant="info">
+                    <AlertDescription className="text-foreground">{notice}</AlertDescription>
                 </Alert>
             ) : null}
 
@@ -520,13 +559,11 @@ export default function TicketTypeManager({
             <SectionCard
                 title={editingId ? `Ubah "${editing?.name ?? ""}"` : "Tambah jenis tiket"}
             >
-                <form onSubmit={submit}>
-                    <Stack gap="md">
-                        <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                            <TextInput
-                                label="Nama"
-                                size="md"
-                                radius="md"
+                <form onSubmit={submit} className="flex flex-col gap-5">
+                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+                        <Field label="Nama" required htmlFor="ticket-type-name">
+                            <Input
+                                id="ticket-type-name"
                                 required
                                 minLength={2}
                                 value={form.name}
@@ -535,12 +572,16 @@ export default function TicketTypeManager({
                                 }
                                 placeholder="Tribun, VIP, Early Bird…"
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Harga (IDR)"
-                                description="Maksimal 2 angka desimal. Nilai dikirim apa adanya tanpa pembulatan."
-                                size="md"
-                                radius="md"
+                        <Field
+                            label="Harga (IDR)"
+                            hint="Maksimal 2 angka desimal. Nilai dikirim apa adanya tanpa pembulatan."
+                            required
+                            htmlFor="ticket-type-price"
+                        >
+                            <Input
+                                id="ticket-type-price"
                                 required
                                 inputMode="decimal"
                                 value={form.price}
@@ -549,18 +590,22 @@ export default function TicketTypeManager({
                                 }
                                 placeholder="150000"
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Kuota"
-                                description={
-                                    editing && editing.inventory.committed > 0
-                                        ? `Kuota tidak dapat dikurangi di bawah ${editing.inventory.committed.toLocaleString(
-                                              "id-ID"
-                                          )} (terjual + ditahan).`
-                                        : undefined
-                                }
-                                size="md"
-                                radius="md"
+                        <Field
+                            label="Kuota"
+                            hint={
+                                editing && editing.inventory.committed > 0
+                                    ? `Kuota tidak dapat dikurangi di bawah ${editing.inventory.committed.toLocaleString(
+                                          "id-ID"
+                                      )} (terjual + ditahan).`
+                                    : undefined
+                            }
+                            required
+                            htmlFor="ticket-type-quota"
+                        >
+                            <Input
+                                id="ticket-type-quota"
                                 required
                                 inputMode="numeric"
                                 min={editing ? editing.inventory.committed : 0}
@@ -569,146 +614,162 @@ export default function TicketTypeManager({
                                     setForm({ ...form, quota: event.currentTarget.value })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Urutan tampil"
-                                size="md"
-                                radius="md"
+                        <Field label="Urutan tampil" htmlFor="ticket-type-sort">
+                            <Input
+                                id="ticket-type-sort"
                                 inputMode="numeric"
                                 value={form.sortOrder}
                                 onChange={(event) =>
                                     setForm({ ...form, sortOrder: event.currentTarget.value })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Minimal per order"
-                                size="md"
-                                radius="md"
+                        <Field label="Minimal per order" htmlFor="ticket-type-min">
+                            <Input
+                                id="ticket-type-min"
                                 inputMode="numeric"
                                 value={form.minPerOrder}
                                 onChange={(event) =>
-                                    setForm({ ...form, minPerOrder: event.currentTarget.value })
+                                    setForm({
+                                        ...form,
+                                        minPerOrder: event.currentTarget.value,
+                                    })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Maksimal per order"
-                                size="md"
-                                radius="md"
+                        <Field label="Maksimal per order" htmlFor="ticket-type-max">
+                            <Input
+                                id="ticket-type-max"
                                 inputMode="numeric"
                                 placeholder="kosong = mengikuti batas event"
                                 value={form.maxPerOrder}
                                 onChange={(event) =>
-                                    setForm({ ...form, maxPerOrder: event.currentTarget.value })
+                                    setForm({
+                                        ...form,
+                                        maxPerOrder: event.currentTarget.value,
+                                    })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Mulai penjualan"
-                                description="Kosong = mengikuti jadwal penjualan event."
-                                size="md"
-                                radius="md"
+                        <Field
+                            label="Mulai penjualan"
+                            hint="Kosong = mengikuti jadwal penjualan event."
+                            htmlFor="ticket-type-sales-start"
+                        >
+                            <Input
+                                id="ticket-type-sales-start"
                                 type="datetime-local"
                                 value={form.salesStartAt}
                                 onChange={(event) =>
-                                    setForm({ ...form, salesStartAt: event.currentTarget.value })
+                                    setForm({
+                                        ...form,
+                                        salesStartAt: event.currentTarget.value,
+                                    })
                                 }
                             />
+                        </Field>
 
-                            <TextInput
-                                label="Berakhir penjualan"
-                                size="md"
-                                radius="md"
+                        <Field
+                            label="Berakhir penjualan"
+                            htmlFor="ticket-type-sales-end"
+                        >
+                            <Input
+                                id="ticket-type-sales-end"
                                 type="datetime-local"
                                 value={form.salesEndAt}
                                 onChange={(event) =>
-                                    setForm({ ...form, salesEndAt: event.currentTarget.value })
+                                    setForm({
+                                        ...form,
+                                        salesEndAt: event.currentTarget.value,
+                                    })
                                 }
                             />
-                        </SimpleGrid>
+                        </Field>
+                    </div>
 
+                    <Field label="Deskripsi" htmlFor="ticket-type-description">
                         <Textarea
-                            label="Deskripsi"
-                            size="md"
-                            radius="md"
-                            minRows={3}
-                            maxRows={8}
-                            autosize
+                            id="ticket-type-description"
+                            rows={3}
                             value={form.description}
                             onChange={(event) =>
-                                setForm({ ...form, description: event.currentTarget.value })
+                                setForm({
+                                    ...form,
+                                    description: event.currentTarget.value,
+                                })
                             }
                         />
+                    </Field>
 
+                    <label className="flex cursor-pointer items-center gap-3">
                         <Switch
-                            label="Aktif (dapat dibeli)"
-                            size="md"
-                            color="green"
                             checked={form.isActive}
-                            onChange={(event) =>
-                                setForm({ ...form, isActive: event.currentTarget.checked })
+                            onCheckedChange={(checked) =>
+                                setForm({ ...form, isActive: checked })
                             }
                         />
 
-                        <Group gap="sm">
-                            <Button
-                                type="submit"
-                                size="md"
-                                radius="md"
-                                disabled={busy}
-                                loading={busy}
-                            >
-                                {busy
-                                    ? "Menyimpan…"
-                                    : editingId
-                                      ? "Simpan perubahan"
-                                      : "Tambah jenis tiket"}
-                            </Button>
+                        <span className="text-[0.8125rem] font-medium leading-tight">
+                            Aktif (dapat dibeli)
+                        </span>
+                    </label>
 
-                            {editingId ? (
-                                <Button
-                                    type="button"
-                                    variant="default"
-                                    size="md"
-                                    radius="md"
-                                    onClick={reset}
-                                >
-                                    Batal
-                                </Button>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button type="submit" disabled={busy}>
+                            {busy ? (
+                                <span
+                                    aria-hidden
+                                    className="size-3.5 animate-spin rounded-full border-2 border-current/30 border-t-current"
+                                />
                             ) : null}
-                        </Group>
-                    </Stack>
+                            {busy
+                                ? "Menyimpan…"
+                                : editingId
+                                  ? "Simpan perubahan"
+                                  : "Tambah jenis tiket"}
+                        </Button>
+
+                        {editingId ? (
+                            <Button type="button" variant="outline" onClick={reset}>
+                                Batal
+                            </Button>
+                        ) : null}
+                    </div>
                 </form>
             </SectionCard>
 
             {/* DELETE CONFIRMATION */}
 
-            <Modal
-                opened={deleteTarget !== null}
-                onClose={() => setDeleteTarget(null)}
-                title="Hapus Jenis Tiket"
-                centered
+            <Dialog
+                open={deleteTarget !== null}
+                onOpenChange={(open) => {
+                    if (!open) setDeleteTarget(null);
+                }}
             >
-                <Text size="sm">
-                    Hapus jenis tiket &quot;{deleteTarget?.name}&quot;?
-                </Text>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Hapus Jenis Tiket</DialogTitle>
+                        <DialogDescription>
+                            Hapus jenis tiket &quot;{deleteTarget?.name}&quot;?
+                        </DialogDescription>
+                    </DialogHeader>
 
-                <Group justify="flex-end" mt="lg">
-                    <Button
-                        variant="default"
-                        size="md"
-                        radius="md"
-                        onClick={() => setDeleteTarget(null)}
-                    >
-                        Batal
-                    </Button>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+                            Batal
+                        </Button>
 
-                    <Button color="red" size="md" radius="md" onClick={confirmDelete}>
-                        Hapus
-                    </Button>
-                </Group>
-            </Modal>
-        </Stack>
+                        <Button variant="destructive" onClick={confirmDelete}>
+                            Hapus
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+        </div>
     );
 }

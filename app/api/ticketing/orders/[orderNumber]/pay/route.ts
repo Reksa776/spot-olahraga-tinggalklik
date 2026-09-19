@@ -1,9 +1,10 @@
-import type { NextRequest } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 import { created, handleApi, ok } from "@/lib/api/response";
 import { parseOrThrow } from "@/lib/api/validation";
 import { requireAuth } from "@/lib/authz";
 import { requireSameOrigin } from "@/lib/csrf";
+import { rateLimiters } from "@/lib/rate-limit";
 import { orderNumberParamSchema } from "@/lib/ticketing/checkout-validation";
 import { createOrderPayment } from "@/lib/ticketing/payment/service";
 import { paymentCreateRequestSchema } from "@/lib/ticketing/payment/validation";
@@ -16,11 +17,11 @@ import { paymentCreateRequestSchema } from "@/lib/ticketing/payment/validation";
  * provider session".
  *
  * ── WHY THIS PATH, AND WHAT CHANGED FROM §26.3 ───────────────────────────────────
- * The design's path cannot be used: `/api/orders/**` is the LIVE RETAIL order tree with a
- * `[id]` dynamic segment, and Next.js rejects two different dynamic segment names at the
- * same position. Moving retail is forbidden (brief §27), so — following the precedent
- * Phase 4 set for `/api/admin/**` and Phase 6 for checkout — the ticketing surface lives
- * under `/api/ticketing/**`.
+ * The design's path was unusable at the time: `/api/orders/**` was the retail order tree
+ * with a `[id]` dynamic segment, and Next.js rejects two different dynamic segment names
+ * at the same position. Retail has since been deleted, but — following the precedent
+ * Phase 4 set for `/api/admin/**` and Phase 6 for checkout — the ticketing surface stays
+ * under `/api/ticketing/**` rather than renaming a live endpoint.
  *
  * The route is nested under the existing Phase 6 order route rather than a parallel
  * `/api/ticketing/payment/create`, because brief §26 says to "use the existing Phase 6
@@ -60,6 +61,47 @@ export async function POST(
 
         const scope = await requireAuth();
         const { orderNumber } = await params;
+
+        /*
+         * RATE LIMIT (the `paymentCreation` bucket).
+         *
+         * Opening a provider session is an outbound, credential-bearing, rate-limited call to
+         * a paid third party, and this endpoint is reachable by any signed-in buyer. Without a
+         * bucket, one account can drive that call as fast as it can send requests — which the
+         * provider answers by throttling the MERCHANT, i.e. every other buyer. The bucket has
+         * existed in `lib/rate-limit.ts` since the payment work; this is the route that uses
+         * it. The limit is generous (5 per 5 minutes per user) because a buyer legitimately
+         * retries after a failure, and it counts ATTEMPTS, not successful sessions: a burst of
+         * failures is exactly the pattern worth stopping.
+         *
+         * It runs AFTER authentication so the bucket keys on the real user id rather than on a
+         * spoofable IP, and it returns the registry's 429 with a Retry-After so a client can
+         * back off instead of hammering.
+         */
+        const limit = rateLimiters.paymentCreation(scope.userId);
+
+        if (!limit.allowed) {
+            // Seconds, rounded UP, so a client that honours Retry-After is not told to come
+            // back marginally too early and burn another attempt.
+            const retryAfterSeconds = Math.max(
+                1,
+                Math.ceil(limit.retryAfterMs / 1000)
+            );
+
+            return NextResponse.json(
+                {
+                    success: false,
+                    code: "RATE_LIMITED",
+                    message:
+                        "Terlalu banyak percobaan pembayaran. Coba lagi beberapa saat lagi.",
+                    details: { retryAfterSeconds },
+                },
+                {
+                    status: 429,
+                    headers: { "Retry-After": String(retryAfterSeconds) },
+                }
+            );
+        }
 
         // An empty body is valid: every field is optional (all of them are presentation
         // choices, none of them is financial).

@@ -16,8 +16,8 @@ const HELP = [
 ];
 
 const ORGANIZER = [
-    { href: "/organizer/events", label: "Dasbor event" },
-    { href: "/organizer/venues", label: "Kelola venue" },
+    { href: "/dashboard/events", label: "Dasbor event" },
+    { href: "/dashboard/venues", label: "Kelola venue" },
     { href: "/register", label: "Daftar akun" },
 ];
 

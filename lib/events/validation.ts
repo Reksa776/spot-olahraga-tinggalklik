@@ -47,11 +47,22 @@ const isoDateTime = z
         return parsed;
     });
 
+/**
+ * An optional ISO date-time where **both** states must stay distinguishable.
+ *
+ * PHASE 12 FIX — `null` now means "clear this column", `undefined` still means "do not
+ * touch it". Previously both `""` and `null` collapsed to `undefined`, so an organizer
+ * could set a sales window but could never clear it: the form's empty input produced
+ * `null`, the field was silently dropped by the update whitelist, and the old value
+ * survived. Since the event form now exposes `salesStartAt` / `salesEndAt` / `endAt`,
+ * that silent no-op had to be corrected. The semantics now match
+ * `lib/ticket-types/validation.ts#optionalIsoDateTime`, which already separates the two.
+ */
 const optionalIsoDateTime = z
     .union([isoDateTime, z.literal(""), z.null()])
     .optional()
     .transform((value) =>
-        value === "" || value === null ? undefined : value
+        value === "" || value === null ? null : value
     );
 
 const optionalText = (max: number) =>
@@ -85,6 +96,35 @@ const eventVisibility = z.enum(["PUBLIC", "UNLISTED"]);
 
 const timezone = z.string().trim().min(1).max(64).optional();
 
+/**
+ * Cross-field sales-window rule, applied to both schemas.
+ *
+ * Design §10.2 defines the event window as the **default** that a ticket type inherits
+ * (`null` salesStartAt = immediately after publish; `null` salesEndAt = until event
+ * start). A contradictory pair is the only thing that is wrong here — absence is
+ * legitimate — so only "end before start" is refused, exactly as the ticket-type schema
+ * refuses it. The authoritative check against the *stored* value on update lives in the
+ * service (a partial PATCH can move one end of the window without the other).
+ */
+function checkSalesWindow(
+    value: { salesStartAt?: Date | null; salesEndAt?: Date | null },
+    ctx: z.RefinementCtx
+): void {
+    const { salesStartAt, salesEndAt } = value;
+
+    if (
+        salesStartAt instanceof Date &&
+        salesEndAt instanceof Date &&
+        salesEndAt.getTime() < salesStartAt.getTime()
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["salesEndAt"],
+            message: "Waktu berakhir penjualan tidak boleh sebelum waktu mulai.",
+        });
+    }
+}
+
 export const createEventSchema = z
     .object({
         title: z.string().trim().min(3, "Judul minimal 3 karakter.").max(200),
@@ -113,7 +153,8 @@ export const createEventSchema = z
         contactName: optionalText(120),
         contactPhone: optionalText(40),
     })
-    .strict();
+    .strict()
+    .superRefine(checkSalesWindow);
 
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
@@ -155,11 +196,53 @@ export const updateEventSchema = z
         slug: z.string().trim().min(3).max(80).optional(),
     })
     .strict()
+    .superRefine(checkSalesWindow)
     .refine((value) => Object.keys(value).length > 0, {
         message: "Tidak ada perubahan yang dikirim.",
     });
 
 export type UpdateEventInput = z.infer<typeof updateEventSchema>;
+
+/**
+ * Event cancellation body.
+ *
+ * Only a reason is accepted. Nothing else about a cancellation is client-controlled:
+ * the actor comes from the session, the tenant from the event row, and the timestamp
+ * from the server. The reason is bounded free text so it can be shown to buyers on the
+ * public page and recorded in the audit trail, and is optional because the design's
+ * transition does not require one.
+ */
+export const cancelEventSchema = z
+    .object({
+        reason: z
+            .union([z.string().trim().min(3).max(500), z.literal(""), z.null()])
+            .optional()
+            .transform((value) => (value ? value : null)),
+    })
+    .strict();
+
+export type CancelEventInput = z.infer<typeof cancelEventSchema>;
+
+/**
+ * Manual completion body (Phase 15, P14-D05).
+ *
+ * Only an optional note is accepted. Nothing about the transition is client-controlled:
+ * the actor comes from the session, the tenant from the event row, and `completedAt` from
+ * the server clock. The note is bounded free text so it can be recorded in the audit
+ * trail as the reason a human closed the event ("acara selesai lebih awal", "koreksi
+ * jadwal", …). Strict, like every other mutation schema here, so an unknown key —
+ * `status`, `completedAt`, `organizerId` — is a 400 rather than something silently read.
+ */
+export const completeEventSchema = z
+    .object({
+        note: z
+            .union([z.string().trim().min(3).max(500), z.literal(""), z.null()])
+            .optional()
+            .transform((value) => (value ? value : null)),
+    })
+    .strict();
+
+export type CompleteEventInput = z.infer<typeof completeEventSchema>;
 
 /**
  * Catalog query parameters (design §25.2).

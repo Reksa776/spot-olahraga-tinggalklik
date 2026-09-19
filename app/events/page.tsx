@@ -159,7 +159,7 @@ export default async function EventsCatalogPage({
                             secondaryAction={
                                 hasFilters
                                     ? { href: "/", label: "Kembali ke beranda" }
-                                    : { href: "/organizer/events", label: "Buat event" }
+                                    : { href: "/dashboard/events", label: "Buat event" }
                             }
                         />
                     </div>

@@ -35,6 +35,12 @@ jest.setTimeout(180_000);
 
 const SUFFIX = `p6-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+/**
+ * PHASE 20B (D-P19-05 = A): `publishEvent` now refuses an event with no `endAt`, because such
+ * an event can never complete and its gate would never close. Fixtures that publish therefore
+ * carry a real end time — the same requirement a real organizer now meets.
+ */
+const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 const PRICE = "150000.00";
 
 let ownerA: { id: string };
@@ -203,7 +209,12 @@ beforeAll(async () => {
     eventA = await createEvent(
         scopeA,
         orgA.id,
-        { title: `P6 Event A ${SUFFIX}`, sportId, startAt: FUTURE } as never
+        {
+            title: `P6 Event A ${SUFFIX}`,
+            sportId,
+            startAt: FUTURE,
+            endAt: FUTURE_END,
+        } as never
     );
 
     const scopeB = await organizerScope(orgB.id, ownerB.id);
@@ -211,7 +222,12 @@ beforeAll(async () => {
     eventB = await createEvent(
         scopeB,
         orgB.id,
-        { title: `P6 Event B ${SUFFIX}`, sportId, startAt: FUTURE } as never
+        {
+            title: `P6 Event B ${SUFFIX}`,
+            sportId,
+            startAt: FUTURE,
+            endAt: FUTURE_END,
+        } as never
     );
 
     const scopeA2 = await organizerScope(orgA.id, ownerA.id);
@@ -433,6 +449,35 @@ describe("A. the purchase gate refuses what the design says it must", () => {
         expect(noCeiling.payload.items[0].quantity).toBe(6);
     });
 
+    test("quantity 0 and negative quantities are refused by the request schema, before any inventory work", () => {
+        // Brief §10: "Reject invalid quantities before reservation mutation." The schema
+        // is the first gate, so no order, reservation or counter is ever touched.
+        const base = {
+            eventId: "event-x",
+            buyerName: "Buyer",
+            buyerEmail: "buyer@example.test",
+            buyerPhone: "081234567890",
+        };
+
+        for (const quantity of [0, -1, -100]) {
+            const parsed = checkoutRequestSchema.safeParse({
+                ...base,
+                items: [{ ticketTypeId: "type-x", quantity }],
+            });
+
+            expect(parsed.success).toBe(false);
+        }
+
+        // And a positive integer passes, so the refusal above is about the value and
+        // not about the shape of the fixture.
+        const ok = checkoutRequestSchema.safeParse({
+            ...base,
+            items: [{ ticketTypeId: "type-x", quantity: 1 }],
+        });
+
+        expect(ok.success).toBe(true);
+    });
+
     test.each([
         ["inactive", () => typeInactive.id, "INACTIVE"],
         ["not yet started", () => typeNotStarted.id, "NOT_STARTED"],
@@ -569,7 +614,12 @@ describe("A. the purchase gate refuses what the design says it must", () => {
         const capped = await createEvent(
             scopeA,
             orgA.id,
-            { title: `P6 Capped ${SUFFIX}`, sportId, startAt: FUTURE } as never
+            {
+                title: `P6 Capped ${SUFFIX}`,
+                sportId,
+                startAt: FUTURE,
+                endAt: FUTURE_END,
+            } as never
         );
 
         const cappedType = await createTicketType(scopeA, capped.id, {
@@ -601,6 +651,83 @@ describe("A. the purchase gate refuses what the design says it must", () => {
         expect(error.code).toBe(ERROR_CODES.LIMIT_EXCEEDED);
         expect(error.details?.reason).toBe("ABOVE_EVENT_MAX_PER_ORDER");
 
+        await prisma.ticketType.deleteMany({ where: { eventId: capped.id } });
+        await prisma.event.deleteMany({ where: { id: capped.id } });
+    });
+
+    test("the event-level maxTicketsPerOrder is inclusive: exactly the cap is accepted", async () => {
+        const scopeA = await organizerScope(orgA.id, ownerA.id);
+
+        const capped = await createEvent(
+            scopeA,
+            orgA.id,
+            {
+                title: `P6 Capped At ${SUFFIX}`,
+                sportId,
+                startAt: FUTURE,
+                endAt: FUTURE_END,
+            } as never
+        );
+
+        const cappedType = await createTicketType(scopeA, capped.id, {
+            name: "Reguler",
+            price: PRICE,
+            quota: 50,
+        } as never);
+
+        await prisma.event.update({
+            where: { id: capped.id },
+            data: { maxTicketsPerOrder: 3 },
+        });
+
+        // Across TWO lines that sum to exactly the cap: the limit is per ORDER, not per
+        // line, so splitting the purchase must not evade it (and must not over-refuse it).
+        // Built BEFORE switching the session to a buyer, because `createTicketType`
+        // authorizes against the session.
+        const cappedType2 = await createTicketType(scopeA, capped.id, {
+            name: "Tribun",
+            price: PRICE,
+            quota: 50,
+        } as never);
+
+        await publishEvent(scopeA, capped.id);
+
+        const actor = await customerScope(buyerB.id);
+
+        const accepted = await createTicketOrder({
+            request: request({
+                eventId: capped.id,
+                items: [
+                    { ticketTypeId: cappedType.id, quantity: 2 },
+                    { ticketTypeId: cappedType2.id, quantity: 1 },
+                ],
+            }),
+            actor,
+            idempotencyKey: `event-cap-exact-${SUFFIX}`,
+        });
+
+        expect(accepted.payload.items).toHaveLength(2);
+
+        const refused = await expectRejection(() =>
+            createTicketOrder({
+                request: request({
+                    eventId: capped.id,
+                    items: [
+                        { ticketTypeId: cappedType.id, quantity: 2 },
+                        { ticketTypeId: cappedType2.id, quantity: 2 },
+                    ],
+                }),
+                actor,
+                idempotencyKey: `event-cap-split-${SUFFIX}`,
+            })
+        );
+
+        expect(refused.code).toBe(ERROR_CODES.LIMIT_EXCEEDED);
+        expect(refused.details?.reason).toBe("ABOVE_EVENT_MAX_PER_ORDER");
+
+        // The accepted order holds order items whose ticket types are `Restrict`, so the
+        // order (and its cascading items/reservations) goes first.
+        await prisma.eventOrder.deleteMany({ where: { eventId: capped.id } });
         await prisma.ticketType.deleteMany({ where: { eventId: capped.id } });
         await prisma.event.deleteMany({ where: { id: capped.id } });
     });
