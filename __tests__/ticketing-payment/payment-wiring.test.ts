@@ -482,13 +482,31 @@ describe("no scheduler, queue or new dependency was introduced", () => {
 describe("Phase 7 did not drift into later phases", () => {
     const files = [...PAYMENT_FILES, PAY_ROUTE, WEBHOOK_ROUTE, ORDER_PAGE];
 
+    /*
+     * The QRIS-instruction renderer is the ONE payment-layer file allowed to touch a QR
+     * library: it turns the DIRECT (QRIS) instruction's `QrString` into the scan image the
+     * payment page itself shows. Renders bytes, issues nothing — it must never create a
+     * ticket or a check-in, and that is asserted below instead of exempted. The exemption
+     * is pinned to this exact basename so a second QR-aware file would fail the suite.
+     */
+    const QRIS_RENDERER = `${PAYMENT_DIR}/qr-render.ts`;
+
     test("no ticket issuance, QR or check-in", () => {
+        expect(
+            PAYMENT_FILES.filter((file) => file === QRIS_RENDERER)
+        ).toHaveLength(1);
+
         for (const file of files) {
             const source = code(read(file));
 
             expect(source).not.toMatch(/prisma\.ticket\.create/);
-            expect(source).not.toMatch(/qrToken|qrCode|QRCodeSVG/);
             expect(source).not.toMatch(/prisma\.checkIn\./);
+
+            if (file === QRIS_RENDERER) {
+                continue;
+            }
+
+            expect(source).not.toMatch(/qrToken|qrCode|QRCodeSVG/);
         }
     });
 

@@ -654,7 +654,7 @@ export async function createTicketOrder(params: {
         request: params.httpRequest,
     });
 
-    return { payload: buildOrderPayload(row), replayed: false };
+    return { payload: await buildOrderPayload(row), replayed: false };
 }
 
 /**

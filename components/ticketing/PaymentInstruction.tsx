@@ -14,7 +14,8 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * from `PaymentInstructionPayload`, which is built server-side from the `Payment` row that
  * the gateway's own response populated:
  *
- *   QRIS       `qrImageUrl` (the gateway's PNG) + `qrString` (its payload) + the amount
+ *   QRIS       `qrImageUrl` (a QR image rendered server-side from the gateway's payload)
+ *              + the amount + the iPaymu reference
  *   VA         `number` (the account number the gateway issued) + `paymentName` (its bank)
  *   Retail     `number` (the payment code) + `paymentName`
  *   Redirect   `url` (the provider's own hosted page)
@@ -24,6 +25,10 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * placeholder number and no "sample" code path: if the server sent no `qrImageUrl`, this
  * panel says the code is unavailable instead of drawing something a buyer might try to
  * scan. That is the difference between a payment page and a fake one.
+ *
+ * It must never render the raw QRIS payload either: `qrString` is not part of the
+ * customer payload — the QR image is built server-side — so there is no code to paste
+ * and no value a wallet could be misled into using as a manual entry.
  *
  * It must not claim the payment succeeded either. Nothing here reads a URL parameter; the
  * panel shows the instruction and the order's own status, and confirmation arrives only
@@ -193,13 +198,13 @@ export default function PaymentInstruction({
             {instruction.flow === "DIRECT" ? (
                 <div className="mt-4 space-y-3.5">
                     {/* ── QRIS ─────────────────────────────────────────────────── */}
-                    {instruction.kind === "QR" || instruction.qrString ? (
+                    {instruction.kind === "QR" ? (
                         <div className="flex flex-col items-center gap-3 rounded-xl border border-ink-200 bg-white p-4">
                             {instruction.qrImageUrl ? (
-                                /* The gateway's own PNG. Deliberately a plain <img>: the
-                                   bitmap must be byte-for-byte what the gateway issued, and
-                                   routing it through an image optimiser would re-encode the
-                                   one thing a wallet has to decode. */
+                                /* Server-rendered QR image (built from the gateway's own
+                                   QrString, so what a wallet decodes is what the gateway
+                                   issued). A plain <img> over the data URL: no optimiser may
+                                   re-encode the one thing a wallet has to decode. */
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img
                                     src={instruction.qrImageUrl}
@@ -210,9 +215,8 @@ export default function PaymentInstruction({
                                 />
                             ) : (
                                 <p className="rounded-lg bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-800">
-                                    Gambar QR belum tersedia. Gunakan kode QRIS di bawah
-                                    ini pada aplikasi pembayaran bila mendukung tempel
-                                    kode.
+                                    Gambar QR belum tersedia. Perbarui status untuk
+                                    mencoba lagi.
                                 </p>
                             )}
 
@@ -221,17 +225,21 @@ export default function PaymentInstruction({
                                 lalu scan kode di atas.
                             </p>
 
-                            {instruction.qrString ? (
-                                <CopyableValue
-                                    label="Kode QRIS"
-                                    value={instruction.qrString}
-                                />
+                            {instruction.number ? (
+                                <div className="w-full rounded-lg bg-ink-50 px-3 py-2 text-center">
+                                    <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-ink-500">
+                                        Referensi iPaymu
+                                    </p>
+                                    <p className="font-mono text-sm font-bold text-ink-900">
+                                        {instruction.number}
+                                    </p>
+                                </div>
                             ) : null}
                         </div>
                     ) : null}
 
                     {/* ── Virtual account / retail outlet code ─────────────────── */}
-                    {instruction.number ? (
+                    {instruction.kind === "NUMBER" && instruction.number ? (
                         <CopyableValue
                             label={
                                 instruction.method === "RETAIL_OUTLET"
@@ -243,7 +251,7 @@ export default function PaymentInstruction({
                     ) : null}
 
                     {/* An instruction with neither a QR nor a number is not shown as one. */}
-                    {!instruction.qrString && !instruction.number ? (
+                    {!instruction.qrImageUrl && !instruction.number ? (
                         <p className="rounded-xl bg-amber-50 p-3.5 text-sm text-amber-800">
                             Instruksi pembayaran dari penyedia belum lengkap. Perbarui
                             status untuk mencoba lagi.

@@ -111,7 +111,7 @@ describe("A. payment creation", () => {
         // THE ASSERTION THAT MATTERS for "never fabricate a QR": the payload the page will
         // render is the one the gateway sent, byte for byte, and its image is the gateway's
         // own URL — not a locally drawn substitute.
-        expect(payload.qrString).toBe(providerQrPayload(1));
+        expect("qrString" in payload).toBe(false);
         expect(payload.qrImageUrl).toBe(providerQrUrl(1));
         expect(payload.paymentName).toBe("iPaymu");
         expect(payload.providerExpiredAt).toBe(
@@ -224,7 +224,7 @@ describe("A. payment creation", () => {
         expect(body.paymentChannel).toBe("bni");
 
         expect(payload.flow).toBe("DIRECT");
-        expect(payload.qrString).toBeNull();
+        expect("qrString" in payload).toBe(false);
         expect(payload.paymentNumber).toMatch(/^8808/);
         expect(payload.paymentName).toBe("iPaymu BNI");
 
@@ -285,7 +285,7 @@ describe("A. payment creation", () => {
         expect(payload.paymentUrl).toBe(
             `https://sandbox.ipaymu.com/payment/${SUFFIX}-1`
         );
-        expect(payload.qrString).toBeNull();
+        expect("qrString" in payload).toBe(false);
         expect(payload.paymentNumber).toBeNull();
 
         const body = gatewayStub.lastCall()!.body;
