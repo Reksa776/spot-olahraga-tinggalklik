@@ -582,3 +582,68 @@ describe("OWN-scope permissions", () => {
         );
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 23A — every role that can buy a ticket can read its own order
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The buyer-facing own-scope capabilities a CUSTOMER holds.
+ *
+ * Shared here so the assertion is "an operator resolves their own purchase the
+ * same way a customer does", rather than a second hand-written list that could
+ * drift from `PLATFORM_ROLE_OWN_PERMISSIONS.CUSTOMER`.
+ */
+const BUYER_OWN_PERMISSIONS = [
+    PERMISSIONS.ORDER_READ_OWN,
+    PERMISSIONS.ORDER_CANCEL_OWN,
+    PERMISSIONS.PAYMENT_READ_OWN,
+    PERMISSIONS.TICKET_READ_OWN,
+    PERMISSIONS.TICKET_ISSUE_OWN,
+    PERMISSIONS.REFUND_REQUEST_OWN,
+] as const;
+
+describe("PHASE 23A — an operator can exercise their own buyer capabilities", () => {
+    test("CUSTOMER, ADMIN and MANAGER all resolve the same buyer own-scope set", () => {
+        for (const role of ["CUSTOMER", "ADMIN", "MANAGER"] as const) {
+            const scope = makeScope({ platformRole: role, userId: USER_1 });
+
+            for (const permission of BUYER_OWN_PERMISSIONS) {
+                // Named in the message so a regression says WHICH role lost WHICH capability.
+                expect({
+                    role,
+                    permission,
+                    own: decideOwnResourcePermission(scope, permission, USER_1)
+                        .allowed,
+                }).toEqual({ role, permission, own: true });
+            }
+        }
+    });
+
+    test("own-scope is still identity-gated for an ADMIN — never another user's record", () => {
+        const admin = makeScope({ platformRole: "ADMIN", userId: USER_1 });
+
+        for (const permission of BUYER_OWN_PERMISSIONS) {
+            expectDenied(
+                decideOwnResourcePermission(admin, permission, USER_2),
+                AuthzErrorCode.PIC_ACCESS_DENIED
+            );
+        }
+    });
+
+    test("granting buyer own-scope to ADMIN grants it no platform or tenant power", () => {
+        const admin = makeScope({ platformRole: "ADMIN", userId: USER_1 });
+
+        // The tenant-isolation and D-19 guarantees live in other maps and are unchanged:
+        // an ADMIN still needs a membership for tenant data, and still needs an explicit
+        // grant for an own-scope FINANCIAL capability.
+        expectDenied(
+            decideOrganizerPermission(admin, ORG_A, PERMISSIONS.ORDER_READ_TENANT),
+            AuthzErrorCode.ORGANIZER_ACCESS_DENIED
+        );
+        expectDenied(
+            decideOwnResourcePermission(admin, PERMISSIONS.PIC_FEE_READ_OWN, USER_1),
+            AuthzErrorCode.FORBIDDEN
+        );
+    });
+});

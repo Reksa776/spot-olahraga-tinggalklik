@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 
+import { classifyInfrastructureFault } from "@/lib/errors/infrastructure";
+
 import { AppError, ERROR_CODES, toAppError } from "./errors";
 
 /**
@@ -74,24 +76,60 @@ export function buildPagination(params: {
  * Never logs request bodies, headers, tokens or buyer PII — the design's §32.3
  * logging rules apply to the error path too.
  */
+/**
+ * Codes that mean "the server failed", as opposed to "your request was refused".
+ *
+ * These are the ones that earn a correlation id and a sanitised server log line: they are
+ * operator-actionable (an outage, a bug, a dead dependency) and are exactly the cases a
+ * buyer or an organiser will phone support about. A 403 or a 404 does not need one —
+ * nothing is broken and the code already says why.
+ */
+const SERVER_FAULT_CODES: ReadonlySet<string> = new Set([
+    ERROR_CODES.INTERNAL_ERROR,
+    ERROR_CODES.DATABASE_UNAVAILABLE,
+    ERROR_CODES.SERVICE_UNAVAILABLE,
+    ERROR_CODES.REQUEST_TIMEOUT,
+    ERROR_CODES.PROVIDER_UNAVAILABLE,
+]);
+
+/**
+ * The generic message substituted for anything not safe to show, so the fallback text
+ * exists in exactly one place and cannot drift from the log-line wording.
+ */
+const INTERNAL_FALLBACK_MESSAGE = "Terjadi kesalahan pada server.";
+
 export function apiErrorResponse(error: unknown): NextResponse {
     const appError = toAppError(error);
 
     const correlationId = crypto.randomUUID();
 
-    if (appError.code === ERROR_CODES.INTERNAL_ERROR && !appError.expose) {
+    /*
+     * SERVER-SIDE LOGGING — what is written, and what is deliberately not.
+     *
+     * An infrastructure fault (Prisma/driver/socket) is logged as its CLASSIFIED detail only
+     * — "prisma P1001", "network fault (econnrefused)". The raw error object is NOT dumped:
+     * a driver error can embed the host, the port, the user name or the failing statement,
+     * and this log line is the artefact an operator pastes into a ticket. The fault's detail
+     * is produced by `lib/errors/infrastructure.ts`, which never copies the message through.
+     *
+     * An application bug (an unexpected throw, or an `AppError` the services did not intend
+     * to expose) IS dumped: the stack trace is the entire diagnostic value there, and there is
+     * no connection string in it.
+     */
+    const fault = classifyInfrastructureFault(error);
+
+    if (SERVER_FAULT_CODES.has(appError.code)) {
         console.error(
-            `[api] INTERNAL_ERROR correlationId=${correlationId}`,
-            error
+            `[api] ${appError.code} correlationId=${correlationId}${
+                fault ? ` fault=${fault.detail}` : ""
+            }`
         );
-    } else if (
-        appError.code === ERROR_CODES.INTERNAL_ERROR ||
-        !appError.expose
-    ) {
-        console.error(
-            `[api] ${appError.code} correlationId=${correlationId}:`,
-            error
-        );
+
+        if (!fault) {
+            console.error("[api] cause:", error);
+        }
+    } else if (!appError.expose) {
+        console.error(`[api] ${appError.code} correlationId=${correlationId}`);
     }
 
     const body: Record<string, unknown> = {
@@ -99,14 +137,14 @@ export function apiErrorResponse(error: unknown): NextResponse {
         code: appError.code,
         message: appError.expose
             ? appError.message
-            : "Terjadi kesalahan pada server.",
+            : INTERNAL_FALLBACK_MESSAGE,
     };
 
     if (appError.details) {
         body.details = appError.details;
     }
 
-    if (appError.code === ERROR_CODES.INTERNAL_ERROR) {
+    if (SERVER_FAULT_CODES.has(appError.code)) {
         body.correlationId = correlationId;
     }
 

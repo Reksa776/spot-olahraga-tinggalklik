@@ -771,6 +771,16 @@ async function recordSession(
  * order's reservation window otherwise. The provider's value wins because it is the one
  * that decides whether the QR/VA still works: showing a countdown that outlives the
  * instrument would invite a buyer to attempt a payment the gateway will refuse.
+ *
+ * ── `providerTransactionId` IS CAPTURED HERE, FROM THE RESPONSE ONLY ─────────────
+ * iPaymu returns `Data.TransactionId` with a DIRECT instruction, and that id is the only
+ * handle that addresses the server-to-server status query, so reconciliation cannot work
+ * for a payment whose id was not recorded at creation (Phase 27E). It is written from the
+ * provider's response and from nowhere else: no request may supply it, and no code may
+ * back-fill it, because a caller-chosen identity would let the status query be pointed at
+ * somebody else's transaction. It stays NULL when the provider omits it — most notably for
+ * every pre-existing row — and reconciliation answers BLOCKED for those instead of
+ * guessing.
  */
 async function recordInstruction(
     paymentId: string,
@@ -782,6 +792,7 @@ async function recordInstruction(
             status: "PENDING",
             providerFlow: "DIRECT",
             externalSessionId: instruction.providerSessionId,
+            providerTransactionId: instruction.providerTransactionId,
             method: instruction.method,
             channel: instruction.channel,
             providerEnvironment: instruction.environment,

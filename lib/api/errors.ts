@@ -1,4 +1,8 @@
 import { AuthzErrorCode, isAuthzError } from "@/lib/authz/errors";
+import {
+    classifyInfrastructureFault,
+    isDatabaseFault,
+} from "@/lib/errors/infrastructure";
 
 /**
  * ==========================================
@@ -59,6 +63,19 @@ export const ERROR_CODES = {
     // 5xx
     INTERNAL_ERROR: "INTERNAL_ERROR",
     PROVIDER_UNAVAILABLE: "PROVIDER_UNAVAILABLE",
+    /**
+     * The database cannot be reached, or a query exceeded its deadline.
+     *
+     * 503 rather than 500, and a SEPARATE code from `INTERNAL_ERROR`, because the two demand
+     * opposite responses: an internal error is a bug (do not retry, fix it), whereas an
+     * unreachable database is transient (retry, and tell the user their data is not lost).
+     * Collapsing them is how a page ends up rendering "not found" for an outage.
+     */
+    DATABASE_UNAVAILABLE: "DATABASE_UNAVAILABLE",
+    /** A dependency this request needed (provider, cache, job runner) is down. */
+    SERVICE_UNAVAILABLE: "SERVICE_UNAVAILABLE",
+    /** A call did not complete within its deadline. The outcome is UNKNOWN — do not assume failure. */
+    REQUEST_TIMEOUT: "REQUEST_TIMEOUT",
 } as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[keyof typeof ERROR_CODES];
@@ -99,6 +116,9 @@ const STATUS_BY_CODE: Record<ErrorCode, number> = {
     RATE_LIMITED: 429,
     INTERNAL_ERROR: 500,
     PROVIDER_UNAVAILABLE: 503,
+    DATABASE_UNAVAILABLE: 503,
+    SERVICE_UNAVAILABLE: 503,
+    REQUEST_TIMEOUT: 504,
 };
 
 const DEFAULT_MESSAGE: Record<ErrorCode, string> = {
@@ -125,6 +145,9 @@ const DEFAULT_MESSAGE: Record<ErrorCode, string> = {
     RATE_LIMITED: "Terlalu banyak permintaan. Coba lagi nanti.",
     INTERNAL_ERROR: "Terjadi kesalahan pada server.",
     PROVIDER_UNAVAILABLE: "Layanan sedang tidak tersedia.",
+    DATABASE_UNAVAILABLE: "Data sedang tidak dapat dimuat. Silakan coba lagi.",
+    SERVICE_UNAVAILABLE: "Terjadi gangguan sementara. Silakan coba lagi.",
+    REQUEST_TIMEOUT: "Permintaan memakan waktu terlalu lama. Silakan coba lagi.",
 };
 
 /**
@@ -220,8 +243,29 @@ export function toAppError(error: unknown): AppError {
         });
     }
 
-    if (error instanceof Error) {
-        return new AppError(ERROR_CODES.INTERNAL_ERROR);
+    /*
+     * INFRASTRUCTURE BEFORE `Error`.
+     *
+     * A Prisma connection failure and a driver socket error reach this function as ordinary
+     * `Error`s, so without this branch they become `INTERNAL_ERROR` and the caller is told
+     * "terjadi kesalahan pada server" for something that is retryable and, on a page, is
+     * indistinguishable from a 404 unless it is named. The classified fault carries no
+     * message, no SQL and no connection detail into the response: no `message` option is
+     * passed, so the AppError carries the REGISTRY's own curated Indonesian text (a safe,
+     * retryable-facing sentence), and the fault's `detail` is dropped here entirely.
+     */
+    const fault = classifyInfrastructureFault(error);
+
+    if (fault) {
+        if (isDatabaseFault(fault)) {
+            return new AppError(ERROR_CODES.DATABASE_UNAVAILABLE);
+        }
+
+        return new AppError(
+            fault.kind === "REQUEST_TIMEOUT"
+                ? ERROR_CODES.REQUEST_TIMEOUT
+                : ERROR_CODES.SERVICE_UNAVAILABLE
+        );
     }
 
     return new AppError(ERROR_CODES.INTERNAL_ERROR);

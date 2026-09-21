@@ -84,9 +84,18 @@ import { MAX_WEBHOOK_BODY_BYTES } from "./validation";
  *     by `(order, PROCESSING)` + amount, which Phase 18A forbade — removing the rail removed
  *     the need for that guess rather than replacing it with a better one.
  *   * No notifications / WhatsApp / email — Phase 8/11.
- *   * No provider `verifyPaymentStatus` call. A server-side status poll is not a settlement
+ *   * No provider status poll of its own. A server-to-server poll is not a settlement
  *     trigger in §31.3's flow, and design §31.5 rule 3 makes the verified notification the
- *     authority; adding a second trigger would create a second path to `PAID`.
+ *     authority.
+ *
+ *     PHASE 27E CLARIFICATION: an OPERATOR-triggered poll now exists
+ *     (`reconciliation.ts` → `queryTransactionStatus`), for the case this handler cannot
+ *     cover — the provider was paid but its callback never arrived, which Phase 27B proved
+ *     happens when the notify URL is unreachable. That path is not a second settlement
+ *     authority and does not create a second route to `PAID`: it requires the same
+ *     provider-verified evidence (transaction id, environment, reference, instrument and an
+ *     exact amount match) and enters the SAME `settleVerifiedPayment` transaction, whose
+ *     order CAS remains the sole arbiter. This handler is still the only AUTOMATIC trigger.
  */
 
 /** The provider's namespace. Extensible per §31.2, and one provider exists today (D-17). */

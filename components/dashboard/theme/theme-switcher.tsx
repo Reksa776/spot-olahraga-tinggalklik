@@ -1,6 +1,5 @@
 "use client";
 
-import { useTheme } from "next-themes";
 import { useBrowserValue } from "@/lib/ui/browser-value";
 import { Check, Monitor, Moon, Paintbrush, Sun, SunMoon } from "lucide-react";
 
@@ -32,9 +31,13 @@ import { useDashboardTheme } from "./theme-provider";
  * The dashboard's own appearance panel, in the top bar. One menu covers all three user-facing
  * controls the brief asks for:
  *
- *   Tampilan      Terang · Gelap · Ikuti sistem     (next-themes)
+ *   Tampilan      Terang · Gelap · Ikuti sistem     (class on <html>)
  *   Warna tema    six accent hues                   (data-accent)
  *   Palet grafik  six chart palettes                (data-chart)
+ *
+ * All three are provided by `DashboardThemeProvider`; the appearance half used to come from
+ * `next-themes`, which was replaced because its own inline `<script>` reproduced the theme-bootstrap
+ * console error this phase fixes (see `theme-provider.tsx`).
  *
  * WHY A DROPDOWN AND NOT A SETTINGS PAGE
  * --------------------------------------
@@ -47,19 +50,17 @@ import { useDashboardTheme } from "./theme-provider";
  * colour name.
  */
 export function ThemeSettingsMenu() {
-    const { theme, setTheme } = useTheme();
-    const { accent, chartPalette, setAccent, setChartPalette } = useDashboardTheme();
+    const { theme, setTheme, accent, chartPalette, setAccent, setChartPalette } =
+        useDashboardTheme();
 
-    // `theme` is undefined during the server render; the panel only shows a selection once the
-    // client knows it, which is what keeps the menu from flashing "Terang" over a dark session.
-    // Read through `useBrowserValue` rather than `useState` + `useEffect`: same timing (false on the
-    // server and on the first client pass, true immediately after), without a state update inside an
-    // effect.
+    // `theme` is still the default during the server render; the panel only shows a selection once
+    // the client knows the real value, which is what keeps the menu from flashing "Terang" over a
+    // dark session. Read through `useBrowserValue` rather than `useState` + `useEffect`: same timing
+    // (false on the server and on the first client pass, true immediately after), without a state
+    // update inside an effect.
     const mounted = useBrowserValue(() => true, false);
 
-    const currentAppearance: AppearanceId = mounted
-        ? ((theme as AppearanceId | undefined) ?? "system")
-        : "system";
+    const currentAppearance: AppearanceId = mounted ? theme : "system";
 
     return (
         <DropdownMenu>
@@ -176,7 +177,7 @@ export function ThemeSettingsMenu() {
 
 /** A one-click light/dark switch for the top bar, for the common case. */
 export function ThemeQuickToggle({ className }: { className?: string }) {
-    const { resolvedTheme, setTheme } = useTheme();
+    const { resolvedTheme, setTheme } = useDashboardTheme();
     const mounted = useBrowserValue(() => true, false);
 
     const isDark = mounted && resolvedTheme === "dark";

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { PURCHASABLE_METHOD_VALUES } from "./method-catalog";
+
 /**
  * ==========================================
  * TICKETING PAYMENT VALIDATION
@@ -20,8 +22,8 @@ import { z } from "zod";
  * Only the two *presentation* choices the provider's hosted page needs, and both are
  * whitelisted:
  *
- *   method  — `QRIS | BANK_TRANSFER | E_WALLET`, mapped to the provider's own
- *             method/channel pair by `lib/ticketing/payment/gateway.ts`
+ *   method  — a member of `lib/ticketing/payment/method-catalog`, mapped to the
+ *             provider's own method/channel pair by `lib/ticketing/payment/gateway.ts`
  *   channel — an optional provider bank code, validated against the provider's list
  *
  * Neither influences the amount. Design §13.2 stores both on the `Payment` row as a
@@ -29,25 +31,41 @@ import { z } from "zod";
  * they are optional with a documented default rather than required — an MVP UI may omit
  * them entirely.
  *
+ * ── WHY THE ACCEPTED SET IS READ OUT OF THE CATALOG, NEVER RE-LISTED HERE ────────
+ * It used to be a hand-written tuple (`QRIS | BANK_TRANSFER | E_WALLET`) written before
+ * the catalog existed. The buyer's picker is driven by the catalog, so once the catalog
+ * moved to the provider's real capability the two lists stopped agreeing: the picker
+ * offered `VIRTUAL_ACCOUNT`, `RETAIL_OUTLET` and `CREDIT_CARD` while this schema still
+ * demanded the three retired names. Zod rejects an unknown enum member, so three of the
+ * four methods a buyer could actually choose were answered `400 VALIDATION_ERROR`
+ * before the service — and therefore the gateway — was ever reached. Only QRIS worked.
+ *
+ * Deriving the set from `PURCHASABLE_METHOD_VALUES` is what makes that class of drift
+ * impossible rather than merely fixed: there is exactly one list, and a method cannot be
+ * offered to a buyer without also being acceptable here.
+ *
  * ── WHY NO NUMERIC COERCION ANYWHERE ─────────────────────────────────────────────
  * There is no numeric field in this schema at all. That is deliberate: brief §8 lists
  * "unsafe numeric coercion" as a hazard, and the way to avoid it in the payment path is
  * to accept no numbers from the client.
  */
 
-/** `PaymentMethod` values a buyer may pick. The rest of the enum is not purchasable. */
-export const PURCHASABLE_PAYMENT_METHODS = [
-    "QRIS",
-    "BANK_TRANSFER",
-    "E_WALLET",
-] as const;
+/**
+ * `PaymentMethod` values a buyer may pick, taken from the catalog.
+ *
+ * Re-exported under the name the rest of the payment path already uses, so the schema
+ * below and the buyer's picker can never disagree — see the module note above for the
+ * defect that made this necessary.
+ */
+export const PURCHASABLE_PAYMENT_METHODS = PURCHASABLE_METHOD_VALUES;
 
 /**
  * MVP default when the buyer expresses no preference.
  *
- * QRIS is the provider's most general page (its own mapping sends e-wallets to QRIS too)
- * and needs no channel code. This is a presentation default, not a pricing or
- * eligibility rule — it cannot move money and it is visible in the response.
+ * QRIS is the provider's most general instrument (verified against iPaymu sandbox: the
+ * direct endpoint answers `qris`/`mpm` with a QR payload) and it needs no channel code.
+ * This is a presentation default, not a pricing or eligibility rule — it cannot move
+ * money and it is visible in the response.
  */
 export const DEFAULT_PAYMENT_METHOD = "QRIS" as const;
 

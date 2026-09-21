@@ -202,9 +202,12 @@ describe("the login form navigates to the sanitised destination", () => {
     });
 
     it("keeps a failed login on the login page", () => {
-        // The error branch must return before any navigation.
+        // The failure branch must return before any navigation. Phase 27A moved the
+        // classification into `lib/auth/sign-in-failure.ts` and widened the branch from
+        // "there was an error" to "one of three outcomes", so the slice starts where the
+        // outcome is classified and the assertions below are unchanged.
         const errorBranch = code.slice(
-            code.indexOf("if (result?.error)"),
+            code.indexOf("const failure = classifySignInFailure("),
             code.indexOf("toast.success")
         );
 

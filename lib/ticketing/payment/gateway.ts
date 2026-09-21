@@ -18,12 +18,16 @@ import {
     classifyIpaymuNotification,
     createDirectPayment,
     createRedirectPayment,
+    fetchTransactionStatus,
     mapPaymentMethod,
     verifyWebhookSignature,
     type IpaymuNotification,
     type IpaymuPaymentChannel,
     type IpaymuPaymentMethod,
     type IpaymuStatusClass,
+    type IpaymuTransactionStatus,
+    type TransactionStatusFailureReason,
+    type TransactionStatusQueryResult,
 } from "@/lib/payment/ipaymu";
 
 /**
@@ -163,6 +167,75 @@ export function gatewayBaseUrl(): string {
 /** The environment name as a string, for payloads and the audit trail. */
 export function gatewayEnvironmentName(): PayEnvironment {
     return getIpaymuConfig().environment;
+}
+
+/**
+ * ── TRANSACTION STATUS QUERY — THE RECONCILIATION SEAM ──────────────────────────
+ *
+ * A read-only server-to-server query that answers "what does the provider say about
+ * this transaction?", for the one case the webhook cannot cover: the provider was
+ * paid but could not deliver its notification (Phase 27B: the notify URL we handed
+ * iPaymu was a loopback address, so the callback never arrived).
+ *
+ * It lives here, not in the reconciliation service, because this module is the only
+ * one under `lib/ticketing/**` allowed to import `lib/payment/**` — the property that
+ * makes the provider replaceable. The reconciliation path therefore never names
+ * iPaymu, and adding a second provider means adding a branch here and nothing else.
+ *
+ * ── IT IS NOT AN ALTERNATIVE SETTLEMENT AUTHORITY ────────────────────────────────
+ * The query returns EVIDENCE ONLY. It writes nothing, and it can never mark a payment
+ * PAID: reconciliation feeds the same `settleVerifiedPayment()` transaction the
+ * webhook feeds, where the order CAS remains the sole arbiter of the PAID transition.
+ * A webhook and a reconciliation arriving together therefore produce one settlement,
+ * not two — the same guarantee that already protects two webhooks.
+ */
+export type GatewayTransactionStatus = IpaymuTransactionStatus;
+export type GatewayTransactionStatusFailureReason = TransactionStatusFailureReason;
+export type GatewayTransactionStatusResult = TransactionStatusQueryResult;
+
+/**
+ * The provider's own success rule, exposed through the seam.
+ *
+ * Reconciliation must answer "did the provider say paid?" with the SAME rule the webhook
+ * uses, so `{1, 6, 7}` is defined in exactly one place (`lib/payment/ipaymu.ts`) and
+ * cannot drift into a second, subtly different list here.
+ */
+export { isIpaymuSuccessStatus as isGatewaySuccessStatus } from "@/lib/payment/ipaymu";
+
+/**
+ * Does the provider's own method naming agree with the internal method on the row?
+ *
+ * A response that describes a different instrument is evidence about a different
+ * transaction, so this is an identity check rather than a presentation one. It returns
+ * `true` when the provider did not say (nothing to contradict), and it compares only the
+ * METHOD: the channel is a provider display string (`"BNI"` vs our `"bni"`) and a
+ * formatting difference there must not block a legitimate settlement. The provider's
+ * channel is still recorded on the audit row as evidence.
+ */
+export function providerMethodMatches(
+    providerMethod: string | null | undefined,
+    providerChannel: string | null | undefined,
+    internal: PaymentMethod
+): boolean {
+    if (!providerMethod) {
+        return true;
+    }
+
+    return mapPaymentMethod(providerMethod, providerChannel ?? undefined) === internal;
+}
+
+/**
+ * Ask the provider for one transaction's authoritative status.
+ *
+ * Never throws: a misconfiguration, a timeout, a non-2xx and a malformed body all
+ * come back as `{ ok: false, reason }` so the caller can distinguish "the provider
+ * says no" from "I could not reach the provider" — an important difference, because
+ * only the first is a business answer.
+ */
+export async function queryTransactionStatus(
+    transactionId: string
+): Promise<GatewayTransactionStatusResult> {
+    return fetchTransactionStatus(transactionId);
 }
 
 /**
@@ -457,6 +530,16 @@ export type GatewayCreateResult =
  * everything else to a BCA virtual account. A caller may still supply an explicit
  * channel; this is the default. Where a DIRECT instrument is available, the catalog in
  * `method-catalog.ts` supersedes this redirect-era default.
+ *
+ * A REDIRECT method NEVER yields an empty channel. iPaymu signs the request body we
+ * send but re-normalises the body it RECEIVES, and an empty `paymentChannel` is dropped
+ * by that normalisation — so the hash it verifies no longer matches the one we signed
+ * and it answers `401 unauthorized signature`. That was the credit-card path: the
+ * catalog gives `CREDIT_CARD` no default channel, and this function returned `""`.
+ * Verified against the provider's sandbox, where `cc` with an empty channel is 401 and
+ * `cc` with channel `cc` is 200. A REDIRECT method that declares no default therefore
+ * uses its own provider method code, which is exactly the channel iPaymu documents for
+ * it (`cc` → `cc`).
  */
 function providerMethodFor(method: PaymentMethod): {
     method: IpaymuPaymentMethod;
@@ -468,26 +551,19 @@ function providerMethodFor(method: PaymentMethod): {
     // The credit-card case is the one that used to be impossible: this function's only two
     // outcomes were QRIS and BCA VA, so a card request would have silently opened a bank
     // transfer on a page that the buyer had every reason to believe was a card form.
+    //
+    // The catalog's own `providerMethod`/`defaultChannel` are used for BOTH flows, so this
+    // function holds no channel table of its own. It used to, and that table said QRIS's
+    // channel was `qris` while the catalog (and iPaymu's documentation, and a live sandbox
+    // call, which answers `qris`+`mpm` with a QR payload) say `mpm`. Two tables for one
+    // fact is how the credit-card channel came to be wrong; there is now one.
     if (option) {
-        if (option.flow === "REDIRECT") {
-            return {
-                method: option.providerMethod as IpaymuPaymentMethod,
-                channel: (option.defaultChannel ?? "") as IpaymuPaymentChannel,
-            };
-        }
-
-        // A DIRECT method routed through the redirect endpoint. The service no longer does
-        // this (it asks for the instrument instead), but the mapping is kept truthful for
-        // any caller that still opens a hosted page for a QR/VA method.
-        if (option.method === "VIRTUAL_ACCOUNT" || option.method === "BANK_TRANSFER") {
-            return { method: "va", channel: "bca" };
-        }
-
-        if (option.method === "RETAIL_OUTLET") {
-            return { method: "cstore", channel: "alfamart" };
-        }
-
-        return { method: "qris", channel: "qris" };
+        return {
+            method: option.providerMethod as IpaymuPaymentMethod,
+            // Never empty — see the note above about iPaymu's 401 on a dropped field.
+            channel: (option.defaultChannel ??
+                option.providerMethod) as IpaymuPaymentChannel,
+        };
     }
 
     // Unmodelled methods (COD, OTHER, legacy BANK_TRANSFER): the historical mapping, kept
@@ -516,8 +592,18 @@ export function resolvePaymentSelection(
     const chosen =
         channel && isProviderChannel(channel) ? channel : mapped.channel;
 
+    // A method the catalog models is recorded as the buyer's OWN choice, not as whatever
+    // the historical mapper would say about it. Round-tripping it through
+    // `mapPaymentMethod` is lossy: that table knows only qris / va / banktransfer /
+    // cstore, so a credit-card payment fell through its default branch and was persisted
+    // as `BANK_TRANSFER` — a false entry in a financial record. The mapper is retained for
+    // the methods the catalog deliberately does not model (COD, OTHER, retired names).
+    const option = findPaymentMethodOption(method);
+
     return {
-        method: mapPaymentMethod(mapped.method, chosen) as PaymentMethod,
+        method: (option
+            ? option.method
+            : mapPaymentMethod(mapped.method, chosen)) as PaymentMethod,
         channel: chosen,
     };
 }
@@ -613,7 +699,12 @@ export async function createSession(
             ok: true,
             session: {
                 paymentUrl: url,
-                providerSessionId: response.Data?.SessionId ?? null,
+                // Both spellings: the redirect endpoint answers `SessionID`, the direct one
+                // `SessionId`. See `IpaymuResponse.Data.SessionID` for the sandbox evidence.
+                providerSessionId:
+                    response.Data?.SessionId ??
+                    response.Data?.SessionID ??
+                    null,
                 environment: await resolvePaymentEnvironment(),
                 // Report the method as the provider actually received it, so the stored
                 // row is not a restatement of our intent.

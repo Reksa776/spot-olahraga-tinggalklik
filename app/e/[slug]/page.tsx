@@ -9,6 +9,7 @@ import SiteShell from "@/components/ticketing/SiteShell";
 import StickyBuyBar from "@/components/ticketing/StickyBuyBar";
 import { auth } from "@/auth";
 import { parseOrThrow } from "@/lib/api/validation";
+import { resolvePageFailure } from "@/lib/errors/classify";
 import { getServerOrigin } from "@/lib/app-origin.server";
 import { getPublicEventBySlug, listPublicEvents } from "@/lib/events/catalog";
 import { catalogQuerySchema } from "@/lib/events/validation";
@@ -85,24 +86,50 @@ export default async function EventDetailPage({ params }: Props) {
 
     const session = await auth().catch(() => null);
 
-    // A 404 from the catalog (unknown slug, or an archived event) becomes a genuine 404 page. A
-    // DRAFT or CANCELLED event resolves and is handled by the unavailable branch below.
-    const event = await getPublicEventBySlug(slug, origin).catch(() => null);
+    /*
+     * A 404 from the catalog (unknown slug, or an archived event) becomes a genuine 404 page. A
+     * DRAFT or CANCELLED event resolves and is handled by the unavailable branch below.
+     *
+     * A catalog read that FAILS is not a 404. `.catch(() => null)` used to erase that difference,
+     * so a database outage on a public event page told every visitor the event did not exist —
+     * including the organiser checking their own event. It is classified instead, and anything
+     * that is not genuinely absent propagates to the root error boundary, which offers a retry.
+     */
+    let event: Awaited<ReturnType<typeof getPublicEventBySlug>>;
 
-    if (!event) {
-        notFound();
+    try {
+        event = await getPublicEventBySlug(slug, origin);
+    } catch (error) {
+        if (resolvePageFailure(error).action === "not-found") {
+            notFound();
+        }
+
+        throw error;
     }
 
     // Related events: the same sport, excluding this event. Runs after the event resolves because
     // the sport slug is the filter, and is a bounded read of the public catalog — no new query path.
-    const related = await listPublicEvents(
-        parseOrThrow(catalogQuerySchema, { sport: event.sport.slug, limit: 5 }),
-        origin
-    )
-        .then((result) =>
-            result.items.filter((item) => item.slug !== event.slug).slice(0, 4)
-        )
-        .catch(() => []);
+    //
+    // A failure here is logged and the section is omitted, NOT rethrown: this is a decorative
+    // supplement to a page whose main content has already rendered, and taking the whole event
+    // page down because a "related events" query failed would be a worse outcome than showing one
+    // fewer band. The failure is still recorded, so it is not silent.
+    let related: Awaited<ReturnType<typeof listPublicEvents>>["items"] = [];
+
+    try {
+        const result = await listPublicEvents(
+            parseOrThrow(catalogQuerySchema, { sport: event.sport.slug, limit: 5 }),
+            origin
+        );
+
+        related = result.items
+            .filter((item) => item.slug !== event.slug)
+            .slice(0, 4);
+    } catch (error) {
+        console.warn(
+            `[events/detail] related events unavailable (${resolvePageFailure(error).classification.code})`
+        );
+    }
 
     const closedReason = salesStateLabel(
         event.sales.salesState,

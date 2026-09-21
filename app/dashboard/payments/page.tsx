@@ -9,17 +9,32 @@ import {
     TextLink,
     type Tone,
 } from "@/components/dashboard/primitives";
-import { getAuthzScope } from "@/lib/authz";
+import ReconcilePaymentButton from "@/components/organizer/ReconcilePaymentButton";
+import { PERMISSIONS, decideOrganizerPermission, getAuthzScope } from "@/lib/authz";
 import { listDashboardPayments } from "@/lib/dashboard/payments";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
  * Payments.
  *
- * Read-only view of the gateway's payment attempts. Deliberately has NO "mark as paid"
+ * The back-office view of the gateway's payment attempts. Deliberately has NO "mark as paid"
  * action: `PaymentStatus` moves to PAID only through the signature-verified, idempotent
- * webhook, so admin cannot manufacture a paid order here. The gateway-issued VA number is
- * shown so an operator can match a bank statement against it.
+ * webhook, so an operator cannot manufacture a paid order here. The gateway-issued VA number
+ * is shown so an operator can match a bank statement against it.
+ *
+ * ── PHASE 27E: "VERIFIKASI STATUS" IS NOT A MANUAL PAID OVERRIDE ────────────────
+ * The one action added to this page ASKS the provider for the authoritative status of a
+ * transaction it already knows about. The operator supplies no amount, no status and no
+ * transaction id — the button sends an empty POST whose URL names the payment, and the
+ * server resolves everything else. A payment changes state only when the provider's own
+ * answer says it was paid, matched against the persisted transaction id, the environment,
+ * the reference, the instrument and the amount. So this is the same authority the webhook
+ * has, obtained over a different channel; it is not the "admin can mark it paid" control
+ * the paragraph above promises is absent.
+ *
+ * The column is rendered only where the actor holds `payment.reconcile` in that payment's
+ * own tenant, and rows whose provider transaction id was never captured show the reason
+ * instead of a button — an inapplicable control is not drawn (phase 12 §15).
  */
 
 export const dynamic = "force-dynamic";
@@ -87,7 +102,7 @@ export default async function DashboardPaymentsPage({
             />
 
             <DataTable
-                minWidth={1040}
+                minWidth={1220}
                 empty={
                     <EmptyBlock
                         title="Belum ada pembayaran"
@@ -104,6 +119,7 @@ export default async function DashboardPaymentsPage({
                     { header: "Status" },
                     { header: "Kedaluwarsa" },
                     { header: "Dibuat" },
+                    { header: "Tindakan" },
                 ]}
                 rows={result.items.map((payment) => ({
                     key: payment.id,
@@ -147,6 +163,26 @@ export default async function DashboardPaymentsPage({
                         <span key="created" className="text-xs text-muted-foreground">
                             {DATE_FORMAT.format(payment.createdAt)}
                         </span>,
+                        decideOrganizerPermission(
+                            scope,
+                            payment.organizer.id,
+                            PERMISSIONS.PAYMENT_RECONCILE
+                        ).allowed ? (
+                            <ReconcilePaymentButton
+                                key="action"
+                                paymentReference={payment.paymentReference}
+                                hasProviderTransactionId={
+                                    payment.providerTransactionId !== null
+                                }
+                            />
+                        ) : (
+                            <span
+                                key="action"
+                                className="text-xs text-muted-foreground"
+                            >
+                                —
+                            </span>
+                        ),
                     ],
                 }))}
                 footer={

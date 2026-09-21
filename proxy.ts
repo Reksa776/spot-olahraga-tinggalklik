@@ -79,6 +79,18 @@ export const PUBLIC_API_PREFIXES = [
     // compared in constant time, failing closed when the secret is unconfigured. See
     // `app/api/internal/jobs/tick/route.ts`, whose header states this arrangement.
     "/api/internal/",
+    // ── Health and readiness probes ─────────────────────────────────────────
+    // MACHINE-facing, like the job tick above, and public for the same reason: the caller
+    // is a process manager, a reverse proxy or an uptime monitor, and none of them holds a
+    // session. The two handlers perform no authorization and run no business logic — one
+    // answers whether this process is alive, the other whether the database is reachable —
+    // so there is nothing here for a session gate to protect, and a probe that refused
+    // would be a probe that cannot do its job. A refusal would also be misleading: when a
+    // dependency is down the honest answer is the 503 the readiness handler already
+    // returns, not a 401 from this proxy. Neither handler reports anything about the
+    // deployment (no version, no host, no repository detail), so making them reachable
+    // discloses nothing an unauthorised visitor could use.
+    "/api/health",
 ];
 
 /**
@@ -167,9 +179,19 @@ export default auth((req) => {
         // Protected API routes: require authentication
         if (isProtectedApiRoute(pathname)) {
             if (!isLoggedIn) {
+                // ── THE ENVELOPE, NOT JUST A MESSAGE ────────────────────────────────
+                // `code` is included because the API contract says clients branch on it
+                // (`lib/api/response.ts`: "CONTRACT FOR CLIENTS: branch on `code`, never on
+                // `message`"), and the buyer pages have to tell a session that ENDED from an
+                // action that was REFUSED: a 401 sends them to sign in and back to the page
+                // they were on, while a 403/409 is shown as a business error. That decision
+                // reads this field (see `lib/auth/client-session.ts`), and a proxy that
+                // omitted it would leave the most common expiry path resting on the status
+                // code alone. `message` is retained for clients that only read it.
                 return new Response(
                     JSON.stringify({
                         success: false,
+                        code: "UNAUTHORIZED",
                         message: "Silakan login terlebih dahulu.",
                     }),
                     {

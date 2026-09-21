@@ -22,6 +22,16 @@ module.exports = {
         // standalone `tsx` script (`register-rate-limit.test.ts`) meant to be run by hand —
         // it has no `describe`/`it`, so enrolling it here would fail the run.
         "**/__tests__/auth-flow/*.test.ts",
+        // Global error handling: the error taxonomy/classification (pure) and the static
+        // guards over the boundaries and the error components. This namespace exists because
+        // the classification is what stops a database outage from being rendered as a 404,
+        // and that guarantee is checked from both the pure side and the wiring side.
+        "**/__tests__/errors/*.test.ts",
+        // Phase 26 — the liveness/readiness probes. Separated from `errors/` because a
+        // health check is an OPERATIONAL surface rather than an error-handling one, and the
+        // property that matters (liveness must not touch the database) is a deployment
+        // contract rather than a classification rule.
+        "**/__tests__/health/*.test.ts",
         // Phase 4 — event/venue/sport domain, EXIF stripping, public catalog.
         "**/__tests__/events/*.test.ts",
         "**/__tests__/locations/*.test.ts",
@@ -66,7 +76,45 @@ module.exports = {
     // imports it leaves the interval running, so Jest finishes the tests and then hangs
     // instead of exiting. `forceExit` contains it here (a one-line `.unref()` on that
     // interval is the proper fix). It only affects worker shutdown, never test results.
+    // ── ONE WRITER PER DATABASE (Phase 22 Part 12) ────────────────────────────────
+    //
+    // The integration suites share ONE MySQL schema, and several of them assert on
+    // GLOBAL facts — the public catalogue's contents, the seeded sport taxonomy, a
+    // tenant's order list. Two workers doing that at once means one suite's fixture is the
+    // other suite's unexpected row: with the default worker pool this run reported 87
+    // failing tests (11 suites), of which only 34 (3 suites) reproduce when the suites run
+    // one at a time. The other 53 were pure interference — and, worse, they were
+    // indistinguishable from real breakage, so a genuine regression had nowhere to show up.
+    //
+    // Serialising costs about 20 seconds and buys a run whose failures mean something.
+    // (The alternative — one database per worker — is the right answer at a larger scale,
+    // but it multiplies the schema, migration and seed provisioning by the worker count, so
+    // it is deliberately not attempted here.)
+    maxWorkers: 1,
     forceExit: true,
+    // ── ISOLATION FROM DEVELOPMENT DATA (Phase 22 Part 12) ────────────────────────
+    //
+    // The integration suites run against a REAL MySQL. They used to run against the
+    // DEVELOPMENT one, which is how an aborted test could leave a `PUBLISHED + PUBLIC`
+    // fixture event on the public catalogue: the suites and the application were writing
+    // to the same schema.
+    //
+    // `setupFiles` runs in every worker BEFORE the test module graph is imported — the only
+    // point at which `DATABASE_URL` can be redirected before `lib/prisma.ts` builds its
+    // `PrismaClient`. It points the worker at `<DATABASE_URL database>_test`.
+    //
+    // `globalSetup` runs once before the workers and refuses to start a run whose test
+    // database does not exist or is behind, with the exact command that fixes it.
+    setupFiles: ["<rootDir>/jest.setup-env.ts"],
+    globalSetup: "<rootDir>/__tests__/support/global-setup.ts",
+    // Safety net for the integration suites: after the whole run, archive any stranded fixture
+    // event and deactivate any stranded fixture sport, so a test that aborts before its own
+    // cleanup can never leave a `PUBLISHED + PUBLIC` event (or an active test sport) on a public
+    // surface. Identification is by reserved fixture prefix + reserved email domain; it never
+    // deletes. It neutralises BOTH databases: the test one (where fixtures are created now) and
+    // the development one (which still holds residue from before the isolation existed).
+    // See `__tests__/support/fixture-teardown.ts`.
+    globalTeardown: "<rootDir>/__tests__/support/fixture-teardown.ts",
     transform: {
         "^.+\\.tsx?$": [
             "ts-jest",

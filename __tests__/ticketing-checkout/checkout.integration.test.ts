@@ -43,6 +43,20 @@ const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 const PRICE = "150000.00";
 
+/**
+ * Every event this suite creates is UNLISTED.
+ *
+ * These fixtures are published through the REAL `publishEvent`, which is what makes the
+ * publish preconditions worth testing — but a PUBLISHED + PUBLIC event is served to anonymous
+ * visitors on the public landing. The suite cleans up after itself, yet cleanup runs only when a
+ * test reaches it: an assertion that fails mid-test (or an aborted run) leaves the event behind,
+ * and it then appears in the catalog as a ghost its owners cannot even see in their dashboard
+ * (the tenant has no real membership). `UNLISTED` is the designed "not listed, still sellable"
+ * state, so it keeps publish/checkout/payment behaviour intact while making a leaked fixture
+ * invisible on every public listing even if the cleanup never runs.
+ */
+const FIXTURE_VISIBILITY = "UNLISTED" as const;
+
 let ownerA: { id: string };
 let buyerA: { id: string };
 let buyerB: { id: string };
@@ -214,6 +228,7 @@ beforeAll(async () => {
             sportId,
             startAt: FUTURE,
             endAt: FUTURE_END,
+            visibility: FIXTURE_VISIBILITY,
         } as never
     );
 
@@ -227,6 +242,7 @@ beforeAll(async () => {
             sportId,
             startAt: FUTURE,
             endAt: FUTURE_END,
+            visibility: FIXTURE_VISIBILITY,
         } as never
     );
 
@@ -522,7 +538,12 @@ describe("A. the purchase gate refuses what the design says it must", () => {
         const draft = await createEvent(
             scopeA,
             orgA.id,
-            { title: `P6 Draft ${SUFFIX}`, sportId, startAt: FUTURE } as never
+            {
+                title: `P6 Draft ${SUFFIX}`,
+                sportId,
+                startAt: FUTURE,
+                visibility: FIXTURE_VISIBILITY,
+            } as never
         );
 
         const draftType = await createTicketType(scopeA, draft.id, {
@@ -556,7 +577,12 @@ describe("A. the purchase gate refuses what the design says it must", () => {
         const cancelled = await createEvent(
             scopeA,
             orgA.id,
-            { title: `P6 Cancelled ${SUFFIX}`, sportId, startAt: FUTURE } as never
+            {
+                title: `P6 Cancelled ${SUFFIX}`,
+                sportId,
+                startAt: FUTURE,
+                visibility: FIXTURE_VISIBILITY,
+            } as never
         );
 
         const cancelledType = await createTicketType(scopeA, cancelled.id, {
@@ -619,6 +645,7 @@ describe("A. the purchase gate refuses what the design says it must", () => {
                 sportId,
                 startAt: FUTURE,
                 endAt: FUTURE_END,
+                visibility: FIXTURE_VISIBILITY,
             } as never
         );
 
@@ -666,6 +693,7 @@ describe("A. the purchase gate refuses what the design says it must", () => {
                 sportId,
                 startAt: FUTURE,
                 endAt: FUTURE_END,
+                visibility: FIXTURE_VISIBILITY,
             } as never
         );
 

@@ -39,7 +39,7 @@ import type { PaymentMethod } from "@prisma/client";
  *   QRIS                DIRECT, channel `mpm`          buyer scans in-app
  *   VIRTUAL_ACCOUNT     DIRECT, 11 documented banks   buyer transfers to a number
  *   RETAIL_OUTLET       DIRECT, alfamart/indomaret    buyer pays a code at a counter
- *   CREDIT_CARD         REDIRECT, method `cc`         the provider's page owns the card
+ *   CREDIT_CARD         REDIRECT, method/channel `cc` the provider's page owns the card
  *                                                     form; this application must never
  *                                                     touch card data
  *
@@ -52,11 +52,13 @@ import type { PaymentMethod } from "@prisma/client";
  *                              recording a credit product as E_WALLET would be a false entry
  *                              in a financial record. Declaring a bucket is a schema
  *                              decision, so the method is left out rather than mislabelled.
- *   E_WALLET                   Kept in the request enum for compatibility (see
- *                              `validation.ts`) but NOT advertised here: e-wallets pay by
- *                              scanning the QRIS code, so QRIS is the honest single entry
- *                              for them rather than a second tile that opens the same
- *                              instrument under a different name.
+ *   E_WALLET                   Not advertised, and no longer accepted either: an e-wallet pays
+ *                              by scanning a QR code, so the provider exposes it as the QRIS
+ *                              channel `mpm` and offers no method string this platform can book
+ *                              honestly. It used to sit in the request enum "for
+ *                              compatibility" while the picker never offered it; that enum now
+ *                              derives from this catalog, so the dead value is gone rather than
+ *                              lingering as a method a caller could submit but never mean.
  *
  * ── WHAT THIS CATALOG IS NOT ─────────────────────────────────────────────────────
  * It is not a promise that the gateway ACCOUNT has the channel enabled. Feature and health
@@ -84,7 +86,7 @@ export type PaymentMethodOption = {
     kind: "QR" | "NUMBER" | "REDIRECT";
     /** The provider's method string, sent verbatim. */
     providerMethod: string;
-    /** Channel used when the buyer does not pick one. `null` for REDIRECT. */
+    /** Channel used when the buyer does not pick one. `null` only for a method with none. */
     defaultChannel: string | null;
     channels: readonly PaymentChannelOption[];
 };
@@ -142,8 +144,20 @@ export const PAYMENT_METHOD_OPTIONS: readonly PaymentMethodOption[] = [
         description: "Kamu akan diarahkan ke halaman pembayaran yang aman.",
         kind: "REDIRECT",
         providerMethod: "cc",
-        defaultChannel: null,
-        channels: [],
+        /*
+         * The provider documents exactly one channel for `cc` (`cc`), and the provenance
+         * block above says so. This entry used to declare none, with `defaultChannel: null`
+         * — which made the gateway send an EMPTY `paymentChannel`. iPaymu re-normalises the
+         * body it receives and drops an empty field, so the hash it verified no longer
+         * matched the one we signed and the request was answered `401 unauthorized
+         * signature` (reproduced against sandbox). Declaring the real channel is what makes
+         * the REDIRECT path selectable at all.
+         *
+         * One channel means the buyer's bank picker stays hidden for this method (`PayNowButton`
+         * renders it only when a method has more than one), so this changes no UI.
+         */
+        defaultChannel: "cc",
+        channels: [{ code: "cc", label: "Kartu kredit / debit" }],
     },
 ];
 

@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     files: [
       "__tests__/**/*.{ts,tsx,js,jsx}",
       "scripts/**/*.{js,cjs}",
+      // The PM2 process definition: `module.exports` is the only export form a `.cjs` file
+      // has, and it is what `pm2 start` reads.
+      "ecosystem.config.cjs",
       "server.js",
     ],
     rules: {

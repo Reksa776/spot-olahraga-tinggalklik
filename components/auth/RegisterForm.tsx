@@ -3,94 +3,118 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-
-import Brand from "@/components/Brand";
-
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-
-import {
-    signIn,
-    signOut,
-    getSession,
-} from "next-auth/react";
-
+import { getSession, signIn, signOut } from "next-auth/react";
 import toast from "react-hot-toast";
+import { FaEnvelope, FaPhone, FaUser } from "react-icons/fa";
 
-import {
-    FaEye,
-    FaEyeSlash,
-    FaUser,
-    FaEnvelope,
-    FaPhone,
-    FaLock,
-    FaArrowLeft,
-} from "react-icons/fa";
-
+import AuthError from "@/components/auth/AuthError";
+import AuthShell from "@/components/auth/AuthShell";
+import GoogleMark from "@/components/auth/GoogleMark";
+import PasswordField from "@/components/auth/PasswordField";
+import Brand from "@/components/Brand";
+import { register as registerAccount } from "@/lib/services/auth";
 import {
     registerSchema,
-    RegisterInput,
+    type RegisterInput,
 } from "@/lib/validations/register";
-
-import { register } from "@/lib/services/auth";
 
 /**
  * ==========================================
  * CUSTOMER REGISTRATION
  * ==========================================
  *
- * The retail affiliate "Kode Referral" section was removed with the affiliate system. Ticking PIC
- * attribution is recorded per event order, not on the account, so nothing about it belongs on this
- * form. What remains is exactly the information required to create a buyer account: name, email,
- * phone and password.
+ * The public sign-up. It creates a CUSTOMER — always. The form has no role control because
+ * the endpoint has no role parameter: `app/api/auth/register/route.ts` builds the `User` row
+ * from an explicit allow-list of four fields and sets `platformRole: "CUSTOMER"` itself.
+ * A request that sends `{ platformRole: "ADMIN" }` is ignored, and there is a test that
+ * proves it (`__tests__/auth-flow/register-customer-only.test.ts`).
+ *
+ * ── THE FIELDS, AND WHY ─────────────────────────────────────────────────────────
+ *   name      required — a ticket is issued to a person
+ *   email     optional, but one of email/phone is required (`registerSchema`)
+ *   phone     optional, same rule — the buyer's own domain requires an identifier
+ *   password  required, with `confirmPassword` — see `registerSchema` for the policy
+ *
+ * The retail "Kode Referral" field was removed with the affiliate programme; ticketing PIC
+ * attribution is recorded per order, never on the account.
+ *
+ * ── ERROR HANDLING ──────────────────────────────────────────────────────────────
+ * Three distinct outcomes, three distinct treatments:
+ *
+ *   • FIELD errors from `registerSchema` render under their own field, wired through
+ *     `aria-describedby` by `PasswordField` and `react-hook-form`'s `aria-invalid`.
+ *   • SERVER refusals (duplicate account, weak password, rate limited) render as a single
+ *     `AuthError` with the server's own safe Indonesian sentence, which the API envelope
+ *     puts in `message`.
+ *   • UNEXPECTED failures render a generic retry sentence. The raw error is never shown:
+ *     it could carry a database string, and the user cannot act on it anyway.
+ *
+ * Duplicate accounts are reported as a conflict by the endpoint rather than silently
+ * succeeding, because a "we sent you an email" white lie on a system with no mailer would
+ * leave the visitor waiting forever. The enumeration trade-off is documented at the route.
  */
+
+/** Where a freshly created CUSTOMER lands. Their own surface, and gated server-side. */
+const POST_REGISTER_PATH = "/ticketing/tickets";
+
 export default function RegisterForm() {
     const router = useRouter();
 
-    const [checkingSession, setCheckingSession] =
-        useState(true);
-
-    const [alreadyLoggedIn, setAlreadyLoggedIn] =
-        useState(false);
-
+    const [alreadyLoggedIn, setAlreadyLoggedIn] = useState(false);
     const [loading, setLoading] = useState(false);
-
-    const [showPassword, setShowPassword] = useState(false);
-
-    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+    const [serverError, setServerError] = useState<string | null>(null);
 
     const {
-        register: formRegister,
+        register: field,
         handleSubmit,
         formState: { errors },
     } = useForm<RegisterInput>({
         resolver: zodResolver(registerSchema),
+        // Validate on blur, not on every keystroke: shouting "password must contain a
+        // number" at someone halfway through typing it is noise, not help.
+        mode: "onBlur",
     });
 
     /* ==========================================
      * SESSION CHECK
-     * ========================================== */
+     * ==========================================
+     *
+     * Runs in the background; the form renders from the first byte. Gating the page behind
+     * the check left the server-rendered HTML with nothing but a spinner in it — no fields,
+     * no labels, no Brand lockup — so the sign-up form did not exist for a client without
+     * JavaScript. The cost is a brief flash of the form for someone who is already signed in,
+     * after which the panel below replaces it.
+     *
+     * ── THIS IS NOW THE FALLBACK, NOT THE GATE ─────────────────────────────────────
+     * `app/register/page.tsx` resolves the session SERVER-SIDE and redirects an authenticated
+     * visitor to their own surface before any HTML is sent, so the panel below is reached only
+     * when a session appeared after this page was delivered. Both paths use the same server
+     * scope and the same pure redirect helpers.
+     */
     useEffect(() => {
         let mounted = true;
 
         async function checkSession() {
             try {
                 const session = await getSession();
-                if (!mounted) return;
-                if (session?.user) {
+
+                if (mounted && session?.user) {
                     setAlreadyLoggedIn(true);
                 }
-            } catch (error) {
-                console.error("CHECK REGISTER SESSION ERROR:", error);
-            } finally {
-                if (mounted) {
-                    setCheckingSession(false);
-                }
+            } catch {
+                // A failed session check must not block registration: the endpoint
+                // authenticates nothing, and the account is created either way. The form is
+                // already on screen, so there is nothing to recover from.
             }
         }
 
         checkSession();
-        return () => { mounted = false; };
+
+        return () => {
+            mounted = false;
+        };
     }, []);
 
     /* ==========================================
@@ -100,330 +124,342 @@ export default function RegisterForm() {
         try {
             setLoading(true);
             await signOut({ redirect: false });
-            toast.success("Berhasil logout.");
+            toast.success("Berhasil keluar.");
             setAlreadyLoggedIn(false);
             router.refresh();
-        } catch (error) {
-            console.error("LOGOUT ERROR:", error);
-            toast.error("Gagal logout.");
+        } catch {
+            toast.error("Gagal keluar. Silakan coba lagi.");
         } finally {
             setLoading(false);
         }
     }
 
     async function onSubmit(data: RegisterInput) {
+        setServerError(null);
+        setLoading(true);
+
         try {
-            setLoading(true);
-            await register(data);
-            toast.success("Register berhasil");
+            await registerAccount(data);
 
-            const identifier =
-                data.email?.trim() || data.phone?.trim();
+            /*
+             * Account created. Sign in with the credentials just used, then hand over to the
+             * buyer surface. The sign-in result is checked: if it failed (a throttled IP, for
+             * instance) the account still exists, so the visitor is sent to login rather than
+             * being shown a success screen for a session they do not have.
+             */
+            const identifier = data.email?.trim() || data.phone?.trim() || "";
 
-            await signIn("credentials", {
+            const result = await signIn("credentials", {
                 identifier,
                 password: data.password,
                 redirect: false,
             });
 
-            router.push("/");
-        } catch (error: unknown) {
-            const message =
-                (
-                    error as {
-                        response?: { data?: { message?: string } };
-                    }
-                )?.response?.data?.message ??
-                "Terjadi kesalahan.";
+            if (result?.error) {
+                toast.success("Akun berhasil dibuat. Silakan masuk.");
+                router.push("/login");
+                return;
+            }
 
-            toast.error(message);
+            toast.success("Akun berhasil dibuat. Selamat datang!");
+            router.push(POST_REGISTER_PATH);
+            router.refresh();
+        } catch (error: unknown) {
+            setServerError(serverMessage(error));
         } finally {
             setLoading(false);
         }
     }
 
     /* ==========================================
-     * LOADING STATE
-     * ========================================== */
-    if (checkingSession) {
-        return (
-            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
-                <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 text-center shadow-xl">
-                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-100">
-                        <span className="text-3xl">🔐</span>
-                    </div>
-                    <h1 className="text-2xl font-bold text-ink-900">
-                        Memeriksa sesi...
-                    </h1>
-                    <p className="mt-2 text-sm text-gray-500">
-                        Tunggu sebentar.
-                    </p>
-                </div>
-            </section>
-        );
-    }
-
-    /* ==========================================
-     * ALREADY LOGGED IN
+     * ALREADY SIGNED IN
      * ========================================== */
     if (alreadyLoggedIn) {
         return (
-            <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
-                <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 text-center shadow-xl">
-                    <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-amber-100">
-                        <span className="text-3xl">⚠️</span>
+            <AuthShell backHref="/" backLabel="Kembali ke Beranda">
+                <div className="text-center">
+                    <div className="mb-5 flex justify-center">
+                        <Brand />
                     </div>
-                    <h1 className="text-2xl font-bold text-ink-900">
-                        Kamu Sudah Login
+
+                    <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
+                        Anda sudah masuk
                     </h1>
-                    <p className="mt-3 text-sm leading-6 text-gray-500">
-                        Kamu tidak dapat membuat akun baru
-                        saat masih login.
-                        <br />
-                        Silakan logout terlebih dahulu.
+
+                    <p className="mt-3 text-sm leading-relaxed text-ink-500">
+                        Akun baru tidak dapat dibuat saat Anda masih masuk dengan akun lain.
+                        Keluar terlebih dahulu, lalu buat akun Anda.
                     </p>
+
                     <div className="mt-6 space-y-3">
                         <button
                             type="button"
                             onClick={handleLogout}
                             disabled={loading}
-                            className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                            {loading ? "Logout..." : "Logout Terlebih Dahulu"}
+                            {loading ? "Keluar…" : "Keluar dari akun ini"}
                         </button>
-                        <button
-                            type="button"
-                            onClick={() => router.back()}
-                            className="flex h-12 w-full items-center justify-center rounded-xl border border-gray-300 bg-white font-semibold text-gray-700 transition hover:bg-gray-50"
+
+                        <Link
+                            href={POST_REGISTER_PATH}
+                            className="flex h-12 w-full items-center justify-center rounded-xl border border-ink-200 bg-white font-semibold text-ink-700 transition hover:bg-ink-50"
                         >
-                            Kembali
-                        </button>
+                            Lanjut ke tiket saya
+                        </Link>
                     </div>
                 </div>
-            </section>
+            </AuthShell>
         );
     }
 
     /* ==========================================
-     * RENDER FORM
+     * THE FORM
      * ========================================== */
     return (
-        <section className="flex min-h-screen items-center justify-center bg-gradient-to-b from-ink-50 via-white to-brand-50 px-5 py-10">
-            <div className="w-full max-w-md rounded-3xl border border-gray-100 bg-white p-8 shadow-xl">
-                <Link
-                    href="/"
-                    className="mb-6 inline-flex items-center gap-2 rounded-xl border border-ink-200 px-4 py-2 text-sm font-medium text-ink-700 transition hover:bg-ink-50"
-                >
-                    <FaArrowLeft className="text-xs" />
-                    Kembali ke Beranda
-                </Link>
-
-                <div className="mb-8 text-center">
-                    <div className="mb-6 flex justify-center">
-                        <Brand />
-                    </div>
-                    <h1 className="text-3xl font-bold text-ink-900">
-                        Buat Akun
-                    </h1>
-                    <p className="mt-2 text-sm leading-6 text-gray-500">
-                        Daftar sekarang untuk membeli tiket,
-                        menyimpan e-tiket, dan mengikuti event favoritmu.
-                    </p>
+        <AuthShell
+            footer={
+                <>
+                    Sudah punya akun?{" "}
+                    <Link
+                        href="/login"
+                        className="font-bold text-brand-700 hover:underline"
+                    >
+                        Masuk
+                    </Link>
+                </>
+            }
+        >
+            <header className="mb-7 text-center">
+                <div className="mb-5 flex justify-center">
+                    <Brand />
                 </div>
 
-                <form
-                    onSubmit={handleSubmit(onSubmit)}
-                    className="space-y-5"
-                >
-                    {/* Nama */}
-                    <div>
-                        <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Nama Lengkap
-                        </label>
-                        <div className="relative">
-                            <FaUser className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                            <input
-                                {...formRegister("name")}
-                                placeholder="Masukkan nama lengkap"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
-                            />
-                        </div>
-                        {errors.name && (
-                            <p className="mt-1 text-xs text-red-500">
-                                {errors.name.message}
-                            </p>
-                        )}
-                    </div>
+                <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
+                    Buat akun pembeli
+                </h1>
 
-                    {/* Email */}
-                    <div>
-                        <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Email
-                        </label>
-                        <div className="relative">
-                            <FaEnvelope className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                            <input
-                                type="email"
-                                {...formRegister("email")}
-                                placeholder="Masukkan email"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
-                            />
-                        </div>
-                        {errors.email && (
-                            <p className="mt-1 text-xs text-red-500">
-                                {errors.email.message}
-                            </p>
-                        )}
-                    </div>
+                <p className="mt-2 text-sm leading-relaxed text-ink-500">
+                    Beli tiket, simpan e-tiket, dan lihat riwayat pesanan Anda di satu tempat.
+                </p>
+            </header>
 
-                    {/* Nomor HP */}
-                    <div>
-                        <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Nomor HP
-                        </label>
-                        <div className="relative">
-                            <FaPhone className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                            <input
-                                {...formRegister("phone")}
-                                placeholder="08xxxxxxxxxx"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-4 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
-                            />
-                        </div>
-                        {errors.phone && (
-                            <p className="mt-1 text-xs text-red-500">
-                                {errors.phone.message}
-                            </p>
-                        )}
-                    </div>
+            <form
+                onSubmit={handleSubmit(onSubmit)}
+                className="space-y-5"
+                noValidate
+            >
+                {serverError ? <AuthError>{serverError}</AuthError> : null}
 
-                    {/* Password */}
-                    <div>
-                        <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Password
-                        </label>
-                        <div className="relative">
-                            <FaLock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                            <input
-                                type={showPassword ? "text" : "password"}
-                                {...formRegister("password")}
-                                placeholder="Masukkan password"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
-                            />
-                            <button
-                                type="button"
-                                onClick={() => setShowPassword(!showPassword)}
-                                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500"
-                            >
-                                {showPassword ? <FaEyeSlash /> : <FaEye />}
-                            </button>
-                        </div>
-                        {errors.password && (
-                            <p className="mt-1 text-xs text-red-500">
-                                {errors.password.message}
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Konfirmasi Password */}
-                    <div>
-                        <label className="mb-2 block text-sm font-medium text-gray-700">
-                            Konfirmasi Password
-                        </label>
-                        <div className="relative">
-                            <FaLock className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" />
-                            <input
-                                type={showConfirmPassword ? "text" : "password"}
-                                {...formRegister("confirmPassword")}
-                                placeholder="Ulangi password"
-                                className="h-12 w-full rounded-xl border border-gray-300 bg-white pl-11 pr-10 text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none"
-                            />
-                            <button
-                                type="button"
-                                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500"
-                            >
-                                {showConfirmPassword ? <FaEyeSlash /> : <FaEye />}
-                            </button>
-                        </div>
-                        {errors.confirmPassword && (
-                            <p className="mt-1 text-xs text-red-500">
-                                {errors.confirmPassword.message}
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Button Register */}
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white transition-all duration-200 hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                {/* ── Nama ────────────────────────────────────────────────────── */}
+                <div>
+                    <label
+                        htmlFor="register-name"
+                        className="mb-2 block text-sm font-semibold text-ink-700"
                     >
-                        {loading ? (
-                            <div className="flex items-center gap-2">
-                                <svg
-                                    className="h-5 w-5 animate-spin"
-                                    xmlns="http://www.w3.org/2000/svg"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                >
-                                    <circle
-                                        className="opacity-30"
-                                        cx="12"
-                                        cy="12"
-                                        r="10"
-                                        stroke="currentColor"
-                                        strokeWidth="4"
-                                    />
-                                    <path
-                                        className="opacity-100"
-                                        fill="currentColor"
-                                        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-                                    />
-                                </svg>
-                                <span>Memproses...</span>
-                            </div>
-                        ) : (
-                            "Buat Akun"
-                        )}
-                    </button>
+                        Nama lengkap
+                    </label>
 
-                    {/* Divider */}
-                    <div className="flex items-center py-2">
-                        <div className="h-px flex-1 bg-gray-200" />
-                        <span className="mx-4 text-sm text-gray-400">atau</span>
-                        <div className="h-px flex-1 bg-gray-200" />
-                    </div>
-
-                    {/* Google Login */}
-                    <button
-                        type="button"
-                        onClick={() =>
-                            signIn("google", {
-                                callbackUrl: "/",
-                            })
-                        }
-                        className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-gray-300 bg-white font-medium text-gray-700 transition hover:bg-gray-50"
-                    >
-                        <img
-                            src="https://www.svgrepo.com/show/445645/google-color.svg"
-                            alt="Google"
-                            className="h-5 w-5"
+                    <div className="relative">
+                        <FaUser
+                            aria-hidden
+                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
                         />
-                        Lanjutkan dengan Google
-                    </button>
 
-                    {/* Footer */}
-                    <div className="pt-3 text-center text-sm text-gray-600">
-                        Sudah punya akun?{" "}
-                        <Link
-                            href="/login"
-                            className="ml-1 font-semibold text-brand-600 hover:underline"
-                        >
-                            Masuk
-                        </Link>
+                        <input
+                            id="register-name"
+                            type="text"
+                            autoComplete="name"
+                            placeholder="Nama sesuai identitas"
+                            disabled={loading}
+                            aria-invalid={errors.name ? true : undefined}
+                            aria-describedby={errors.name ? "register-name-error" : undefined}
+                            {...field("name")}
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                        />
                     </div>
-                </form>
-            </div>
-        </section>
+
+                    {errors.name ? (
+                        <p
+                            id="register-name-error"
+                            role="alert"
+                            className="mt-1.5 text-xs text-ink-600"
+                        >
+                            {errors.name.message}
+                        </p>
+                    ) : null}
+                </div>
+
+                {/* ── Email ───────────────────────────────────────────────────── */}
+                <div>
+                    <label
+                        htmlFor="register-email"
+                        className="mb-2 block text-sm font-semibold text-ink-700"
+                    >
+                        Email{" "}
+                        <span className="font-normal text-ink-400">(opsional)</span>
+                    </label>
+
+                    <div className="relative">
+                        <FaEnvelope
+                            aria-hidden
+                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
+                        />
+
+                        <input
+                            id="register-email"
+                            type="email"
+                            autoComplete="email"
+                            placeholder="nama@email.com"
+                            disabled={loading}
+                            aria-invalid={errors.email ? true : undefined}
+                            aria-describedby={
+                                errors.email ? "register-email-error" : "register-identifier-hint"
+                            }
+                            {...field("email")}
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                        />
+                    </div>
+
+                    {errors.email ? (
+                        <p
+                            id="register-email-error"
+                            role="alert"
+                            className="mt-1.5 text-xs text-ink-600"
+                        >
+                            {errors.email.message}
+                        </p>
+                    ) : (
+                        <p
+                            id="register-identifier-hint"
+                            className="mt-1.5 text-xs text-ink-400"
+                        >
+                            Isi email atau nomor HP — minimal salah satu.
+                        </p>
+                    )}
+                </div>
+
+                {/* ── Nomor HP ────────────────────────────────────────────────── */}
+                <div>
+                    <label
+                        htmlFor="register-phone"
+                        className="mb-2 block text-sm font-semibold text-ink-700"
+                    >
+                        Nomor HP{" "}
+                        <span className="font-normal text-ink-400">(opsional)</span>
+                    </label>
+
+                    <div className="relative">
+                        <FaPhone
+                            aria-hidden
+                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
+                        />
+
+                        <input
+                            id="register-phone"
+                            type="tel"
+                            autoComplete="tel"
+                            inputMode="tel"
+                            placeholder="08xxxxxxxxxx"
+                            disabled={loading}
+                            aria-invalid={errors.phone ? true : undefined}
+                            aria-describedby={errors.phone ? "register-phone-error" : undefined}
+                            {...field("phone")}
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                        />
+                    </div>
+
+                    {errors.phone ? (
+                        <p
+                            id="register-phone-error"
+                            role="alert"
+                            className="mt-1.5 text-xs text-ink-600"
+                        >
+                            {errors.phone.message}
+                        </p>
+                    ) : null}
+                </div>
+
+                {/* ── Password ────────────────────────────────────────────────── */}
+                {/*
+                    ONE input per password field, and it is both the visible control and the
+                    one react-hook-form validates: `registration` spreads RHF's
+                    `name`/`onChange`/`onBlur`/`ref` straight onto the input `PasswordField`
+                    renders. There is no styled twin and no hidden mirror — see the note in
+                    `components/auth/PasswordField.tsx` for why that distinction matters.
+                */}
+                <PasswordField
+                    label="Password"
+                    registration={field("password")}
+                    disabled={loading}
+                    autoComplete="new-password"
+                    error={errors.password?.message}
+                    placeholder="Minimal 8 karakter"
+                    hint="Minimal 8 karakter, dengan huruf besar, huruf kecil, dan angka."
+                />
+
+                <PasswordField
+                    label="Konfirmasi password"
+                    registration={field("confirmPassword")}
+                    disabled={loading}
+                    autoComplete="new-password"
+                    error={errors.confirmPassword?.message}
+                    placeholder="Ulangi password"
+                />
+
+                <button
+                    type="submit"
+                    disabled={loading}
+                    className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {loading ? "Memproses…" : "Buat akun"}
+                </button>
+
+                <div className="flex items-center pt-1">
+                    <div className="h-px flex-1 bg-ink-200" />
+                    <span className="mx-4 text-xs font-semibold tracking-wide text-ink-400 uppercase">
+                        atau
+                    </span>
+                    <div className="h-px flex-1 bg-ink-200" />
+                </div>
+
+                <button
+                    type="button"
+                    onClick={() => signIn("google", { callbackUrl: POST_REGISTER_PATH })}
+                    disabled={loading}
+                    className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white font-semibold text-ink-800 transition hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                    {/* Inline, so `img-src` needs no third-party origin on the sign-up page.
+                        See `components/auth/GoogleMark.tsx`. */}
+                    <GoogleMark />
+                    Daftar dengan Google
+                </button>
+
+                <p className="pt-1 text-center text-xs leading-relaxed text-ink-400">
+                    Dengan membuat akun, Anda menyetujui ketentuan layanan dan kebijakan
+                    privasi TinggalKlik.Co.
+                </p>
+            </form>
+        </AuthShell>
     );
+}
+
+/**
+ * Turn a thrown API failure into a sentence the visitor can act on.
+ *
+ * The API's error envelope puts a curated Indonesian message in `message`, and that is what
+ * is shown — it is written for a user. Anything else (a network drop, a JS failure, a
+ * 500 with no envelope) becomes the generic retry sentence, because the real cause is
+ * neither safe nor useful to display.
+ */
+function serverMessage(error: unknown): string {
+    const message = (
+        error as { response?: { data?: { message?: unknown } } }
+    )?.response?.data?.message;
+
+    if (typeof message === "string" && message.trim().length > 0) {
+        return message;
+    }
+
+    return "Terdaftar gagal karena gangguan sementara. Silakan coba lagi.";
 }

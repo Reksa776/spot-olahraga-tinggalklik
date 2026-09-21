@@ -364,6 +364,31 @@
 }
 
 /*
+ * ── NATIVE CONTROL THEMING (`color-scheme`) ───────────────────────────────────
+ *
+ * `color-scheme` is what tells the browser which mode to paint the things this stylesheet does
+ * not: scrollbars, spinners, form controls, and the default canvas behind an element that has no
+ * background of its own. Both the bootstrap script and the provider used to apply it as an inline
+ * `style.colorScheme` on `<html>`. That set an attribute on the document element before React
+ * hydrated, and the server-rendered `<html lang="id">` has none — so React reported a hydration
+ * mismatch on <html> for every visitor, on every page load (the fallback is `light`, so the write
+ * was unconditional, not limited to users who had chosen a dark dashboard).
+ *
+ * As CSS it is derived from the SAME `dark` class the bootstrap applies before first paint, so the
+ * effect it replaces is unchanged in every respect that is observable: still correct in the first
+ * painted frame, still updates in the same frame as a theme click, and no longer a style attribute
+ * that only the client knows about. A visitor with no stored appearance gets `light`, which is what
+ * the script's own default resolved to.
+ */
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+/*
  * ── ACCENT THEMES ─────────────────────────────────────────────────────────────
  *
  * One attribute changes the brand hue everywhere it is used: filled buttons, links, the

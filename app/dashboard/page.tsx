@@ -22,6 +22,7 @@ import {
 } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
 import { getDashboardOverview } from "@/lib/dashboard/overview";
+import { eventStatusTone } from "@/lib/events/status";
 import { formatEventSchedule, formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
@@ -141,9 +142,9 @@ export default async function DashboardOverviewPage() {
                                     }
                                     meta={`${formatEventSchedule(event.startAt, null)} · ${event.organizerName}`}
                                     trailing={
-                                        <StatusBadge
-                                            tone={event.status === "PUBLISHED" ? "success" : "info"}
-                                        >
+                                        // Same tone table as the event list and detail header, so
+                                        // a status reads identically on all three surfaces.
+                                        <StatusBadge tone={eventStatusTone(event.status)}>
                                             {event.status}
                                         </StatusBadge>
                                     }

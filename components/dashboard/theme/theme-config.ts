@@ -109,15 +109,55 @@ export function isChartPaletteId(value: string | null): value is ChartPaletteId 
 }
 
 /**
- * The bootstrap script, rendered into the dashboard layout.
+ * The bootstrap script.
  *
  * It runs BEFORE first paint and before hydration, which is what removes the flash of the default
- * palette on a page the user has already personalised — the same technique `next-themes` uses for
- * light/dark, extended to the two palettes. A failure (storage disabled, private mode) leaves the
- * CSS defaults in place rather than throwing.
+ * palette (and the wrong light/dark appearance) on a page the user has already personalised. A
+ * failure (storage disabled, private mode) leaves the CSS defaults in place rather than throwing.
+ *
+ * WHY IT IS ONE SCRIPT FOR ALL THREE PREFERENCES
+ * ----------------------------------------------
+ * `THEME_STORAGE.appearance` is the key `next-themes` used before this phase and still holds the
+ * bare theme string, so an existing choice survives untouched. Folding the appearance into this
+ * script is what lets the whole bootstrap live OUTSIDE the React tree — see
+ * `DashboardThemeProvider` for why that matters — instead of relying on a second inline script
+ * rendered by a library provider.
+ *
+ * `class` (not `data-theme`) is the attribute, and `light` is the fallback when storage is empty,
+ * matching the previous provider's `defaultTheme="light"` and `attribute="class"` exactly.
+ *
+ * WHY IT NO LONGER WRITES `color-scheme`
+ * --------------------------------------
+ * The script used to end with `d.style.colorScheme = r`. That made the bootstrap itself the owner
+ * of an INLINE `style` attribute on <html> — and because no stored appearance resolves to `light`
+ * rather than to nothing, the write was UNCONDITIONAL: every visitor, on every page, got
+ * `style="color-scheme: light"` on the document element before React hydrated, which the
+ * server-rendered `<html lang="id">` does not carry. React therefore reported "a tree hydrated but
+ * some attributes of the server rendered HTML didn't match the client properties" on <html>.
+ *
+ * Native control theming is still applied — it is now declared in `app/globals.css` as
+ * `html { color-scheme: light }` / `html.dark { color-scheme: dark }`, i.e. derived from the SAME
+ * `class` this script sets. So it is still correct in the first painted frame, still follows a
+ * click instantly, and no longer costs a hydration mismatch, because nothing here touches <html>'s
+ * `style` property any more.
+ *
+ * The script's complete write surface is now: `data-accent`, `data-chart` (only when storage holds
+ * one) and the `dark` class. `__tests__/ui-consolidation/theme-hydration.test.ts` pins that.
+ *
+ * WHERE IT IS RENDERED
+ * --------------------
+ * `app/layout.tsx`, as a plain inline `<script>` emitted by the ROOT Server Component into the
+ * first child of `<body>`. Because the root layout is never re-rendered on client-side navigation,
+ * React never re-creates this element inside a route segment — which is both what made the old
+ * route-rendered script warn ("Encountered a script tag while rendering React component") and what
+ * stopped it from executing on an in-app navigation. A `next/script strategy="beforeInteractive"`
+ * was tried first and rejected: for an INLINE script Next defers it past `DOMContentLoaded` (only
+ * `src`-based scripts are hoisted pre-paint), which reintroduces the flash this script removes.
  */
 export const THEME_BOOTSTRAP_SCRIPT = `(function(){try{var d=document.documentElement;var a=localStorage.getItem(${JSON.stringify(
     THEME_STORAGE.accent
 )});if(a){d.setAttribute("data-accent",a);}var c=localStorage.getItem(${JSON.stringify(
     THEME_STORAGE.chart
-)});if(c){d.setAttribute("data-chart",c);}}catch(e){}})();`;
+)});if(c){d.setAttribute("data-chart",c);}var t=localStorage.getItem(${JSON.stringify(
+    THEME_STORAGE.appearance
+)});var r=t==="dark"?"dark":t==="system"?(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):"light";if(r==="dark"){d.classList.add("dark");}else{d.classList.remove("dark");}}catch(e){}})();`;

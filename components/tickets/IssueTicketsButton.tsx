@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import {
+    isSessionExpired,
+    redirectToLoginForExpiredSession,
+} from "@/lib/auth/client-session";
+
 /**
  * ==========================================
  * MATERIALISE TICKETS FOR A PAID ORDER (brief §B4)
@@ -62,6 +67,16 @@ export default function IssueTicketsButton({ orderNumber, ticketCount }: Props) 
             );
 
             const payload = await response.json().catch(() => null);
+
+            /*
+             * The session ended while this page was open. NOT "issuance failed": no ticket was
+             * created and none was refused. The buyer signs in and returns to this order, where
+             * the button is offered again — which is safe, because issuance is idempotent.
+             */
+            if (isSessionExpired(response.status, payload)) {
+                redirectToLoginForExpiredSession();
+                return;
+            }
 
             if (!response.ok) {
                 // The server's message is shown verbatim — including for the `FULFILMENT_BLOCKED`

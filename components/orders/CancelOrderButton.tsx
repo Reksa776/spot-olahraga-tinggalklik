@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+    isSessionExpired,
+    redirectToLoginForExpiredSession,
+} from "@/lib/auth/client-session";
+
 /**
  * ==========================================
  * CANCEL UNPAID ORDER (design §26.4)
@@ -41,6 +46,16 @@ export default function CancelOrderButton({ orderNumber }: Props) {
             );
 
             const payload = await response.json().catch(() => null);
+
+            /*
+             * The session ended while this page was open. That is NOT a failed
+             * cancellation: nothing was refused, nothing was released, and the order is
+             * unchanged. The buyer is sent to sign in and comes straight back to this order.
+             */
+            if (isSessionExpired(response.status, payload)) {
+                redirectToLoginForExpiredSession();
+                return;
+            }
 
             if (!response.ok) {
                 setError(

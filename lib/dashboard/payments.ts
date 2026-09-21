@@ -19,6 +19,18 @@ import { resolveOrganizerFilter } from "./scope";
  * For a DIRECT instruction the gateway-issued instrument fields are selected so the
  * payments page can show the SAME QRIS/VA the buyer sees, rather than a summary that
  * loses it.
+ *
+ * ── PHASE 27E: THIS LIST IS THE RECONCILIATION WORKLIST ────────────────────────
+ * Reconciliation ("Verifikasi status") is a per-row action on this table, and the table
+ * already searches by payment reference and order number, so an operator holding a stuck
+ * payment's reference finds it here and verifies it in one click. No second worklist query
+ * was added: one would duplicate this filter and call no provider either way, while a
+ * verification run must always be an explicit, one-payment decision — never something a
+ * list render does in bulk.
+ *
+ * `providerTransactionId` is selected because the action depends on it: a row whose
+ * provider transaction id was never captured cannot be verified at all, and the page says
+ * so instead of drawing a button that must fail.
  */
 
 const PAYMENT_SELECT = {
@@ -38,6 +50,8 @@ const PAYMENT_SELECT = {
     qrString: true,
     paymentUrl: true,
     externalSessionId: true,
+    /** Phase 27E: the persisted provider transaction id, or NULL when none was captured. */
+    providerTransactionId: true,
     expiresAt: true,
     providerExpiredAt: true,
     createdAt: true,
@@ -124,3 +138,4 @@ export async function listDashboardPayments(
         },
     };
 }
+

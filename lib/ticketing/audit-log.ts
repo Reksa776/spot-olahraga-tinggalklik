@@ -116,6 +116,18 @@ export type TicketingAuditAction =
     | "payment.success"
     | "payment.failed"
     | "payment.expired"
+    // ── PHASE 27E: operator-triggered reconciliation ─────────────────────────────
+    // The sixth payment action, and the only one whose actor is a human who was NOT a
+    // party to the payment. It records that an operator asked the provider for the
+    // authoritative status of an existing transaction and what came back.
+    //
+    // It is deliberately NOT `payment.success`. That action is written by settlement
+    // itself, once, from the verified evidence — whoever triggered it. If reconciliation
+    // also wrote `payment.success` there would be two rows claiming the same money event
+    // and no way to tell "the webhook arrived" from "an operator chased it", which is
+    // exactly the question an incident review asks first (Phase 27B: the provider was
+    // paid, the callback never arrived, and nothing recorded that anyone noticed).
+    | "payment.reconcile"
     // ── PHASE 10B: the refund lifecycle ──────────────────────────────────────────
     // Five actions, one per state change that an auditor reconstructs a refund from: the
     // buyer's request, the two staff decisions, the confirmed settlement and the failure.

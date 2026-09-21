@@ -2,10 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import ReloadButton from "@/components/errors/ReloadButton";
+import ServiceUnavailableState from "@/components/errors/ServiceUnavailableState";
 import EmptyState from "@/components/ticketing/EmptyState";
 import SiteShell from "@/components/ticketing/SiteShell";
 import TicketCard from "@/components/ticketing/TicketCard";
+import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
+import { resolvePageFailure } from "@/lib/errors/classify";
 import { listOwnTickets } from "@/lib/ticketing/tickets/service";
 import {
     WALLET_VIEWS,
@@ -58,25 +62,61 @@ export default async function TicketWalletPage({
 
     const scope = await getAuthzScope();
 
+    const selfPath = `/ticketing/tickets${view === "upcoming" ? "" : `?view=${view}`}`;
+
     if (!scope) {
-        redirect(
-            `/login?next=${encodeURIComponent(
-                `/ticketing/tickets${view === "upcoming" ? "" : `?view=${view}`}`
-            )}`
-        );
+        redirect(loginUrlFor(selfPath));
     }
 
-    // A refusal (no `ticket.read.own`) renders as an empty wallet rather than an error page: the
-    // buyer learns nothing about what exists, which is the fail-closed behaviour brief §16 asks for.
-    //
-    // `upcoming: false` is the server's "no date filter" mode, used for both `all` and `past` — the
-    // `past` slice is then taken here from the rows the server already authorised.
-    const wallet = await listOwnTickets(
-        view === "upcoming"
-            ? { upcoming: true, limit: WALLET_LIMIT }
-            : { upcoming: false, limit: WALLET_LIMIT },
-        scope
-    ).catch(() => null);
+    /*
+     * A REFUSAL IS NOT A FAILURE, and the two are now told apart.
+     *
+     * `catch(() => null)` used to collapse them: a buyer with no `ticket.read.own` and a buyer
+     * whose database call just timed out both got "Belum ada tiket" — an empty state rendered
+     * over an outage, which the brief forbids explicitly ("do NOT render an empty state when the
+     * API failed") and which hides the outage from the operator too.
+     *
+     *   denied    → an empty wallet. Fail-closed and deliberate: the buyer learns nothing about
+     *               what exists (brief §16).
+     *   sign-in   → login, preserving where they were.
+     *   unavailable → a retry state. Never an empty list.
+     *   anything else → the ticketing error boundary.
+     *
+     * `upcoming: false` is the server's "no date filter" mode, used for both `all` and `past` —
+     * the `past` slice is then taken here from the rows the server already authorised.
+     */
+    let wallet: Awaited<ReturnType<typeof listOwnTickets>> | null = null;
+
+    try {
+        wallet = await listOwnTickets(
+            view === "upcoming"
+                ? { upcoming: true, limit: WALLET_LIMIT }
+                : { upcoming: false, limit: WALLET_LIMIT },
+            scope
+        );
+    } catch (error) {
+        const failure = resolvePageFailure(error);
+
+        if (failure.action === "unavailable") {
+            return (
+                <SiteShell>
+                    <div className="mx-auto max-w-5xl px-4 py-12 sm:px-6">
+                        <ServiceUnavailableState reference={failure.classification.code}>
+                            <ReloadButton />
+                        </ServiceUnavailableState>
+                    </div>
+                </SiteShell>
+            );
+        }
+
+        if (failure.action === "sign-in") {
+            redirect(loginUrlFor(selfPath));
+        }
+
+        if (failure.action !== "denied") {
+            throw error;
+        }
+    }
 
     const items = wallet?.items ?? [];
 

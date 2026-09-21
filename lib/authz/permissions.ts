@@ -534,8 +534,48 @@ const PLATFORM_ROLE_OWN_PERMISSIONS: Record<
     PlatformRole,
     ReadonlySet<string>
 > = {
-    ADMIN: toSet([]),
-    MANAGER: toSet([]),
+    /*
+     * PHASE 23A — ADMIN and MANAGER are buyers too.
+     *
+     * These two maps used to be empty, on the reading that own-scope capability is a
+     * "customer/PIC" concern and that a platform role's authority lives at the platform
+     * and tenant levels. That reading is wrong in one direction that actually happens: an
+     * operator (a platform ADMIN, or a MANAGER) buys a ticket through the very same public
+     * checkout a customer uses, and then owns the resulting `EventOrder` with their own
+     * user id. With this map empty, `requireOwnResource("order.read.own", ownId)` denied
+     * them their OWN order, and the buyer page rendered that denial as a 404 — the order
+     * was real, it belonged to them, and the page was still "not found".
+     *
+     * The own-scope path is identity-gated (`decideOwnResourcePermission` denies unless
+     * `scope.userId === ownerUserId`), so granting these permissions to a platform role
+     * confers no authority over ANY other user's records: "read your own order" and
+     * "cancel your own order" mean exactly that for every role. It also grants no
+     * platform-wide or tenant-wide power, so D-19 (Admin holds no financial power by
+     * default) and the tenant-isolation guarantee are both untouched — those live in the
+     * PLATFORM and ORGANIZER maps, which are unchanged.
+     *
+     * The set mirrors a CUSTOMER's own-scope capabilities exactly, so "any authenticated
+     * role that can buy" resolves its own purchase identically. PIC keeps its own curated
+     * set below (deliberately without `order.cancel.own`), and the admin-only own-scope
+     * FINANCIAL capability (`pic_fee.read.own`, `pic_attribution.read.own`) stays
+     * withheld — the existing `permission-map` test asserting that remains valid.
+     */
+    ADMIN: toSet([
+        P.ORDER_READ_OWN,
+        P.ORDER_CANCEL_OWN,
+        P.PAYMENT_READ_OWN,
+        P.TICKET_READ_OWN,
+        P.TICKET_ISSUE_OWN,
+        P.REFUND_REQUEST_OWN,
+    ]),
+    MANAGER: toSet([
+        P.ORDER_READ_OWN,
+        P.ORDER_CANCEL_OWN,
+        P.PAYMENT_READ_OWN,
+        P.TICKET_READ_OWN,
+        P.TICKET_ISSUE_OWN,
+        P.REFUND_REQUEST_OWN,
+    ]),
     PIC: toSet([
         P.ORDER_READ_OWN,
         P.PAYMENT_READ_OWN,

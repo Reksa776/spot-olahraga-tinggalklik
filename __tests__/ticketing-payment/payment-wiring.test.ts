@@ -41,6 +41,7 @@ const DB_CONTENTION = "lib/ticketing/db-contention.ts";
 const ORDER_PAYLOAD = "lib/ticketing/order-payload.ts";
 
 const WEBHOOK_MODULE = `${PAYMENT_DIR}/webhook.ts`;
+const RECONCILIATION_MODULE = `${PAYMENT_DIR}/reconciliation.ts`;
 const SETTLEMENT = `${PAYMENT_DIR}/settlement.ts`;
 const SERVICE = `${PAYMENT_DIR}/service.ts`;
 const GATEWAY = `${PAYMENT_DIR}/gateway.ts`;
@@ -117,8 +118,8 @@ describe("the payment layer consumes the canonical inventory primitives", () => 
 // Settlement is webhook-only (design §31.5 rule 3)
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("the webhook is the only settlement trigger", () => {
-    test("only the webhook module invokes the settlement primitives", () => {
+describe("the webhook is the only AUTOMATIC settlement trigger", () => {
+    test("exactly two modules invoke the settlement primitives, each for a documented reason", () => {
         const importers: string[] = [];
 
         const walk = (dir: string) => {
@@ -148,7 +149,92 @@ describe("the webhook is the only settlement trigger", () => {
 
         for (const dir of ["lib", "app", "components"]) walk(dir);
 
-        expect(importers).toEqual([WEBHOOK_MODULE]);
+        /*
+         * PHASE 27E — THE SET IS NOW TWO, AND THAT IS NOT THE RULE BEING RELAXED.
+         *
+         * Design §31.5 rule 3 forbids a BROWSER or an operator from declaring a payment
+         * paid. It does not, and cannot, say the provider's webhook is the only way to learn
+         * what the provider did: Phase 27B proved the callback can be unreachable (the notify
+         * URL was a loopback address) while the money is genuinely gone. Reconciliation asks
+         * the provider out of band instead.
+         *
+         * What keeps the rule intact is that BOTH callers are still required to present
+         * provider-verified evidence and go through the SAME order CAS — asserted below, so
+         * this list cannot grow by quietly adding a name.
+         */
+        expect(importers.sort()).toEqual(
+            [RECONCILIATION_MODULE, WEBHOOK_MODULE].sort()
+        );
+
+        // The automatic trigger is still the webhook alone.
+        expect(importers).toContain(WEBHOOK_MODULE);
+    });
+
+    test("reconciliation is an operator action on VERIFIED provider evidence, never a second authority", () => {
+        const reconciliation = code(read(RECONCILIATION_MODULE));
+
+        // It obtains the transaction id from OUR OWN persisted column, and nowhere else —
+        // no function parameter, no request body.
+        expect(reconciliation).toMatch(/payment\.providerTransactionId/);
+        expect(reconciliation).toMatch(
+            /queryTransactionStatus\(payment\.providerTransactionId\)/
+        );
+
+        // It is authorized, per tenant, with the financial capability — from the record.
+        expect(reconciliation).toMatch(/requireOrganizerAccess\(/);
+        expect(reconciliation).toMatch(/PERMISSIONS\.PAYMENT_RECONCILE/);
+
+        // A provider that has not reported success never reaches settlement.
+        expect(reconciliation).toMatch(/isGatewaySuccessStatus\(/);
+
+        // And it still does not write a paid state itself: the settlement engine owns that.
+        expect(reconciliation).not.toMatch(/status\s*:\s*"PAID"/);
+        expect(reconciliation).not.toMatch(/paymentStatus\s*[:=]\s*"PAID"/);
+    });
+
+    test("the reconcile route accepts no financial input and is CSRF-checked", () => {
+        const reconcileRoute = code(
+            read(
+                "app/api/organizer/payments/[paymentReference]/reconcile/route.ts"
+            )
+        );
+
+        expect(reconcileRoute).toMatch(/requireSameOrigin\(/);
+        expect(reconcileRoute).toMatch(/requireAuth\(/);
+
+        // Nothing is read from the request body: every deciding value comes from the record,
+        // the session or the provider.
+        expect(reconcileRoute).not.toMatch(/request\.json\(/);
+        expect(reconcileRoute).not.toMatch(/transactionId/);
+        expect(reconcileRoute).not.toMatch(/amount/);
+
+        // And the route does not reach into the gateway or the settlement engine directly —
+        // it goes through the service, so the checks cannot be skipped by a caller.
+        expect(reconcileRoute).not.toMatch(/settleVerifiedPayment|queryTransactionStatus/);
+    });
+
+    test("the operator surface is gated by the same capability and asks for nothing", () => {
+        const page = code(read("app/dashboard/payments/page.tsx"));
+
+        // The action is drawn only where the server-side decider allows it, per tenant.
+        expect(page).toMatch(/PERMISSIONS\.PAYMENT_RECONCILE/);
+        expect(page).toMatch(/decideOrganizerPermission\(/);
+
+        const button = code(
+            read("components/organizer/ReconcilePaymentButton.tsx")
+        );
+
+        // No financial input exists at all: no field, no selector, no hidden value.
+        expect(button).not.toMatch(/<input|<Input|<select|<Select/);
+        expect(button).not.toMatch(/transactionId|providerTransactionId/);
+        expect(button).not.toMatch(/amount/i);
+
+        // It never spells a paid state, and it never claims one.
+        expect(button).not.toMatch(/"PAID"/);
+
+        // An expired session is a session state, not a failed verification (Phase 24).
+        expect(button).toMatch(/UNAUTHORIZED_CODE/);
+        expect(button).toMatch(/redirectToLoginForExpiredSession\(/);
     });
 
     test("the pay route and the order page cannot mark an order paid", () => {

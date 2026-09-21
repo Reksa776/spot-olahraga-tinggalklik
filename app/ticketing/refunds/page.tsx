@@ -2,9 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import ReloadButton from "@/components/errors/ReloadButton";
+import ServiceUnavailableState from "@/components/errors/ServiceUnavailableState";
 import EmptyState from "@/components/ticketing/EmptyState";
 import SiteShell from "@/components/ticketing/SiteShell";
+import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
+import { resolvePageFailure } from "@/lib/errors/classify";
 import { listRefunds } from "@/lib/ticketing/refunds/service";
 import type { RefundPayload } from "@/lib/ticketing/refunds/payload";
 import {
@@ -75,22 +79,52 @@ export default async function MyRefundsPage({
     const params = await searchParams;
     const page = params.page ? Math.max(1, Number(params.page) || 1) : 1;
 
+    const selfPath = page > 1 ? `/ticketing/refunds?page=${page}` : "/ticketing/refunds";
+
     const scope = await getAuthzScope();
 
     if (!scope) {
-        redirect(
-            `/login?next=${encodeURIComponent(
-                page > 1 ? `/ticketing/refunds?page=${page}` : "/ticketing/refunds"
-            )}`
-        );
+        redirect(loginUrlFor(selfPath));
     }
 
-    // A refusal (no order read capability) renders as an empty list rather than an error: the
-    // buyer learns nothing about what exists, which is the fail-closed behaviour.
-    const result = await listRefunds(scope, {
-        page,
-        limit: LIST_LIMIT,
-    }).catch(() => null);
+    /*
+     * A REFUSAL IS NOT A FAILURE — the same split as the ticket wallet, for the same reason.
+     *
+     *   denied      → an empty list. The buyer learns nothing about what exists.
+     *   sign-in     → login, preserving the page they were on.
+     *   unavailable → a retry state. A refund page that says "belum ada pengajuan refund" during
+     *                 an outage is the exact false-empty-state the brief forbids.
+     */
+    let result: Awaited<ReturnType<typeof listRefunds>> | null = null;
+
+    try {
+        result = await listRefunds(scope, {
+            page,
+            limit: LIST_LIMIT,
+        });
+    } catch (error) {
+        const failure = resolvePageFailure(error);
+
+        if (failure.action === "unavailable") {
+            return (
+                <SiteShell>
+                    <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+                        <ServiceUnavailableState reference={failure.classification.code}>
+                            <ReloadButton />
+                        </ServiceUnavailableState>
+                    </div>
+                </SiteShell>
+            );
+        }
+
+        if (failure.action === "sign-in") {
+            redirect(loginUrlFor(selfPath));
+        }
+
+        if (failure.action !== "denied") {
+            throw error;
+        }
+    }
 
     const items = result?.items ?? [];
     const total = result?.total ?? 0;

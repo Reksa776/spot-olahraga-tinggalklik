@@ -2,10 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
+import ReloadButton from "@/components/errors/ReloadButton";
+import ServiceUnavailableState from "@/components/errors/ServiceUnavailableState";
 import SiteShell from "@/components/ticketing/SiteShell";
 import TicketQr from "@/components/tickets/TicketQr";
 import TicketStatusBadge from "@/components/ticketing/TicketStatusBadge";
+import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
+import { resolvePageFailure } from "@/lib/errors/classify";
 import { getOwnTicket } from "@/lib/ticketing/tickets/service";
 import {
     formatEventDateLong,
@@ -87,20 +91,57 @@ type Props = { params: Promise<{ ticketCode: string }> };
 export default async function TicketDetailPage({ params }: Props) {
     const { ticketCode } = await params;
 
+    const selfPath = `/ticketing/tickets/${ticketCode}`;
+
     const scope = await getAuthzScope();
 
     if (!scope) {
-        redirect(
-            `/login?next=${encodeURIComponent(`/ticketing/tickets/${ticketCode}`)}`
-        );
+        redirect(loginUrlFor(selfPath));
     }
 
-    // `getOwnTicket` throws NOT_FOUND both for a malformed code and for another buyer's ticket, so
-    // both render identically here.
-    const ticket = await getOwnTicket(ticketCode, scope).catch(() => null);
+    /*
+     * The same classification the order page uses, for the same reason: `getOwnTicket` answers
+     * NOT_FOUND for a malformed code and for another buyer's ticket (indistinguishable by
+     * design — brief §15), and that is a REAL 404. A database outage or a timeout is not, and
+     * used to be rendered as one by `.catch(() => null)`.
+     *
+     * `denied` maps to 404 here as well: an opaque code must not become an existence oracle for
+     * a ticket the caller does not hold.
+     */
+    let ticket: Awaited<ReturnType<typeof getOwnTicket>>;
 
-    if (!ticket) {
-        notFound();
+    try {
+        ticket = await getOwnTicket(ticketCode, scope);
+    } catch (error) {
+        const failure = resolvePageFailure(error);
+
+        if (failure.action === "not-found" || failure.action === "denied") {
+            notFound();
+        }
+
+        if (failure.action === "sign-in") {
+            redirect(loginUrlFor(selfPath));
+        }
+
+        if (failure.action === "unavailable") {
+            return (
+                <SiteShell>
+                    <div className="mx-auto max-w-2xl px-4 py-12 sm:px-6">
+                        <ServiceUnavailableState reference={failure.classification.code}>
+                            <ReloadButton />
+                            <Link
+                                href="/ticketing/tickets"
+                                className="rounded-xl px-4 py-2.5 text-sm font-semibold text-ink-600 transition hover:text-ink-900"
+                            >
+                                Kembali ke tiket saya
+                            </Link>
+                        </ServiceUnavailableState>
+                    </div>
+                </SiteShell>
+            );
+        }
+
+        throw error;
     }
 
     return (

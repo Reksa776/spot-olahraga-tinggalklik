@@ -48,6 +48,19 @@ export const SUFFIX = `p7-${Date.now()}-${Math.random()
     .slice(2, 8)}`;
 
 export const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+/**
+ * UNLISTED — the fixture events this harness publishes must never be publicly listed.
+ *
+ * `publishEvent` runs for real here, and `createEvent` defaults `visibility` to `PUBLIC`, so a
+ * PUBLISHED fixture is served to anonymous visitors on the public landing the moment it exists.
+ * The suites clean up after themselves, but that cleanup only runs if a test reaches it — an
+ * aborted run (or the fixture-setup failure that leaves early) strands the event, and it shows up
+ * as a ghost event whose tenant no real user belongs to. `UNLISTED` is the designed "not listed,
+ * still sellable" state: publishing, payment creation, settlement and the webhook ledger all behave
+ * exactly as before, while the public catalog (which requires `visibility: "PUBLIC"`) ignores it.
+ */
+export const FIXTURE_VISIBILITY = "UNLISTED" as const;
 /**
  * PHASE 20B (D-P19-05 = A): an event needs an `endAt` before it can be published. A fixture
  * that published without one would now be refused by the real service — which is the point of
@@ -489,6 +502,7 @@ export async function setupFixtures(): Promise<Fixtures> {
         sportId,
         startAt: FUTURE,
         endAt: FUTURE_END,
+        visibility: FIXTURE_VISIBILITY,
     } as never);
 
     const eventB = await createEvent(
@@ -499,6 +513,7 @@ export async function setupFixtures(): Promise<Fixtures> {
             sportId,
             startAt: FUTURE,
             endAt: FUTURE_END,
+            visibility: FIXTURE_VISIBILITY,
         } as never
     );
 

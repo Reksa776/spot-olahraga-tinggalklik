@@ -3,6 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+    isSessionExpired,
+    redirectToLoginForExpiredSession,
+} from "@/lib/auth/client-session";
 import { PAYMENT_METHOD_OPTIONS } from "@/lib/ticketing/payment/method-catalog";
 
 /**
@@ -97,6 +101,22 @@ export default function PayNowButton({ orderNumber, paymentUrl }: Props) {
             );
 
             const payload = await response.json().catch(() => null);
+
+            /*
+             * ── THIS MUST COME BEFORE THE ERROR BRANCH ─────────────────────────────────
+             * The session ended while this page was open. It is NOT a payment failure: no
+             * provider call was made, no `Payment` row was written, and the order is exactly
+             * as unpaid as it was. Reporting it beside "Bayar sekarang" as a red message is how
+             * a buyer concludes their payment was attempted and refused. They are sent to sign
+             * in and returned to this order instead.
+             *
+             * The early return also skips the `router.refresh()` below, which would re-render a
+             * page whose session no longer resolves.
+             */
+            if (isSessionExpired(response.status, payload)) {
+                redirectToLoginForExpiredSession();
+                return;
+            }
 
             if (!response.ok) {
                 setError(

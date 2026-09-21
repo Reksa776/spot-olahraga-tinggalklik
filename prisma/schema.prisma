@@ -1219,6 +1219,19 @@ model Payment {
   paymentReference    String             @unique
   paymentUrl          String?            @db.Text
   expiresAt           DateTime?
+  /// ── PROVIDER TRANSACTION IDENTITY (operator reconciliation) ────────────────
+  /// The provider's OWN transaction id — iPaymu returns it as `Data.TransactionId`
+  /// (a JSON number) when it creates a payment instrument. It is the only handle
+  /// that addresses the server-to-server status query (`POST /api/v2/transaction`),
+  /// so reconciliation reads it FROM THIS COLUMN and never from a request body: a
+  /// caller-supplied transaction id would let the caller point the query at
+  /// somebody else's transaction.
+  ///
+  /// Nullable on purpose. A REDIRECT session returns no transaction id, and rows
+  /// written before this column existed keep NULL. Those answer BLOCKED instead of
+  /// guessing an identity. Never back-filled by hand — only a provider response
+  /// may populate it.
+  providerTransactionId String?
   /// ── DIRECT-PAYMENT INSTRUCTIONS (iPaymu Direct Payment API) ────────────────
   /// Which provider flow produced this row's instruction. `DIRECT` means iPaymu
   /// returned the payment instrument itself (QR/VA) and this application renders

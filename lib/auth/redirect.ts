@@ -33,6 +33,8 @@
  * each.
  */
 
+import { defaultDestinationForIntent, type LoginRoleIntent } from "./roles";
+
 /** Where a successful login goes when no usable callback was supplied. */
 export const DEFAULT_POST_LOGIN_PATH = "/dashboard";
 
@@ -103,9 +105,56 @@ export function resolveSafeCallbackUrl(
  * A valid callback wins (the user asked for a page and was bounced to login); otherwise the
  * dashboard is the default. An INVALID callback is treated as absent — it never reaches the
  * navigation.
+ *
+ * `options.intentDefault` is the login screen's role selector. It is applied LAST and is put
+ * through the same validator as the callback, even though it comes from our own table: the
+ * cost is one URL parse, and it means the selector can never become an injection point if a
+ * future edit makes its value dynamic. The parameter is additive, so the pure default
+ * (`postLoginDestination(null) === "/dashboard"`) is unchanged.
  */
 export function postLoginDestination(
-    raw: string | null | undefined
+    raw: string | null | undefined,
+    options: { intentDefault?: LoginRoleIntent } = {}
 ): string {
-    return resolveSafeCallbackUrl(raw) ?? DEFAULT_POST_LOGIN_PATH;
+    const fromCallback = resolveSafeCallbackUrl(raw);
+
+    if (fromCallback) {
+        return fromCallback;
+    }
+
+    const intent = options.intentDefault;
+
+    if (intent) {
+        const fromIntent = resolveSafeCallbackUrl(defaultDestinationForIntent(intent));
+
+        if (fromIntent) {
+            return fromIntent;
+        }
+    }
+
+    return DEFAULT_POST_LOGIN_PATH;
+}
+
+/**
+ * Build the login URL for a page that refused an anonymous visitor.
+ *
+ * ── THE BUG THIS REPLACES ───────────────────────────────────────────────────────
+ * Every session-gated ticketing page used to redirect with a `next` parameter:
+ *
+ *     redirect(`/login?next=${encodeURIComponent(path)}`)
+ *
+ * but the login form reads `callbackUrl` (`readCallbackUrl()` in `components/auth/LoginForm.tsx`,
+ * and `proxy.ts` writes `callbackUrl` too). `next` was therefore silently ignored, and a buyer
+ * who was bounced to login while opening their order landed on the dashboard afterwards — the
+ * exact page they were trying to reach was the one thing lost.
+ *
+ * One helper now builds every one of those URLs, so the query key exists in exactly one place
+ * and the value is validated (a page could pass an attacker-influenced path) rather than
+ * interpolated. An unsafe or absent path yields a bare `/login`, and the form's own default
+ * takes over.
+ */
+export function loginUrlFor(path: string | null | undefined): string {
+    const safe = resolveSafeCallbackUrl(path);
+
+    return safe ? `/login?callbackUrl=${encodeURIComponent(safe)}` : "/login";
 }

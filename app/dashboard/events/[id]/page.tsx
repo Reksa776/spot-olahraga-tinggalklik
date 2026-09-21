@@ -15,6 +15,7 @@ import { listEventImages, MAX_IMAGES_PER_EVENT } from "@/lib/events/images";
 import { CHECK_IN_GRACE_MS } from "@/lib/events/lifecycle";
 import { isEventCheckInOpen } from "@/lib/events/sales-state";
 import { getOrganizerEvent } from "@/lib/events/service";
+import { eventStatusTone } from "@/lib/events/status";
 import { getOrganizerPageContext } from "@/lib/organizer/context";
 import { listPublicSports } from "@/lib/sports/service";
 import { listEventCheckIns } from "@/lib/ticketing/checkin/service";
@@ -123,7 +124,14 @@ export default async function DashboardManageEventPage({
                     <span className="font-mono">/e/{event.slug}</span>
                 </p>
 
-                {event.status === "PUBLISHED" ? (
+                {/*
+                    Both live states link to the public page: an ONGOING event is listed and on
+                    sale exactly like a PUBLISHED one (the tick moves it to ONGOING at `startAt`),
+                    so omitting it here left a running event with no way to view what buyers see.
+                    A CANCELLED, ARCHIVED or DRAFT event is not listed, and a COMPLETED one has
+                    dropped out of the catalog, so none of them offer the link.
+                */}
+                {event.status === "PUBLISHED" || event.status === "ONGOING" ? (
                     <div>
                         <PrimaryAction href={`/e/${event.slug}`}>
                             Lihat halaman publik
@@ -136,15 +144,7 @@ export default async function DashboardManageEventPage({
                 <div className="flex flex-col gap-3">
                     <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                         <span>Status saat ini:</span>
-                        <StatusBadge
-                            tone={
-                                event.status === "PUBLISHED"
-                                    ? "success"
-                                    : event.status === "CANCELLED"
-                                      ? "error"
-                                      : "neutral"
-                            }
-                        >
+                        <StatusBadge tone={eventStatusTone(event.status)}>
                             {event.status}
                         </StatusBadge>
                         {event.publishedAt

@@ -24,31 +24,29 @@
  */
 
 import crypto from "crypto";
-import { getIpaymuConfig } from "./config";
+import { getIpaymuConfig, type PayEnvironment } from "./config";
 
 /* ==========================================
  * CONFIGURATION
  * ==========================================
  *
- * Legacy constant retained for backward compatibility with
- * static config checks. It is NOT the operational source of
- * truth anymore — payment operations resolve configuration
- * through getIpaymuConfig() (lib/payment/config.ts), which is
- * strict/fail-closed and environment-aware.
+ * There is no configuration in this module. Every payment operation resolves the
+ * gateway through `getIpaymuConfig()` (`lib/payment/config.ts`), which is
+ * environment-aware and fail-closed: it refuses to run unless `PAYMENT_ENVIRONMENT` is
+ * exactly `sandbox` or `production`, reads only that environment's credential names, and
+ * allow-lists the base URL.
+ *
+ * A legacy `IPAYMU_CONFIG` constant used to live right here and read four variables of
+ * its own (`IPAYMU_API_KEY`, `IPAYMU_VA`, `IPAYMU_URL`, `IPAYMU_IS_PRODUCTION`) at
+ * module load. It was referenced by nothing, but it is imported by the ticketing
+ * payment path, so a deployment that set only the legacy names would have acquired a
+ * SECOND config object describing a different endpoint and credentials — the exact
+ * failure the strict resolver exists to prevent. It has been deleted; the legacy names
+ * are read by nothing in the runtime application.
  *
  * Sandbox: https://sandbox.ipaymu.com
  * Production: https://my.ipaymu.com
  */
-
-export const IPAYMU_CONFIG = {
-    apiKey: process.env.IPAYMU_API_KEY || "",
-    va: process.env.IPAYMU_VA || "",
-    baseUrl:
-        process.env.IPAYMU_URL ||
-        (process.env.IPAYMU_IS_PRODUCTION === "true"
-            ? "https://my.ipaymu.com"
-            : "https://sandbox.ipaymu.com"),
-};
 
 /* ==========================================
  * SIGNATURE GENERATION
@@ -210,6 +208,21 @@ export type IpaymuResponse = {
     Status: number;
     Data: {
         SessionId?: string;
+        /**
+         * The spelling the redirect endpoint ACTUALLY returns.
+         *
+         * iPaymu's own redirect-payment sample response (and a live sandbox call) answers
+         * `{"SessionID": "...", "Url": "..."}` — capital D — while the direct endpoint
+         * answers `SessionId`. Reading only the camel-case spelling silently discarded the
+         * provider's session id for every hosted-page payment, so the row's
+         * `externalSessionId` was always null and the session could not be addressed by
+         * anything that identifies a payment at the provider. Both spellings are declared;
+         * the caller accepts either. NOTE that a redirect session still carries no provider
+         * TRANSACTION id — only the direct response returns `Data.TransactionId` — so a
+         * hosted-page payment has no persisted identity and cannot be status-queried
+         * (`fetchTransactionStatus` below); that is a provider-contract fact, not a defect.
+         */
+        SessionID?: string;
         Url?: string;
     } | null;
     Message: string;
@@ -1256,46 +1269,212 @@ export function verifyWebhookSignature(
 
 /**
  * ==========================================
- * SERVER-TO-SERVER PAYMENT VERIFICATION
+ * SERVER-TO-SERVER TRANSACTION STATUS QUERY
  * ==========================================
  *
- * Defense-in-depth: query iPaymu directly to
- * verify payment status. Use when:
- * 1. Webhook signature fails but payment looks legit
- * 2. First-time payment confirmation needs
- *    authoritative verification
- * 3. Reconciliation checks
+ * Authoritative, READ-ONLY payment evidence for a transaction that already
+ * exists at the provider. This is the only server-to-server provider query in
+ * the codebase, and it is written against the contract verified against the live
+ * sandbox in Phase 27D:
  *
- * Endpoint: POST /api/v2/payment/status
- * Auth: Same headers as outgoing (va, signature, timestamp)
+ *   POST {baseUrl}/api/v2/transaction
+ *   body    { "transactionId": "<provider id>", "account": "<merchant VA>" }
+ *   headers Content-Type, va, signature, timestamp  (same signing as creation)
+ *
+ * Observed (HTTP 200):
+ *
+ *   { "Status": 200, "Success": true, "Message": "success",
+ *     "Data": { "TransactionId": 233592, "Status": 1, "StatusDesc": "Berhasil",
+ *               "PaidStatus": "paid", "SubTotal": 15000, "Fee": 3500,
+ *               "Amount": 15000, "SessionId": "EVT-…", "ReferenceId": "EVT-…",
+ *               "PaymentMethod": "va", "PaymentChannel": "BNI", … } }
+ *
+ * ⚠ THIS MODULE RETURNS EVIDENCE; IT NEVER MUTATES ANYTHING. A payment is only
+ * ever marked PAID by a verified webhook — settlement lives in
+ * `lib/ticketing/payment/settlement.ts` and is reached exclusively through the
+ * existing `settleVerifiedPayment()`.
+ *
+ * ⚠ `TransactionId` ARRIVES AS A JSON NUMBER. `233592 === "233592"` is false, so
+ * a strict comparison against the value we persist would reject a correct
+ * response. It is normalised to a string here and compared as a string upstream.
+ *
+ * ⚠ THIS REPLACES `verifyPaymentStatus()`, IT DOES NOT REPAIR IT. The old client
+ * called `POST /api/v2/payment/status` with `{ sessionId }` and read
+ * `Data.Status` as the strings "paid"/"settlement". That endpoint is not part of
+ * the documented API surface, and the real response returns a NUMBER in
+ * `Data.Status` (1 = Berhasil), so `Data.Status?.toLowerCase()` is `undefined`
+ * and its success predicate could never be true. It had no callers and no tests;
+ * it has been deleted rather than kept beside this one, because a second,
+ * permanently-false success predicate in the payment module is a liability.
+ *
+ * FAIL CLOSED: every failure is returned as `{ ok: false, reason }`. This never
+ * throws, never returns a partial object, and never accepts the top-level
+ * `Success` boolean, `PaidStatus`, or `SessionId` as evidence on its own.
  */
-export type PaymentStatusResponse = {
-    Status: number;
-    Data?: {
-        Status?: string;
-        Amount?: number;
-        ReferenceId?: string;
-        SessionId?: string;
-    };
-    Message?: string;
+
+/** Provider status codes that mean "paid". Verified: 1 = Berhasil. */
+export const IPAYMU_SUCCESS_STATUSES = [1, 6, 7] as const;
+
+export type IpaymuTransactionStatus = {
+    /** Provider transaction id, normalised to a string. */
+    transactionId: string;
+    /** Raw provider status code. Success is exactly {1, 6, 7}. */
+    status: number;
+    statusDescription?: string;
+    paidStatus?: string;
+    /** Provider-observed amount, in whole rupiah. Same for a non-success query. */
+    amount: number;
+    subtotal?: number;
+    fee?: number;
+    /** Provider echo of the referenceId we sent at creation (`EVT-…`). */
+    sessionId?: string;
+    referenceId?: string;
+    paymentMethod?: string;
+    paymentChannel?: string;
+    /** Which credential set answered — never mixed. */
+    environment: PayEnvironment;
+    /** Provider HTTP status. For logs/audit only. */
+    httpStatus: number;
 };
 
-export async function verifyPaymentStatus(
-    sessionId: string
-): Promise<PaymentStatusResponse> {
-    // FAIL-CLOSED: misconfigured servers throw before any request is sent.
-    const { apiKey, va, baseUrl } = getIpaymuConfig();
+export type TransactionStatusFailureReason =
+    /** No usable credentials — nothing was sent. */
+    | "NOT_CONFIGURED"
+    /** Network failure or timeout. Retryable. */
+    | "TRANSPORT_ERROR"
+    /** Provider answered non-2xx. Retryable only if 5xx/429. */
+    | "HTTP_ERROR"
+    /** Provider answered 2xx but not a success envelope. */
+    | "NOT_SUCCESS_ENVELOPE"
+    /** Provider answered 2xx but the payload does not match the contract. */
+    | "MALFORMED";
 
-    if (!apiKey || !va) {
-        throw new Error("iPaymu credentials belum dikonfigurasi.");
+export type TransactionStatusQueryResult =
+    | { ok: true; status: IpaymuTransactionStatus }
+    | {
+          ok: false;
+          reason: TransactionStatusFailureReason;
+          httpStatus?: number;
+      };
+
+/** The single definition of "paid" on the provider side. */
+export function isIpaymuSuccessStatus(status: number): boolean {
+    return (IPAYMU_SUCCESS_STATUSES as readonly number[]).includes(status);
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+    if (typeof value === "string" && value.trim() !== "") {
+        return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return String(value);
+    }
+    return undefined;
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+    }
+    // The provider is not guaranteed to stay string-free; accept a numeric
+    // string but never a value that is not unambiguously a number.
+    if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value.trim());
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+}
+
+/**
+ * Normalise a provider transaction-status response.
+ *
+ * Pure and exported so the parsing rules can be tested exhaustively without
+ * network access. Returns MALFORMED for anything it cannot read completely — it
+ * never invents a default amount and never falls back to a success guess.
+ */
+export function normalizeTransactionStatus(
+    raw: unknown,
+    environment: PayEnvironment,
+    httpStatus: number
+): TransactionStatusQueryResult {
+    if (httpStatus < 200 || httpStatus >= 300) {
+        return { ok: false, reason: "HTTP_ERROR", httpStatus };
     }
 
-    if (!sessionId) {
-        throw new Error("SessionId tidak boleh kosong.");
+    if (typeof raw !== "object" || raw === null) {
+        return { ok: false, reason: "MALFORMED", httpStatus };
     }
+
+    const envelope = raw as Record<string, unknown>;
+
+    // NEVER `Success` ALONE: require the documented status code too. A provider
+    // that returns {Success:true} without Status is not evidence.
+    if (envelope.Status !== 200 || envelope.Success !== true) {
+        return { ok: false, reason: "NOT_SUCCESS_ENVELOPE", httpStatus };
+    }
+
+    const data = envelope.Data;
+    if (typeof data !== "object" || data === null) {
+        return { ok: false, reason: "MALFORMED", httpStatus };
+    }
+
+    const d = data as Record<string, unknown>;
+    const transactionId = asNonEmptyString(d.TransactionId);
+    const status = asFiniteNumber(d.Status);
+    const amount = asFiniteNumber(d.Amount) ?? asFiniteNumber(d.SubTotal);
+
+    if (!transactionId || status === undefined || amount === undefined) {
+        return { ok: false, reason: "MALFORMED", httpStatus };
+    }
+
+    return {
+        ok: true,
+        status: {
+            transactionId,
+            status,
+            statusDescription: asNonEmptyString(d.StatusDesc),
+            paidStatus: asNonEmptyString(d.PaidStatus),
+            amount,
+            subtotal: asFiniteNumber(d.SubTotal),
+            fee: asFiniteNumber(d.Fee),
+            sessionId: asNonEmptyString(d.SessionId),
+            referenceId: asNonEmptyString(d.ReferenceId),
+            paymentMethod: asNonEmptyString(d.PaymentMethod),
+            paymentChannel: asNonEmptyString(d.PaymentChannel),
+            environment,
+            httpStatus,
+        },
+    };
+}
+
+const TRANSACTION_STATUS_TIMEOUT_MS = 15_000;
+
+/**
+ * Query the provider for one transaction's status.
+ *
+ * @param transactionId Provider transaction id (as persisted, or as read from a
+ *   verified callback payload).
+ */
+export async function fetchTransactionStatus(
+    transactionId: string
+): Promise<TransactionStatusQueryResult> {
+    if (!transactionId || transactionId.trim() === "") {
+        return { ok: false, reason: "MALFORMED" };
+    }
+
+    let config: { apiKey: string; va: string; baseUrl: string; environment: PayEnvironment };
+    try {
+        // FAIL-CLOSED: a misconfigured server produces no request at all.
+        config = getIpaymuConfig();
+    } catch {
+        return { ok: false, reason: "NOT_CONFIGURED" };
+    }
+
+    const { apiKey, va, baseUrl, environment } = config;
 
     const body = JSON.stringify({
-        sessionId,
+        transactionId: transactionId.trim(),
+        account: va,
     });
     const signature = generateSignature(body, va, apiKey);
     const timestamp = generateTimestamp();
@@ -1303,53 +1482,48 @@ export async function verifyPaymentStatus(
     const controller = new AbortController();
     const timeoutId = setTimeout(
         () => controller.abort(),
-        15_000
+        TRANSACTION_STATUS_TIMEOUT_MS
     );
 
     try {
-        const response = await fetch(
-            `${baseUrl}/api/v2/payment/status`,
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    va,
-                    signature,
-                    timestamp,
-                    Accept: "application/json",
-                },
-                body,
-                signal: controller.signal,
-            }
-        );
+        const response = await fetch(`${baseUrl}/api/v2/transaction`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                va,
+                signature,
+                timestamp,
+                Accept: "application/json",
+            },
+            body,
+            signal: controller.signal,
+        });
 
-        clearTimeout(timeoutId);
+        // Read as text: a non-JSON body is a contract violation, not a crash.
+        const text = await response.text();
 
-        const result = await response.json();
-        return result;
-    } catch (error: unknown) {
-        clearTimeout(timeoutId);
-
-        if ((error as { name?: string })?.name === "AbortError") {
-            throw new Error("iPaymu status verification timeout.");
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            return {
+                ok: false,
+                reason: response.ok ? "MALFORMED" : "HTTP_ERROR",
+                httpStatus: response.status,
+            };
         }
-        throw error;
-    }
-}
 
-/**
- * Determine if a payment status response indicates success.
- */
-export function isPaymentConfirmed(
-    statusResponse: PaymentStatusResponse
-): boolean {
-    return (
-        statusResponse.Status === 200 &&
-        (
-            statusResponse.Data?.Status?.toLowerCase() === "paid" ||
-            statusResponse.Data?.Status?.toLowerCase() === "settlement"
-        )
-    );
+        return normalizeTransactionStatus(
+            parsed,
+            environment,
+            response.status
+        );
+    } catch {
+        // Abort, DNS, TLS, socket — all retryable, none concealed as success.
+        return { ok: false, reason: "TRANSPORT_ERROR" };
+    } finally {
+        clearTimeout(timeoutId);
+    }
 }
 
 /**

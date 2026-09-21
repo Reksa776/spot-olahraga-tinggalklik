@@ -3,6 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import {
+    isSessionExpired,
+    redirectToLoginForExpiredSession,
+} from "@/lib/auth/client-session";
+
 /**
  * ==========================================
  * REQUEST A REFUND (Phase 10B, D-R01/D-R02)
@@ -44,6 +49,16 @@ export default function RequestRefundButton({ orderNumber }: Props) {
             });
 
             const payload = await response.json().catch(() => null);
+
+            /*
+             * The session ended while this page was open. NOT a refused refund — the request
+             * never reached the policy — so nothing is reported to the buyer as a business
+             * outcome and no local state is changed. Sign in, then come back here.
+             */
+            if (isSessionExpired(response.status, payload)) {
+                redirectToLoginForExpiredSession();
+                return;
+            }
 
             if (!response.ok) {
                 setError(

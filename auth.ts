@@ -1,4 +1,4 @@
-import NextAuth from "next-auth";
+import NextAuth, { CredentialsSignin } from "next-auth";
 import Google from "next-auth/providers/google";
 import Credentials from "next-auth/providers/credentials";
 
@@ -6,7 +6,8 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/password";
-import { getClientIp, rateLimiters } from "@/lib/rate-limit";
+import { clientRateLimitKey, rateLimiters } from "@/lib/rate-limit";
+import { LOGIN_RATE_LIMITED_CODE } from "@/lib/auth/sign-in-failure";
 import { isScopeStale, resolveAuthzScope } from "@/lib/authz/scope";
 
 /*
@@ -27,6 +28,28 @@ import { isScopeStale, resolveAuthzScope } from "@/lib/authz/scope";
  */
 const TIMING_EQUALISATION_HASH =
     "$2b$12$NbUxsQnwo76rOz4aUIkXyukR8QmhbZAkJmLKJkbHEqAr.qtC24Vo2";
+
+/*
+ * PHASE 27A — F3/F4. The ONE authentication failure that is not a credential
+ * failure.
+ *
+ * Returning `null` from `authorize` is how this file reports "wrong password",
+ * "no such account" and "OAuth-only account" — and Auth.js collapses all three into
+ * the same `CredentialsSignin`, so the browser cannot tell a locked bucket from a
+ * typo. Throwing this instead is the whole fix:
+ * `@auth/core/index.js` reads the code off the thrown instance
+ * (`if (error instanceof CredentialsSignin) params.set("code", error.code)`) and
+ * `next-auth/react` surfaces it as `result.code`, so `lib/auth/sign-in-failure.ts`
+ * can answer "tunggu beberapa menit" for a locked bucket while a wrong password
+ * keeps the one uniform sentence.
+ *
+ * The value is a machine token, never a sentence: it travels in a URL query string
+ * (see the note on `CredentialsSignin.code` in @auth/core/errors.js), so it names no
+ * identifier, no account and no password state.
+ */
+class LoginRateLimited extends CredentialsSignin {
+    code = LOGIN_RATE_LIMITED_CODE;
+}
 
 
 export const {
@@ -83,38 +106,57 @@ export const {
 
             async authorize(credentials, request) {
                 /*
-                 * PHASE 3 — D-53 (login rate limiting).
+                 * PHASE 3 — D-53 (login rate limiting), reworked by PHASE 27A — F3.
                  *
-                 * This is the earliest point available in the credentials flow.
-                 * It is NOT assumed: the installed @auth/core beta declares
-                 * `authorize: (credentials, request: Request) => Awaitable<User | null>`,
-                 * verified in node_modules/@auth/core/providers/credentials.d.ts,
-                 * so the original request (and therefore the client IP) is
-                 * reachable here without wrapping the route.
+                 * The VALUES are unchanged: five failures per fifteen minutes,
+                 * owned by `lib/rate-limit.ts`. What changed is what is counted and
+                 * what a refusal looks like.
                  *
-                 * DEPLOYMENT REQUIREMENT: getClientIp() returns the sentinel
-                 * "untrusted" when TRUSTED_PROXY is unset, which makes every
-                 * client share one bucket. TRUSTED_PROXY is currently unset, so
-                 * in production this limiter is global until it is configured
-                 * behind the reverse proxy. See TICKETING_PHASE3_REPORT.md §14.
+                 *   1. `check` is a READ-ONLY probe, so a request costs nothing by
+                 *      existing. The allowance is spent further down, at each FAILED
+                 *      verification — the only outcome a brute-force attempt can
+                 *      produce. The previous limiter counted every call, so five of
+                 *      the operator's own SUCCESSFUL logins could lock the bucket,
+                 *      and a request carrying no credentials at all counted too.
+                 *   2. A refusal THROWS rather than returning null, so the browser can
+                 *      tell it from bad credentials — while the sentence shown never
+                 *      says anything about any account. Returning null (the old
+                 *      behaviour) made a locked visitor believe their password was
+                 *      wrong and retry into the wall. `lib/auth/sign-in-failure.ts`
+                 *      owns the three messages; `LoginRateLimited` above owns the
+                 *      code.
+                 *   3. The bucket key comes from `clientRateLimitKey`, which is
+                 *      `getClientIp`'s answer in production and a labelled bucket of
+                 *      its own in development. See that function for why nothing on
+                 *      this path is a trustworthy peer address, and why reading
+                 *      `x-forwarded-for` here would undo the M2 fix.
+                 *
+                 * `authorize` is still the earliest point available: the installed
+                 * @auth/core beta declares
+                 * `authorize: (credentials, request: Request) => Awaitable<User | null>`
+                 * (node_modules/@auth/core/providers/credentials.d.ts), so the
+                 * original request — and therefore the client key — is reachable
+                 * here without wrapping the route.
                  */
-                const clientIp = getClientIp(request);
+                const loginKey = clientRateLimitKey(request);
 
-                if (!rateLimiters.login(clientIp).allowed) {
+                if (!rateLimiters.login.check(loginKey).allowed) {
                     console.warn(
-                        `[auth] login rate limit exceeded (ip bucket: ${clientIp})`
+                        `[auth] login rate limit exceeded (bucket: login:${loginKey})`
                     );
 
-                    /*
-                     * Return null rather than a distinct error: the caller must
-                     * not be able to tell "throttled" from "bad credentials".
-                     */
-                    return null;
+                    throw new LoginRateLimited();
                 }
 
                 /*
                  * Pastikan identifier dan password
                  * dikirim dari form login.
+                 */
+                /*
+                 * PHASE 27A — NOT counted against the allowance. An empty field is a
+                 * malformed request, not a credential failure, and charging it would
+                 * let a client exhaust its own bucket with requests that could never
+                 * have authenticated.
                  */
                 if (
                     !credentials?.identifier ||
@@ -169,6 +211,10 @@ export const {
                      * wrong password (see TIMING_EQUALISATION_HASH).
                      */
                     await verifyPassword(password, TIMING_EQUALISATION_HASH);
+
+                    /* PHASE 27A — an unknown identifier IS a credential failure. */
+                    rateLimiters.login.recordFailure(loginKey);
+
                     return null;
                 }
 
@@ -184,6 +230,12 @@ export const {
                      * indistinguishable from a non-existent one.
                      */
                     await verifyPassword(password, TIMING_EQUALISATION_HASH);
+
+                    /* PHASE 27A — an account with no password cannot be signed into
+                     * by a password, so this is a credential failure too. The count
+                     * is what protects the endpoint, not the outcome's name. */
+                    rateLimiters.login.recordFailure(loginKey);
+
                     return null;
                 }
 
@@ -197,6 +249,9 @@ export const {
                     );
 
                 if (!valid) {
+                    /* PHASE 27A — the canonical credential failure. */
+                    rateLimiters.login.recordFailure(loginKey);
+
                     return null;
                 }
 

@@ -3,7 +3,9 @@
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
+import { isSessionExpired, redirectToLoginForExpiredSession } from "@/lib/auth/client-session";
 import type { PublicTicketType } from "@/lib/events/catalog";
+import { createRequestKey } from "@/lib/request-key";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
@@ -38,7 +40,13 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  *   - changing the selection and submitting again → NEW key → a genuinely new order, rather than
  *     the `409` §30.2 mandates for a reused key with a different payload.
  *
- * `crypto.randomUUID()` is available in every browser this app targets and needs no dependency.
+ * The key comes from `createRequestKey()` rather than from `crypto.randomUUID()` called here. That
+ * direct call looked safe and was not: `Crypto.randomUUID` exists only in a SECURE CONTEXT, so on a
+ * plain-HTTP origin — the development server opened at a LAN address from a phone, for instance —
+ * the browser's `crypto` object has no such method, and the submit handler threw
+ * `TypeError: crypto.randomUUID is not a function` before it ever sent a request. The helper keeps
+ * this idempotency contract exactly and returns the same 36-character shape. See
+ * `lib/request-key.ts`.
  */
 
 type Props = {
@@ -150,7 +158,7 @@ export default function TicketPurchaseForm({
             pendingIntent.current.signature !== signature
         ) {
             pendingIntent.current = {
-                key: crypto.randomUUID(),
+                key: createRequestKey(),
                 signature,
             };
         }
@@ -175,14 +183,26 @@ export default function TicketPurchaseForm({
 
             const payload = await response.json().catch(() => null);
 
-            if (!response.ok) {
-                if (response.status === 401) {
-                    router.push(
-                        `/login?next=${encodeURIComponent(window.location.pathname)}`
-                    );
-                    return;
-                }
+            /*
+             * The session ended while this page was open. That is NOT a failed order: nothing
+             * was refused, no quota was held, and no order was created — so the buyer is sent to
+             * sign in with this page as the return path, and comes straight back to it with the
+             * same selection in front of them.
+             *
+             * The URL comes from the shared helper, the same one every other ticketing action
+             * button uses. It builds `/login?callbackUrl=<path>` — the parameter `app/login/page.tsx`
+             * and `proxy.ts` actually read — and validates the path (same-origin only, and never
+             * `/login` or `/register`, so it cannot loop). This call site was the last one still
+             * writing `?next=`, which `lib/auth/redirect.ts` documents as ignored: an expired
+             * session here silently lost the return path and dropped the buyer on their role's
+             * default destination instead.
+             */
+            if (isSessionExpired(response.status, payload)) {
+                redirectToLoginForExpiredSession();
+                return;
+            }
 
+            if (!response.ok) {
                 setError(
                     payload?.message ??
                         "Pemesanan gagal. Silakan coba lagi sebentar lagi."

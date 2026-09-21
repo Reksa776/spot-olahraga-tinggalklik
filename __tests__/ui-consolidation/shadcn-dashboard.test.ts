@@ -348,12 +348,57 @@ describe("P-S4. the theme system is real, not a hardcoded palette", () => {
         // The bootstrap runs before paint, which is what stops a stored palette from flashing.
         expect(THEME_BOOTSTRAP_SCRIPT).toContain("data-accent");
         expect(THEME_BOOTSTRAP_SCRIPT).toContain("data-chart");
-        expect(read("components/dashboard/theme/theme-provider.tsx")).toContain(
-            "DashboardThemeScript"
-        );
+
+        // …and it resolves the APPEARANCE too, against the same storage key the old provider used,
+        // including the OS preference for `system`. Folding all three into one script is what let
+        // the bootstrap move out of the React tree entirely (see the boundary test below).
+        expect(THEME_BOOTSTRAP_SCRIPT).toContain(THEME_STORAGE.appearance);
+        expect(THEME_BOOTSTRAP_SCRIPT).toContain("classList.add(\"dark\")");
+        expect(THEME_BOOTSTRAP_SCRIPT).toContain("classList.remove(\"dark\")");
+        expect(THEME_BOOTSTRAP_SCRIPT).toContain("prefers-color-scheme: dark");
 
         // No server-side persistence for an appearance preference.
         expect(read("components/dashboard/theme/theme-provider.tsx")).not.toContain("prisma");
+    });
+
+    /*
+     * THE THEME BOOTSTRAP MUST NOT BE A ROUTE-RENDERED SCRIPT (PHASE 21)
+     * -----------------------------------------------------------------
+     * Rendering `<script>` as JSX inside a route is what produced the reported console error:
+     * "Encountered a script tag while rendering React component. Scripts inside React components are
+     * never executed when rendering on the client." It fired on CLIENT-SIDE navigation into the
+     * dashboard, where there is no server HTML to hydrate, so React created the node and never ran
+     * it. That means the old bootstrap was silent for every in-app arrival at the dashboard.
+     *
+     * The fix is structural, and these are the properties that keep it fixed: the bootstrap is
+     * emitted by the ROOT layout as plain HTML (so the browser parses and runs it before paint, and
+     * no navigation can re-create it), and NOTHING in the dashboard renders a script element.
+     */
+    it("renders the bootstrap from the root layout, never from a route", () => {
+        const layout = read("app/layout.tsx");
+
+        expect(layout).toContain("THEME_BOOTSTRAP_SCRIPT");
+        expect(layout).toContain("dangerouslySetInnerHTML");
+        // The script must be the FIRST thing in <body>: that is what makes it run before the app
+        // below it is painted.
+        expect(layout).toMatch(/<body>\s*\{[\s\S]*?THEME_BOOTSTRAP_SCRIPT[\s\S]*?<AuthProvider>/);
+
+        // The provider that used to return the <script> no longer exists, and the library whose
+        // own inline script reproduced the identical warning is gone from the theme stack. The
+        // comments are stripped first: the provider's doc block names the removed library to say
+        // why it went, and a guard on raw text would either fail on that explanation or force the
+        // explanation to go vague. Code, not prose, is what has to be free of both.
+        const provider = readCode("components/dashboard/theme/theme-provider.tsx");
+        expect(provider).not.toContain("DashboardThemeScript");
+        expect(provider).not.toMatch(/from\s+["']next-themes["']/);
+
+        // No dashboard file renders a script element at all. Comments are stripped first, because
+        // the modules above deliberately quote the old markup when explaining why it moved.
+        const offenders = DASHBOARD_SCOPE.flatMap((dir) => walkSources(dir)).filter((file) =>
+            /<script[\s>]/.test(readCode(file))
+        );
+
+        expect(offenders).toEqual([]);
     });
 
     it("the switcher drives all three controls and nothing hardcodes a colour", () => {

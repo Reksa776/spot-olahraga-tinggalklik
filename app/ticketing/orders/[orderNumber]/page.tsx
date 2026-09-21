@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
+import ReloadButton from "@/components/errors/ReloadButton";
+import ServiceUnavailableState from "@/components/errors/ServiceUnavailableState";
 import CancelOrderButton from "@/components/orders/CancelOrderButton";
 import PayNowButton from "@/components/orders/PayNowButton";
 import RequestRefundButton from "@/components/orders/RequestRefundButton";
@@ -10,7 +12,9 @@ import RefreshOrderStatus from "@/components/orders/RefreshOrderStatus";
 import ReservationCountdown from "@/components/orders/ReservationCountdown";
 import IssueTicketsButton from "@/components/tickets/IssueTicketsButton";
 import SiteShell from "@/components/ticketing/SiteShell";
+import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
+import { resolvePageFailure } from "@/lib/errors/classify";
 import type { OrderPayload } from "@/lib/ticketing/order-payload";
 import { getOwnOrder } from "@/lib/ticketing/orders";
 import {
@@ -124,21 +128,79 @@ type Props = { params: Promise<{ orderNumber: string }> };
 export default async function OrderPage({ params }: Props) {
     const { orderNumber } = await params;
 
+    const selfPath = `/ticketing/orders/${orderNumber}`;
+
     const scope = await getAuthzScope();
 
     if (!scope) {
-        redirect(
-            `/login?next=${encodeURIComponent(`/ticketing/orders/${orderNumber}`)}`
-        );
+        redirect(loginUrlFor(selfPath));
     }
 
-    // `getOwnOrder` throws NOT_FOUND for an order that is not this actor's, and AUTHZ/FORBIDDEN if
-    // the actor has no own-scope order capability. Both render as "not found" — never as a page
-    // that confirms the order exists.
-    const order = await getOwnOrder(orderNumber, scope).catch(() => null);
+    /*
+     * ── ONE CATCH, FOUR OUTCOMES (Phase: global error handling) ──────────────────
+     *
+     * This used to be `getOwnOrder(...).catch(() => null)` followed by `notFound()`, which
+     * reported EVERY failure as "this order does not exist" — a database outage, a timeout and
+     * a genuine 404 were indistinguishable, and the retry the buyer needed was never offered.
+     *
+     * The failure is now classified once (`resolvePageFailure`) and mapped to the response it
+     * actually deserves:
+     *
+     *   not-found   → 404. The order is not this buyer's (the ownership predicate ran first,
+     *                 so a foreign order never gets here as anything else) or does not exist.
+     *   denied      → ALSO 404, and deliberately. This page's privacy contract is
+     *                 indistinguishability (design §7.4, brief §14): a 403 would confirm that
+     *                 the order exists. That is the ONE place in this phase where an
+     *                 authorization failure is intentionally rendered as not-found, and it is
+     *                 stated here rather than hidden in the classifier.
+     *   sign-in     → back to login, carrying where the buyer was (the callbackUrl the form
+     *                 actually reads).
+     *   unavailable → a RETRYABLE error state inside the page. A database that cannot be
+     *                 reached must never look like a missing order.
+     *
+     * Anything else is re-thrown and reaches `app/ticketing/error.tsx`, which offers a retry
+     * rather than pretending the order is gone.
+     */
+    let order: OrderPayload;
 
-    if (!order) {
-        notFound();
+    try {
+        order = await getOwnOrder(orderNumber, scope);
+    } catch (error) {
+        const failure = resolvePageFailure(error);
+
+        if (failure.action === "not-found") {
+            notFound();
+        }
+
+        if (failure.action === "denied") {
+            // See the note above: 404 by design on this surface.
+            notFound();
+        }
+
+        if (failure.action === "sign-in") {
+            redirect(loginUrlFor(selfPath));
+        }
+
+        if (failure.action === "unavailable") {
+            return (
+                <SiteShell>
+                    <div className="mx-auto max-w-3xl px-4 py-12 sm:px-6">
+                        <ServiceUnavailableState reference={failure.classification.code}>
+                            <ReloadButton />
+                            <Link
+                                href="/ticketing/tickets"
+                                className="rounded-xl px-4 py-2.5 text-sm font-semibold text-ink-600 transition hover:text-ink-900"
+                            >
+                                Lihat tiket saya
+                            </Link>
+                        </ServiceUnavailableState>
+                    </div>
+                </SiteShell>
+            );
+        }
+
+        // Unexpected: an application bug belongs in the log, not dressed up as a 404.
+        throw error;
     }
 
     const orderStatus = ORDER_STATUS[order.status] ?? {

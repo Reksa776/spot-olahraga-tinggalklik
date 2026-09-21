@@ -23,8 +23,8 @@ import type { NextRequest } from "next/server";
  *
  * The allowlist includes:
  * - The hostname from NEXT_PUBLIC_APP_URL (if set)
- * - Any domains from next.config.ts allowedDevOrigins
- * - localhost for development
+ * - `localhost` / loopback variants, for development
+ * - One hardcoded deployment domain (see `buildAllowedHosts`)
  */
 export function getAppOrigin(request: NextRequest): string {
     const envUrl = process.env.NEXT_PUBLIC_APP_URL;
@@ -86,9 +86,14 @@ export function getAppOrigin(request: NextRequest): string {
  * Build the set of allowed hostnames.
  *
  * Sources:
- * 1. NEXT_PUBLIC_APP_URL hostname (if set)
- * 2. next.config.ts allowedDevOrigins (known domains)
- * 3. localhost variants (development)
+ * 1. NEXT_PUBLIC_APP_URL hostname (if set) — the authoritative one
+ * 2. loopback / localhost variants (development)
+ * 3. one hardcoded deployment domain, with the caveat documented at the entry
+ *
+ * The previous revision claimed source 2 was `next.config.ts allowedDevOrigins`; it in
+ * fact never read that config. The comment is corrected here rather than the behaviour,
+ * because a list that silently claims a source it does not use is worse than a short list
+ * that says what it is.
  */
 function buildAllowedHosts(): Set<string> {
     const hosts = new Set<string>();
@@ -104,10 +109,27 @@ function buildAllowedHosts(): Set<string> {
         }
     }
 
-    // Known production/staging domains
-    // (from next.config.ts allowedDevOrigins)
+    // ── Known domains ──────────────────────────────────────────────────────────
+    //
+    // This is a FALLBACK, reached only when NEXT_PUBLIC_APP_URL is unset — which a
+    // production deployment may not be: `lib/payment/config.ts` refuses to build a payment
+    // session in production without it. So on a correctly configured deployment this list
+    // is never consulted, and every entry here is defence for a misconfigured one.
+    //
+    // A NOTE ON WHAT USED TO BE HERE. The list previously also accepted an ephemeral
+    // `trycloudflare.com` tunnel hostname (`debut-thanks-spray-wine.…`). That was removed:
+    // a quick-tunnel hostname is issued by a third party, expires, and can be claimed again
+    // by anyone, so accepting it means whoever holds that name at the relevant moment can
+    // be handed the origin this function builds into payment callback URLs. The Phase 1
+    // design already scheduled its removal; it is done rather than deferred because the
+    // cost of leaving it is an open redirect and the cost of removing it is nothing — no
+    // deployment that sets NEXT_PUBLIC_APP_URL can notice.
+    //
+    // The remaining entry is a real domain rather than a re-registerable one. It is listed
+    // in the Phase 26 report as an owner decision: it is a hardcoded deployment host, so it
+    // either belongs to this product (keep it) or should go the same way as the tunnel
+    // (drop it).
     hosts.add("demosolusisejalan.my.id");
-    hosts.add("debut-thanks-spray-wine.trycloudflare.com");
 
     // Localhost variants (development)
     hosts.add("localhost");

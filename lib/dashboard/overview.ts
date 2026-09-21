@@ -124,14 +124,23 @@ async function readTenantBlock({
         canReadEvents
             ? prisma.event.count({ where: { organizerId: { in: eventIds } } })
             : Promise.resolve(0),
+        /*
+         * PUBLISHED **or** ONGOING.
+         *
+         * The lifecycle is monotonic (`PUBLISHED → ONGOING` at `startAt`, driven by the tick), and
+         * both states are listed and on sale. Counting only `PUBLISHED` made the tile drop a live
+         * event the moment it started, so "N dipublikasikan" under-reported exactly the events an
+         * operator cares about most.
+         */
         canReadEvents
             ? prisma.event.count({
                   where: {
                       organizerId: { in: eventIds },
-                      status: "PUBLISHED",
+                      status: { in: ["PUBLISHED", "ONGOING"] },
                   },
               })
             : Promise.resolve(0),
+        /* Not-yet-started means a FUTURE `startAt`, which only `PUBLISHED` can hold. */
         canReadEvents
             ? prisma.event.count({
                   where: {

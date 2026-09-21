@@ -2,13 +2,18 @@
   "name": "toko",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9.0 <25"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "audit:ipaymu": "npx tsx scripts/audit-ipaymu.ts",
-    "seed:organizer": "npx tsx prisma/seed-organizer.ts"
+    "seed:organizer": "npx tsx prisma/seed-organizer.ts",
+    "test": "jest",
+    "test:db:setup": "npx tsx scripts/setup-test-db.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

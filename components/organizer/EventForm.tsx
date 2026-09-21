@@ -355,7 +355,19 @@ export default function EventForm({
                     />
                 </Field>
 
-                <Field label="Selesai (opsional)" htmlFor="event-end">
+                <Field
+                    label="Selesai"
+                    htmlFor="event-end"
+                    /*
+                     * PHASE 20B (D-P19-05 = A): `endAt` is what makes the event completable, and
+                     * publication is refused without it (`publishEvent`'s preconditions, the
+                     * readiness checklist, and the disabled publish button all enforce the same
+                     * rule). The field itself stays optional for a draft — a schedule is often not
+                     * settled when the draft is first saved — so the label must not claim the field
+                     * is required while the copy still says when it becomes required.
+                     */
+                    hint="Opsional saat masih draft, tetapi wajib diisi sebelum publikasi: event tanpa waktu selesai tidak dapat diselesaikan."
+                >
                     <Input
                         id="event-end"
                         type="datetime-local"

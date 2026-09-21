@@ -50,6 +50,15 @@ const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 /** PHASE 20B (D-P19-05 = A): a publishable event must carry an `endAt`. */
 const FUTURE_END = new Date(FUTURE.getTime() + 3 * 60 * 60 * 1000);
 const PRICE = "100000.00";
+/**
+ * UNLISTED — see `checkout.integration.test.ts` for the full rationale.
+ *
+ * The fixture is published through the real service (that is the point), and a PUBLISHED + PUBLIC
+ * event is served on the public landing even after an aborted run skips the suite's cleanup.
+ * UNLISTED keeps every checkout/race behaviour identical while making a leaked fixture invisible
+ * on every public listing.
+ */
+const FIXTURE_VISIBILITY = "UNLISTED" as const;
 const SEATS = 50;
 const BUYERS = 100;
 
@@ -165,6 +174,7 @@ beforeAll(async () => {
             sportId,
             startAt: FUTURE,
             endAt: FUTURE_END,
+            visibility: FIXTURE_VISIBILITY,
         } as never
     );
 
