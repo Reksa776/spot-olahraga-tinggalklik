@@ -1,4 +1,4 @@
-node_modules/
+\node_modules/
 .next/
 .env
 .env.local
@@ -30,7 +30,7 @@ next-env.d.ts
 # This holds processed event imagery uploaded by organizers at run time — binary content
 # that grows without bound, is specific to one deployment, and is backed up as data (see
 # .env.example). It must never be committed, and it is the directory the application WRITES.
-storage/
+#storage/
 
 # WhatsApp auth state (legacy)
-data/whatsapp-auth/
+#data/whatsapp-auth/
