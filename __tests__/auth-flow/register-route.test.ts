@@ -66,7 +66,12 @@ const VALID = {
 
 function post(
     body: unknown,
-    options: { origin?: string | null; url?: string } = {}
+    options: {
+        origin?: string | null;
+        referer?: string | null;
+        host?: string | null;
+        url?: string;
+    } = {}
 ): Request {
     const headers: Record<string, string> = {
         "content-type": "application/json",
@@ -76,6 +81,18 @@ function post(
 
     if (origin !== null) {
         headers.origin = origin;
+    }
+
+    const referer = options.referer === undefined ? null : options.referer;
+
+    if (referer !== null) {
+        headers.referer = referer;
+    }
+
+    const host = options.host === undefined ? null : options.host;
+
+    if (host !== null) {
+        headers.host = host;
     }
 
     return new Request(
@@ -265,5 +282,66 @@ describe("POST /api/auth/register", () => {
 
         expect(response.status).toBe(403);
         expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    /*
+     * PHASE 27G — the 403 root cause. `request.url` inside a self-hosted Next.js
+     * server is built from the server's BIND hostname+port
+     * (node_modules/next/dist/server/next-server.js, attachRequestMeta:
+     * `initUrl = protocol://fetchHostname:port + req.url`), so on a server bound to
+     * `0.0.0.0` / `127.0.0.1` / a LAN IP the URL host can never equal a browser
+     * Origin. The expected host MUST come from the request's own `Host` header —
+     * the host the browser actually addressed — or every legitimate same-origin
+     * POST is rejected as FORBIDDEN.
+     */
+    it.each([
+        [
+            "LAN-bound server (0.0.0.0) reached via its IP",
+            "100.88.79.104:3000",
+            "http://100.88.79.104:3000",
+            "http://0.0.0.0:3000/api/auth/register",
+        ],
+        [
+            "wildcard-bound server reached via localhost",
+            "localhost:3000",
+            "http://localhost:3000",
+            "http://0.0.0.0:3000/api/auth/register",
+        ],
+        [
+            "loopback-bound server behind a reverse proxy",
+            "tinggalklik.co",
+            "https://tinggalklik.co",
+            "http://127.0.0.1:3000/api/auth/register",
+        ],
+    ])(
+        "accepts a same-origin POST when the Host header matches the Origin, even though request.url names the bind address (%s)",
+        async (_scenario, host, origin, url) => {
+            const response = await POST(post(VALID, { host, origin, url }));
+
+            expect(response.status).toBe(201);
+            expect(prisma.user.create).toHaveBeenCalledTimes(1);
+        }
+    );
+
+    it("still refuses a cross-origin POST even when the request carries a Host header", async () => {
+        const response = await POST(
+            post(VALID, { host: "localhost:3000", origin: "https://evil.example" })
+        );
+
+        expect(response.status).toBe(403);
+        expect(prisma.user.findFirst).not.toHaveBeenCalled();
+        expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it("accepts a same-origin POST identified by Referer when Origin is absent", async () => {
+        const response = await POST(
+            post(VALID, {
+                origin: null,
+                referer: "http://localhost:3000/register",
+            })
+        );
+
+        expect(response.status).toBe(201);
+        expect(prisma.user.create).toHaveBeenCalledTimes(1);
     });
 });

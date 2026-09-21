@@ -55,7 +55,23 @@ export function isSameOrigin(request: Request): boolean {
     }
 
     try {
-        const expectedHost = new URL(request.url).host;
+        /*
+         * The expected host comes from the request's OWN `Host` header, not from
+         * `request.url`. Next builds `request.url` from the server's BIND hostname
+         * (`next/dist/server/next-server.js`, `attachRequestMeta`: `initUrl =
+         * protocol://fetchHostname:port + req.url`), so on a server bound to
+         * `0.0.0.0`, `127.0.0.1` or a container address the URL host can never equal
+         * a browser Origin — every legitimate same-origin POST was answered 403 the
+         * moment the app was served on anything other than the literal bind address
+         * (reproduced against `/api/auth/register`). `Host` is the host the browser
+         * actually addressed, which is what a same-origin check must be compared
+         * against. The `request.url` host remains the fallback for callers that
+         * construct a bare `Request` without a `Host` header.
+         */
+        const headerHost = request.headers.get("host");
+        const expectedHost = headerHost
+            ? new URL(`http://${headerHost}`).host
+            : new URL(request.url).host;
         return new URL(source).host === expectedHost;
     } catch {
         // Unparseable Origin/Referer — treat as hostile.

@@ -71,7 +71,15 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
     poweredByHeader: false,
-    allowedDevOrigins: ["100.88.79.104"],
+    allowedDevOrigins: [
+        "192.168.2.49",
+        "103.93.132.214",
+        "202.73.25.122",
+        "demosolusisejalan.my.id",
+        "debut-thanks-spray-wine.trycloudflare.com",
+        "tinggalklik.demosolusisejalan.my.id"
+    ],
+
     headers: async () => {
         /*
          * Evaluated at CALL time, not at module load, so the value reflects the environment the
