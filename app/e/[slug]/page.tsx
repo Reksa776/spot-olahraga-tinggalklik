@@ -279,6 +279,30 @@ export default async function EventDetailPage({ params }: Props) {
                         </div>
                     ) : null}
 
+                    {/* ── Dokumentasi event (post-event, COMPLETED only) ──────────── */}
+                    {event.status === "COMPLETED" && event.documentationUrl ? (
+                        <section className="mb-8 flex flex-col items-start justify-between gap-4 rounded-2xl border border-ink-100 bg-white p-5 shadow-sm sm:flex-row sm:items-center">
+                            <div>
+                                <h2 className="text-base font-extrabold text-ink-900">
+                                    Dokumentasi event
+                                </h2>
+                                <p className="mt-1 text-sm text-ink-600">
+                                    Acara telah selesai. Dokumentasi saat ini tersedia
+                                    untuk peserta dan penonton.
+                                </p>
+                            </div>
+                            <a
+                                href={event.documentationUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-brand-600 px-5 py-3.5 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                            >
+                                Lihat dokumentasi
+                                <span aria-hidden>→</span>
+                            </a>
+                        </section>
+                    ) : null}
+
                     <div className="grid grid-cols-1 gap-8 lg:grid-cols-3 lg:gap-10">
                         <div className="space-y-10 lg:col-span-2">
                             {event.description ? (

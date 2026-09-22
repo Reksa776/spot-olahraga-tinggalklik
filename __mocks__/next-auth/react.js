@@ -11,9 +11,10 @@
 // (rather than exercising a logged-in flow) keeps working in isolation tests; SSR
 // never calls `signIn`/`signOut` at import time.
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- CommonJS mock, ESM would break `module.exports`.
 const { createElement } = require("react");
 
-function SessionProvider({ children, session }) {
+function SessionProvider({ children, session: _session }) {
     return createElement("div", { "data-testid": "session-provider" }, children);
 }
 

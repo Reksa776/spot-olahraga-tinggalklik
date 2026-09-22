@@ -877,6 +877,9 @@ model Event {
   description     String?         @db.Text
   rules           String?         @db.Text
   bannerUrl       String?         @db.Text
+  /// Post-event material link (a Google Drive share URL), shown to buyers only when
+  /// the event is COMPLETED. NULL until the organizer adds it.
+  documentationUrl String?        @db.Text
   status          EventStatus     @default(DRAFT)
   visibility      EventVisibility @default(PUBLIC)
   startAt         DateTime

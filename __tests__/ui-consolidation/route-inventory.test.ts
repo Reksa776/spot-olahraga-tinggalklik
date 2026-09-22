@@ -70,8 +70,8 @@ describe("P10-1. the inventory covers the whole application", () => {
         expect(INVENTORY_ROUTES).toEqual(PAGES_ON_DISK);
     });
 
-    it("is 29 pages, and says so", () => {
-        expect(ROUTE_INVENTORY.length).toBe(29);
+    it("is 31 pages, and says so", () => {
+        expect(ROUTE_INVENTORY.length).toBe(31);
     });
 
     it("lists each route exactly once", () => {
@@ -133,9 +133,10 @@ describe("P10-3. the inventory describes reality, not intent", () => {
             entry.route === "/dashboard" || entry.route.startsWith("/dashboard/")
         );
 
-        // Overview + events (list/new/detail) + venues + orders (list/detail) + customers +
-        // payments + refunds + PIC (list/detail) + reports + settings (hub/sports/venues) = 16.
-        expect(dashboardRoutes.length).toBe(16);
+        // Overview + events (list/new/detail/check-in) + venues + orders (list/detail) +
+        // customers + payments + refunds + PIC (list/detail) + reports + settings
+        // (hub/sports/venues) + check-in hub = 18.
+        expect(dashboardRoutes.length).toBe(18);
     });
 
     it("contains no retail route", () => {

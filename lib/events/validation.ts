@@ -78,10 +78,111 @@ const optionalText = (max: number) =>
  * (what an internal caller naturally has). Both normalise to a `Date`, so downstream
  * query building never has to care which arrived.
  */
+/**
+ * Optional date filter — ... (see filterDateTime above)
+ */
+/**
+ * A date filter that accepts either an ISO string (the wire format) or a real `Date`
+ * (what an internal caller naturally has). Both normalise to a `Date`, so downstream
+ * query building never has to care which arrived.
+ */
 const filterDateTime = z
     .union([z.date(), isoDateTime, z.literal(""), z.null()])
     .optional()
     .transform((value) => (value === "" || value === null ? undefined : value));
+
+/**
+ * Hosts that may serve a post-event documentation link.
+ *
+ * The feature is scoped to Google Drive shares, so the allow-list is exactly Drive's
+ * own surfaces: the standard share host, the document/view surface and the content
+ * host Drive itself uses to serve a real file. Anything else — `localhost`, a raw IP,
+ * a listener host used to smuggle a Drive-owning URL past the check, or a generic URL
+ * shortener — is rejected here, structurally, with no callback to a network.
+ */
+const GOOGLE_DRIVE_HOSTS = new Set([
+    "drive.google.com",
+    "docs.google.com",
+    "drive.usercontent.google.com",
+]);
+
+/** Upper bound for a documentation URL. Generous for a share link, finite for a TEXT column. */
+const MAX_DOCUMENTATION_URL_LENGTH = 2000;
+
+/**
+ * Optional Google Drive documentation URL (FEATURE).
+ *
+ * Semantics match every other optional field in this file: `undefined` = do not touch,
+ * `""`/`null` = clear the link, a string = replace it. The structural rules are the
+ * server-side policy for what the organizer may publish to buyers:
+ *
+ *   • https only — a plaintext http link carries no integrity for something shown post-event
+ *   • host in `GOOGLE_DRIVE_HOSTS` — the link must actually be a Drive share/document/content
+ *   • length-capped, so the TEXT column cannot be abused as a blob store
+ *
+ * A forged value such as `https://drive.google.com@evil.example` has hostname
+ * `evil.example`, which the host check refuses; `new URL` does the parsing so a trailing
+ * slash or port is normalised away rather than defeating the comparand.
+ */
+export const documentationUrl = z
+    .union([z.string(), z.literal(""), z.null()])
+    .optional()
+    .superRefine((value, ctx) => {
+        if (!value) {
+            return;
+        }
+
+        const trimmed = value.trim();
+
+        if (trimmed.length > MAX_DOCUMENTATION_URL_LENGTH) {
+            ctx.addIssue({
+                code: "custom",
+                path: ["documentationUrl"],
+                message: "URL dokumentasi terlalu panjang.",
+            });
+            return;
+        }
+
+        let parsed: URL;
+
+        try {
+            parsed = new URL(trimmed);
+        } catch {
+            ctx.addIssue({
+                code: "custom",
+                path: ["documentationUrl"],
+                message: "URL dokumentasi tidak valid.",
+            });
+            return;
+        }
+
+        if (parsed.protocol !== "https:") {
+            ctx.addIssue({
+                code: "custom",
+                path: ["documentationUrl"],
+                message: "URL dokumentasi harus menggunakan https.",
+            });
+            return;
+        }
+
+        if (!GOOGLE_DRIVE_HOSTS.has(parsed.hostname)) {
+            ctx.addIssue({
+                code: "custom",
+                path: ["documentationUrl"],
+                message:
+                    "URL dokumentasi harus dari Google Drive (drive.google.com, docs.google.com, atau drive.usercontent.google.com).",
+            });
+        }
+    })
+    .transform((value) =>
+        value === null || value === ""
+            ? null
+            : typeof value === "string"
+              ? value.trim()
+              : value
+    );
+
+export type DocumentationUrl = z.infer<typeof documentationUrl>;
 
 /**
  * Visibility accepted by the API: exactly the two values design §10.2 defines
@@ -177,6 +278,7 @@ export const updateEventSchema = z
         description: optionalText(20000),
         rules: optionalText(20000),
         bannerUrl: optionalText(2000),
+        documentationUrl,
         startAt: isoDateTime.optional(),
         endAt: optionalIsoDateTime,
         salesStartAt: optionalIsoDateTime,

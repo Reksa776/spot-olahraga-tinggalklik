@@ -7,6 +7,7 @@ import {
     CreditCard,
     LayoutDashboard,
     MapPin,
+    QrCode,
     Receipt,
     RotateCcw,
     Settings,
@@ -108,6 +109,15 @@ export default function DashboardAppShell({
                 label: "Event",
                 href: "/dashboard/events",
                 icon: <CalendarDays size={18} />,
+            },
+        },
+        {
+            visible: capabilities.canCheckIn,
+            section: "Event & Tiket",
+            entry: {
+                label: "Scan Tiket",
+                href: "/dashboard/check-in",
+                icon: <QrCode size={18} />,
             },
         },
         {

@@ -1,5 +1,6 @@
 import CheckInPanel from "@/components/organizer/CheckInPanel";
 import EventActions from "@/components/organizer/EventActions";
+import EventDocumentationManager from "@/components/organizer/EventDocumentationManager";
 import EventForm from "@/components/organizer/EventForm";
 import EventImageManager from "@/components/organizer/EventImageManager";
 import TicketTypeManager from "@/components/organizer/TicketTypeManager";
@@ -276,6 +277,31 @@ export default async function DashboardManageEventPage({
                     }))}
                     maxImages={MAX_IMAGES_PER_EVENT}
                 />
+            </SectionCard>
+
+            <SectionCard title="Dokumentasi event">
+                {canWrite ? (
+                    <EventDocumentationManager
+                        eventId={event.id}
+                        documentationUrl={event.documentationUrl}
+                    />
+                ) : event.documentationUrl ? (
+                    <p className="text-sm">
+                        Link aktif:{" "}
+                        <a
+                            href={event.documentationUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-medium text-primary underline underline-offset-4"
+                        >
+                            Buka dokumentasi
+                        </a>
+                    </p>
+                ) : (
+                    <p className="text-sm text-muted-foreground">
+                        Belum ada link dokumentasi untuk event ini.
+                    </p>
+                )}
             </SectionCard>
 
             <SectionCard title="Detail event">

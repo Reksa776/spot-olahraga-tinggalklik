@@ -110,6 +110,8 @@ export type DashboardCapabilities = {
     canAssignPic: boolean;
     canManageVenues: boolean;
     canReadReports: boolean;
+    /** `checkin.scan` in any tenant — drives the "Scan Tiket" gate surface. */
+    canCheckIn: boolean;
     /** True when the actor can read no tenant at all (drives the empty state). */
     hasTenantAccess: boolean;
 };
@@ -179,11 +181,13 @@ export function computeDashboardCapabilities(
         canReadReports:
             hasOrganizerPermission(scope, PERMISSIONS.REPORT_TRANSACTION_READ) ||
             hasOrganizerPermission(scope, PERMISSIONS.REPORT_EVENT_SALES_READ),
+        canCheckIn: hasOrganizerPermission(scope, PERMISSIONS.CHECKIN_SCAN),
         hasTenantAccess:
             canReadEvents ||
             canReadOrders ||
             hasOrganizerPermission(scope, PERMISSIONS.PAYMENT_READ_TENANT) ||
             hasOrganizerPermission(scope, PERMISSIONS.PIC_ASSIGN) ||
-            hasOrganizerPermission(scope, PERMISSIONS.VENUE_MANAGE),
+            hasOrganizerPermission(scope, PERMISSIONS.VENUE_MANAGE) ||
+            hasOrganizerPermission(scope, PERMISSIONS.CHECKIN_SCAN),
     };
 }

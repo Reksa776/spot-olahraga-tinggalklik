@@ -376,6 +376,7 @@ const DETAIL_SELECT = {
     description: true,
     rules: true,
     bannerUrl: true,
+    documentationUrl: true,
     status: true,
     visibility: true,
     startAt: true,
@@ -477,6 +478,8 @@ export type PublicEventDetail = {
         priceFrom: number | null;
         priceTo: number | null;
     };
+    /** Post-event Google Drive documentation link; shown only for COMPLETED events. */
+    documentationUrl: string | null;
     shareUrl: string;
 };
 
@@ -572,6 +575,7 @@ function toDetail(row: DetailRow, origin: string): PublicEventDetail {
             priceFrom: summary.priceFrom,
             priceTo: summary.priceTo,
         },
+        documentationUrl: row.documentationUrl,
         shareUrl: canonicalShareUrl(origin, row.slug),
     };
 }

@@ -133,6 +133,7 @@ function menuHrefs(capabilities: DashboardCapabilities): string[] {
 }
 
 const ALL_TENANT_MENU = [
+    "/dashboard/check-in",
     "/dashboard/events",
     "/dashboard/orders",
     "/dashboard/customers",
@@ -222,6 +223,7 @@ describe("platform ADMIN", () => {
             "canAssignPic",
             "canManageVenues",
             "canReadReports",
+            "canCheckIn",
             "canManageSports",
             "canManageGlobalVenues",
             "canManagePlatformPic",
@@ -232,6 +234,7 @@ describe("platform ADMIN", () => {
         expect(menuHrefs(capabilities)).toEqual([
             "/dashboard",
             "/dashboard/events",
+            "/dashboard/check-in",
             "/dashboard/orders",
             "/dashboard/customers",
             "/dashboard/payments",
@@ -248,6 +251,7 @@ describe("platform ADMIN", () => {
 
         expect(canEnterDashboard(capabilities)).toBe(true);
         expect(capabilities.hasTenantAccess).toBe(false);
+        expect(capabilities.canCheckIn).toBe(false);
         expect(capabilities.canManageSports).toBe(true);
         expect(capabilities.canManageGlobalVenues).toBe(true);
         expect(capabilities.canManagePlatformPic).toBe(true);

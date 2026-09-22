@@ -50,10 +50,22 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         referencedBy: "components/dashboard/DashboardAppShell.tsx",
     },
     {
+        route: "/dashboard/check-in",
+        file: "app/dashboard/check-in/page.tsx",
+        status: "KEEP",
+        referencedBy: "components/dashboard/DashboardAppShell.tsx",
+    },
+    {
         route: "/dashboard/customers",
         file: "app/dashboard/customers/page.tsx",
         status: "KEEP",
         referencedBy: "components/dashboard/DashboardAppShell.tsx",
+    },
+    {
+        route: "/dashboard/events/[id]/check-in",
+        file: "app/dashboard/events/[id]/check-in/page.tsx",
+        status: "KEEP",
+        referencedBy: "app/dashboard/check-in/page.tsx",
     },
     {
         route: "/dashboard/events/[id]",

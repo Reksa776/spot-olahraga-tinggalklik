@@ -205,6 +205,7 @@ describe("P-S3. the ONE menu is still gated by authority", () => {
             "canManageSports",
             "canManageGlobalVenues",
             "canReadReports",
+            "canCheckIn",
         ]) {
             expect(shell).toContain(capability);
         }
