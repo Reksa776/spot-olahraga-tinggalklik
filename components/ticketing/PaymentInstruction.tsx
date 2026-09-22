@@ -69,8 +69,44 @@ function remainingLabel(expiresAt: string, now: number): string | null {
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-/** A number with a copy button. The value shown is the value copied, never a reformatted one. */
-function CopyableValue({ label, value }: { label: string; value: string }) {
+/**
+ * One provider identifier worth showing, in the fixed order the payment card renders them.
+ *
+ * Pure and exported so the "hide a missing value" and "never show a placeholder" rules can be
+ * unit-tested without a browser or a provider.
+ */
+export type PaymentIdentifier = { label: string; value: string };
+
+/** Whether this attempt was created in iPaymu's sandbox. Drives the demo banner ONLY. */
+export function isSandboxPayment(instruction: { environment: string | null }): boolean {
+    return instruction.environment === "SANDBOX";
+}
+
+/**
+ * The identifiers the payment card shows, with absent (null/empty/whitespace) values DROPPED.
+ *
+ * Order is stable — Reference ID, Transaction ID, Session ID — so a screenshot is comparable
+ * between payments. An empty result means the card is not rendered at all.
+ */
+export function visiblePaymentIdentifiers(instruction: {
+    referenceId: string | null;
+    providerTransactionId: string | null;
+    providerSessionId: string | null;
+}): PaymentIdentifier[] {
+    const candidates: PaymentIdentifier[] = [
+        { label: "Reference ID", value: instruction.referenceId?.trim() ?? "" },
+        {
+            label: "Transaction ID",
+            value: instruction.providerTransactionId?.trim() ?? "",
+        },
+        { label: "Session ID", value: instruction.providerSessionId?.trim() ?? "" },
+    ];
+
+    return candidates.filter((row) => row.value.length > 0);
+}
+
+/** Clipboard state for one value. Display-only; a denied clipboard is not an error state. */
+function useCopy() {
     const [copied, setCopied] = useState(false);
 
     useEffect(() => {
@@ -83,7 +119,7 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
         return () => clearTimeout(timer);
     }, [copied]);
 
-    async function copy() {
+    async function copy(value: string) {
         try {
             await navigator.clipboard.writeText(value);
             setCopied(true);
@@ -94,6 +130,13 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
             setCopied(false);
         }
     }
+
+    return { copied, copy };
+}
+
+/** A number with a copy button. The value shown is the value copied, never a reformatted one. */
+function CopyableValue({ label, value }: { label: string; value: string }) {
+    const { copied, copy } = useCopy();
 
     return (
         <div className="rounded-xl border border-ink-200 bg-white p-3.5">
@@ -108,11 +151,72 @@ function CopyableValue({ label, value }: { label: string; value: string }) {
 
                 <button
                     type="button"
-                    onClick={copy}
+                    onClick={() => copy(value)}
                     className="rounded-lg border border-ink-200 px-2.5 py-1 text-xs font-bold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
                 >
                     {copied ? "Tersalin" : "Salin"}
                 </button>
+            </div>
+        </div>
+    );
+}
+
+/** One identifier row with a copy affordance. Rendered only when its value exists. */
+function IdentifierLine({ label, value }: { label: string; value: string }) {
+    const { copied, copy } = useCopy();
+
+    return (
+        <div className="flex items-center justify-between gap-3 border-b border-ink-100 py-2 last:border-b-0">
+            <div className="min-w-0">
+                <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-ink-500">
+                    {label}
+                </p>
+                <code className="block truncate font-mono text-sm font-bold text-ink-900 select-all">
+                    {value}
+                </code>
+            </div>
+
+            <button
+                type="button"
+                onClick={() => copy(value)}
+                className="shrink-0 rounded-lg border border-ink-200 px-2.5 py-1 text-xs font-bold text-ink-700 transition hover:border-ink-300 hover:bg-ink-50"
+            >
+                {copied ? "Tersalin" : "Salin"}
+            </button>
+        </div>
+    );
+}
+
+/**
+ * The demo/support identifiers, read entirely from the server payload that was built out of
+ * the gateway's own response. A row appears only when the provider returned a value; when no
+ * identifier exists the whole card is omitted rather than rendered with placeholders.
+ */
+function PaymentIdentifiers({
+    instruction,
+}: {
+    instruction: PaymentInstructionPayload;
+}) {
+    const rows = visiblePaymentIdentifiers(instruction);
+
+    if (rows.length === 0) {
+        return null;
+    }
+
+    return (
+        <div className="rounded-xl border border-ink-200 bg-white p-3.5">
+            <p className="text-xs font-bold tracking-wider text-ink-500 uppercase">
+                Detail Pembayaran
+            </p>
+
+            <div className="mt-1.5">
+                {rows.map((row) => (
+                    <IdentifierLine
+                        key={row.label}
+                        label={row.label}
+                        value={row.value}
+                    />
+                ))}
             </div>
         </div>
     );
@@ -172,6 +276,20 @@ export default function PaymentInstruction({
                 {formatIdr(Number(amount))}
             </p>
 
+            {/*
+             * The environment SNAPSHOT stored on this payment. It is a demo/ops label only —
+             * it says nothing about whether the payment succeeded, and the buyer still waits
+             * for the provider's verified webhook before the order becomes PAID.
+             */}
+            {isSandboxPayment(instruction) ? (
+                <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                    <span className="font-extrabold">🧪 SANDBOX PAYMENT</span>
+                    <span>
+                        Lingkungan uji iPaymu. Pembayaran tetap PENDING sampai dikonfirmasi.
+                    </span>
+                </p>
+            ) : null}
+
             {instruction.flow === "REDIRECT" ? (
                 instruction.url ? (
                     <div className="mt-4 space-y-2">
@@ -224,17 +342,6 @@ export default function PaymentInstruction({
                                 Buka aplikasi bank atau e-wallet, pilih bayar dengan QRIS,
                                 lalu scan kode di atas.
                             </p>
-
-                            {instruction.number ? (
-                                <div className="w-full rounded-lg bg-ink-50 px-3 py-2 text-center">
-                                    <p className="text-[0.7rem] font-semibold uppercase tracking-wide text-ink-500">
-                                        Referensi iPaymu
-                                    </p>
-                                    <p className="font-mono text-sm font-bold text-ink-900">
-                                        {instruction.number}
-                                    </p>
-                                </div>
-                            ) : null}
                         </div>
                     ) : null}
 
@@ -273,6 +380,13 @@ export default function PaymentInstruction({
                     ) : null}
                 </div>
             ) : null}
+
+            {/* ── Demo/support identifiers ─────────────────────────────────────── */}
+            {/* Rendered for every flow: a reference is what a demo operator quotes to the
+                provider, and for a hosted page it is the only handle that exists. */}
+            <div className="mt-3.5">
+                <PaymentIdentifiers instruction={instruction} />
+            </div>
 
             {/* ── Expiry and status ────────────────────────────────────────────── */}
             <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-200 pt-3 text-xs">

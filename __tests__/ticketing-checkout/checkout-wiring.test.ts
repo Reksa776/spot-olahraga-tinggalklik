@@ -334,7 +334,13 @@ describe("payment, issuance and messaging stay out of Phase 6", () => {
 
             expect(source).not.toMatch(/lib\/payment/);
             expect(source).not.toMatch(/ipaymu/i);
-            expect(source).not.toMatch(/providerSession|paymentUrl:\s*"http/);
+            // A raw provider URL still never appears here…
+            expect(source).not.toMatch(/paymentUrl:\s*"http/);
+            // …and neither does any credential or signing material. The provider's PUBLIC
+            // handles (reference, transaction id, session id) ARE now projected onto the
+            // customer payment card by design, so they are deliberately allowed — see
+            // `__tests__/ticketing-payment/payment-identifiers.test.ts`.
+            expect(source).not.toMatch(/apiKey|secretKey|webhookSecret|signature/i);
         }
     });
 

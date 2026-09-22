@@ -234,21 +234,29 @@ type OrderRow = {
     /**
      * The newest payment attempt, if any.
      *
-     * Only the fields the customer payload needs. `externalSessionId`, `provider`,
-     * `createdByUserId` and the transaction rows are NOT projected: they are provider and
-     * platform internals (brief §24), and a customer response must not carry them.
-     *
      * The instruction columns ARE projected, because they are not internals — they are the
      * thing the buyer has to read in order to pay: the gateway's own QRIS payload, the
      * virtual-account number, the issuer's name and the gateway's expiry. They are exposed
      * for the caller's own order only, behind the same ownership predicate as the rest of
      * this payload.
+     *
+     * The provider IDENTIFIERS (`paymentReference`, `providerTransactionId`,
+     * `externalSessionId`, `providerEnvironment`) are projected too, for the demo/support
+     * payment card. `provider`, `createdByUserId` and the transaction rows remain
+     * unprojected: those really are platform internals. None of the projected identifiers is
+     * a credential, and the ownership predicate above decides whether a caller may see them.
      */
     payments: {
         status: string;
         paymentUrl: string | null;
         paymentReference: string;
         expiresAt: Date | null;
+        /** The provider's own transaction id, or null (a REDIRECT session returns none). */
+        providerTransactionId: string | null;
+        /** The provider's session id, or null. */
+        externalSessionId: string | null;
+        /** Snapshot of the environment this attempt was created in. */
+        providerEnvironment: string;
         /** `DIRECT` | `REDIRECT`, or null on rows written before the column existed. */
         providerFlow: string | null;
         method: string;
@@ -337,6 +345,10 @@ export const ORDER_PAYLOAD_SELECT = {
             paymentUrl: true,
             paymentReference: true,
             expiresAt: true,
+            // Provider identifiers for the demo/support payment card (Phase: sandbox demo).
+            providerTransactionId: true,
+            externalSessionId: true,
+            providerEnvironment: true,
             // Direct-payment instruction columns (QRIS/virtual account). Selected here so the
             // order page can render the instrument without a second query.
             providerFlow: true,
@@ -388,6 +400,27 @@ export type PaymentInstructionPayload = {
     providerExpiredAt: string | null;
     /** This platform's reservation window — the server's own instant, never a client timer. */
     expiresAt: string | null;
+    /**
+     * ── DEMO / SUPPORT IDENTIFIERS ──────────────────────────────────────────────
+     *
+     * The handles a demo operator (or a buyer raising a support ticket) needs to identify a
+     * transaction at the provider. They are read from the SAME `Payment` row the instrument
+     * was built from — never synthesised — and every one is `null` when the provider did
+     * not return it, so the UI hides the row instead of showing an empty value.
+     *
+     * None of these is a credential: the API key, the signature and the webhook secret are
+     * never near this payload. `referenceId` is our own value sent to the provider;
+     * `providerTransactionId` and `providerSessionId` are the provider's public handles.
+     */
+    referenceId: string | null;
+    providerTransactionId: string | null;
+    providerSessionId: string | null;
+    /**
+     * The environment the attempt was created in, snapshotted on the row (`SANDBOX` |
+     * `PRODUCTION`). Drives the sandbox demo banner; it is NOT a payment state and never
+     * implies the payment succeeded.
+     */
+    environment: string | null;
 };
 
 type LatestPaymentRow = OrderRow["payments"][number];
@@ -461,6 +494,12 @@ async function buildPaymentInstruction(
         paymentName: payment.paymentName ?? null,
         providerExpiredAt: payment.providerExpiredAt?.toISOString() ?? null,
         expiresAt: (payment.providerExpiredAt ?? payment.expiresAt)?.toISOString() ?? null,
+        // Read straight off the row. A missing value stays null and the UI hides its row;
+        // nothing is defaulted, generated or guessed.
+        referenceId: payment.paymentReference ?? null,
+        providerTransactionId: payment.providerTransactionId ?? null,
+        providerSessionId: payment.externalSessionId ?? null,
+        environment: payment.providerEnvironment ?? null,
     };
 }
 
