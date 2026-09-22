@@ -155,7 +155,7 @@ export default async function DiscoveryHomePage() {
                     </section>
                 ) : null}
 
-                <OrganizerBand />
+                
             </div>
         </SiteShell>
     );
@@ -234,30 +234,30 @@ function Hero({
 }
 
 /** The organiser call to action — a real destination, not a placeholder form. */
-function OrganizerBand() {
-    return (
-        <section className="overflow-hidden rounded-3xl bg-ink-900 px-6 py-10 text-white sm:px-10 lg:py-12">
-            <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-                <div className="max-w-xl">
-                    <h2 className="text-xl font-extrabold tracking-tight sm:text-2xl">
-                        Punya event atau kompetisi?
-                    </h2>
-                    <p className="mt-2 text-sm leading-relaxed text-ink-200">
-                        Buat event, atur jenis tiket, dan pantau penjualannya dari
-                        dasbor penyelenggara.
-                    </p>
-                </div>
+// function OrganizerBand() {
+//     return (
+//         <section className="overflow-hidden rounded-3xl bg-ink-900 px-6 py-10 text-white sm:px-10 lg:py-12">
+//             <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+//                 <div className="max-w-xl">
+//                     <h2 className="text-xl font-extrabold tracking-tight sm:text-2xl">
+//                         Punya event atau kompetisi?
+//                     </h2>
+//                     <p className="mt-2 text-sm leading-relaxed text-ink-200">
+//                         Buat event, atur jenis tiket, dan pantau penjualannya dari
+//                         dasbor penyelenggara.
+//                     </p>
+//                 </div>
 
-                <Link
-                    href="/dashboard/events"
-                    className="shrink-0 rounded-xl bg-brand-600 px-6 py-3.5 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-400"
-                >
-                    Mulai buat event
-                </Link>
-            </div>
-        </section>
-    );
-}
+//                 <Link
+//                     href="/dashboard/events"
+//                     className="shrink-0 rounded-xl bg-brand-600 px-6 py-3.5 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-400"
+//                 >
+//                     Mulai buat event
+//                 </Link>
+//             </div>
+//         </section>
+//     );
+// }
 
 /** Keep the soonest-first ordering while dropping anything already shown twice. */
 function dedupe(
