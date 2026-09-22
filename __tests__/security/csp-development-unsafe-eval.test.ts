@@ -149,8 +149,9 @@ describe("CSP: environment-aware unsafe-eval", () => {
     // X-XSS-Protection
     expect(allHeaders["X-XSS-Protection"]).toBe("1; mode=block");
 
-    // Permissions-Policy
-    expect(allHeaders["Permissions-Policy"]).toContain("camera=()");
+    // Permissions-Policy — the camera is delegated to THIS origin for the gate scanner
+    // (see next.config.ts); `camera=()` would block it in our own document.
+    expect(allHeaders["Permissions-Policy"]).toContain("camera=(self)");
     expect(allHeaders["Permissions-Policy"]).toContain("microphone=()");
     expect(allHeaders["Permissions-Policy"]).toContain("geolocation=()");
   });

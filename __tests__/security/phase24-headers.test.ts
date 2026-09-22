@@ -219,11 +219,15 @@ describe("the policy allows only what the application actually loads", () => {
         }
     });
 
-    it("restricts browser capabilities the application does not use", async () => {
+    it("delegates the camera to this origin and restricts the capabilities it does not use", async () => {
         const headers = byKey(await headersFor("production"));
 
+        // The gate scanner needs the camera for THIS origin. `camera=()` disables the
+        // feature for the document too (getUserMedia -> NotAllowedError even with a granted
+        // site permission); `camera=(self)` is the value that actually works. Microphone and
+        // geolocation stay denied outright.
         expect(headers["Permissions-Policy"]).toBe(
-            "camera=(), microphone=(), geolocation=()"
+            "camera=(self), microphone=(), geolocation=()"
         );
         expect(headers["X-Content-Type-Options"]).toBe("nosniff");
         expect(headers["Referrer-Policy"]).toBe("strict-origin-when-cross-origin");

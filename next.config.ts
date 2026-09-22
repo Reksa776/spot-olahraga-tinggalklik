@@ -122,12 +122,20 @@ const nextConfig: NextConfig = {
             { key: "X-XSS-Protection", value: "1; mode=block" },
             {
                 key: "Permissions-Policy",
-                // Denied outright: nothing asks for a camera, a microphone or the visitor's
-                // location (the venue map is an outbound link; no component calls
+                // `camera=(self)` — the organizer gate scanner (`TicketScanner`) calls
+                // `navigator.mediaDevices.getUserMedia` from the dashboard, so the camera
+                // capability must be delegated to our OWN origin. `camera=()` is NOT
+                // equivalent to "deny third parties": it disables the feature for every
+                // document, self included, and `getUserMedia()` then rejects with
+                // `NotAllowedError` even when the user has already granted the site camera
+                // permission in Chrome. This was the real-device scanner failure.
+                //
+                // Microphone and geolocation stay denied outright: nothing asks for them
+                // (the venue map is an outbound link; no component calls
                 // `navigator.geolocation`). Clipboard access IS used and is deliberately not
-                // restricted: it is not gated by this policy, and both call sites only copy a
-                // value the visitor is already looking at.
-                value: "camera=(), microphone=(), geolocation=()",
+                // restricted — it is not gated by this policy, and both call sites only copy
+                // a value the visitor is already looking at.
+                value: "camera=(self), microphone=(), geolocation=()",
             },
             { key: "Content-Security-Policy", value: contentSecurityPolicy },
         ];

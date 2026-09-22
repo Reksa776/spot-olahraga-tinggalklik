@@ -34,25 +34,40 @@ import type { CheckInListItem, GateState } from "./CheckInPanel";
  *
  * The camera is NOT stopped after a success, a rejection or an already-checked-in
  * result. A short client-side cooldown suppresses the SAME payload while it lingers in
- * frame (see `createScanThrottle`); a different customer's QR is picked up immediately.
- * The client cooldown is UX protection ONLY — the server's CAS transition, the UNIQUE
- * `CheckIn.ticketId` and the check-in transaction remain authoritative.
+ * frame; a different customer's QR is picked up immediately. The client cooldown is UX
+ * protection ONLY — the server's CAS transition, the UNIQUE `CheckIn.ticketId` and the
+ * check-in transaction remain authoritative.
+ *
+ * ── THE CAMERA PIPELINE, AND WHY EACH GUARD EXISTS ────────────────────────────────
+ * A real Android gate failed silently here, so the pipeline now separates every way it
+ * can fail instead of collapsing them into one message:
+ *
+ *   capability  — `readCameraEnvironment()` reads `isSecureContext`, `mediaDevices`,
+ *                 `getUserMedia` and `BarcodeDetector` at RUNTIME (TypeScript types prove
+ *                 nothing about a phone). Each missing piece has its own diagnostic.
+ *   acquisition — `getUserMedia({video:{facingMode:{ideal:"environment"}}, audio:false})`
+ *                 and a safe fallback to `{video:true}`; `describeCameraError` maps each
+ *                 `DOMException` name (NotAllowedError, NotFoundError, NotReadableError,
+ *                 OverconstrainedError, SecurityError, AbortError) to an actionable message.
+ *   video       — the stream is attached, `video.play()` is awaited and its rejection is
+ *                 handled, then the loop waits until the element reports real pixels
+ *                 (`isVideoReady`: readyState ≥ HAVE_CURRENT_DATA and non-zero dimensions).
+ *                 `detect()` is never called against a zero-size video.
+ *   detection   — the loop reschedules itself every frame, pauses on a hidden tab, and an
+ *                 in-flight guard (`detectingRef`) prevents overlapping `detect()` calls.
+ *   detector    — `BarcodeDetector` is constructed with `{formats:["qr_code"]}` and falls
+ *                 back to the no-argument constructor; failure is surfaced, never fatal.
  *
  * ── NO NEW DEPENDENCY ─────────────────────────────────────────────────────────────
- * Decoding uses the browser-native `BarcodeDetector` API (Chromium / Android WebView).
- * On a browser without it (Firefox, Safari) the camera area explains itself and the
- * MANUAL field below is the full fallback — including hardware keyboard-wedge scanners,
- * which type the same code straight into the field. No QR library is installed.
- *
- * ── LIFECYCLE ─────────────────────────────────────────────────────────────────────
- * The detection loop is driven by `requestAnimationFrame`. Stop, unmount and a hidden
- * tab all pause it safely, and every path releases the `MediaStream` tracks — no camera
- * is left running and no frame is left scheduled.
+ * Decoding uses the browser-native `BarcodeDetector` API. On a browser without it the
+ * camera area says so and the MANUAL field below is the full fallback — including hardware
+ * keyboard-wedge scanners. No QR library is installed.
  *
  * ── PRIVACY ──────────────────────────────────────────────────────────────────────
  * The decoded payload is never persisted (no `localStorage`/`sessionStorage`), never
  * logged, and is sent nowhere except the existing authorized check-in route. The
- * suppression map holds a payload only in component memory for a couple of seconds.
+ * suppression map holds a payload only in component memory for a couple of seconds, and
+ * the diagnostics panel never shows the payload, a ticket code, a token or a cookie.
  */
 
 /** Strip whitespace-newline noise and cap length. Pure, browser-independent. */
@@ -79,6 +94,12 @@ export const RESULT_VISIBLE_MS = 3000;
 
 /** How long detection backs off after a network-level failure, so an outage is not spammed. */
 export const NETWORK_BACKOFF_MS = 2500;
+
+/** How long to wait for the video element to report usable dimensions. */
+export const VIDEO_READY_TIMEOUT_MS = 8000;
+
+/** Consecutive `detect()` failures before the UI warns that detection is misbehaving. */
+export const DETECT_FAILURE_THRESHOLD = 8;
 
 export type ScanThrottle = {
     /** Claim `payload` for processing at `now`; false when it is still in its cooldown. */
@@ -129,7 +150,220 @@ export function createScanThrottle(
     };
 }
 
-/** The UX bucket a server/client failure falls into. Pure, so it can be unit-tested. */
+/* ── CAMERA ENVIRONMENT + FAILURE DIAGNOSTICS (pure, testable) ──────────────────── */
+
+export type CameraEnvironment = {
+    secureContext: boolean;
+    mediaDevices: boolean;
+    getUserMedia: boolean;
+    barcodeDetector: boolean;
+};
+
+type EnvironmentScope = {
+    isSecureContext?: boolean;
+    BarcodeDetector?: unknown;
+    navigator?: { mediaDevices?: { getUserMedia?: unknown } | null } | null;
+};
+
+/**
+ * Read the runtime camera capabilities.
+ *
+ * Pass a fake scope in tests; the default reads the real `window`/`navigator`. A
+ * non-secure context, a missing `mediaDevices` or a missing `getUserMedia` are distinct
+ * failures with distinct copy — never the generic "camera unavailable".
+ */
+export function readCameraEnvironment(
+    scope?: EnvironmentScope
+): CameraEnvironment {
+    if (scope) {
+        return {
+            secureContext: scope.isSecureContext === true,
+            mediaDevices: scope.navigator?.mediaDevices != null,
+            getUserMedia:
+                typeof scope.navigator?.mediaDevices?.getUserMedia === "function",
+            barcodeDetector: typeof scope.BarcodeDetector === "function",
+        };
+    }
+
+    if (typeof window === "undefined") {
+        return {
+            secureContext: false,
+            mediaDevices: false,
+            getUserMedia: false,
+            barcodeDetector: false,
+        };
+    }
+
+    return {
+        secureContext: window.isSecureContext === true,
+        mediaDevices:
+            typeof navigator !== "undefined" && navigator.mediaDevices != null,
+        getUserMedia:
+            typeof navigator !== "undefined" &&
+            typeof navigator.mediaDevices?.getUserMedia === "function",
+        barcodeDetector:
+            typeof (window as { BarcodeDetector?: unknown }).BarcodeDetector ===
+            "function",
+    };
+}
+
+export type CameraFailureKind =
+    | "INSECURE_CONTEXT"
+    | "NO_MEDIA_DEVICES"
+    | "NO_GET_USER_MEDIA"
+    | "PERMISSION_DENIED"
+    | "SECURITY"
+    | "NO_CAMERA"
+    | "CAMERA_BUSY"
+    | "CAMERA_CONSTRAINT"
+    | "CAMERA_UNAVAILABLE"
+    | "VIDEO_FAILED"
+    | "NO_DETECTOR"
+    | "UNKNOWN";
+
+export type CameraFailure = {
+    kind: CameraFailureKind;
+    title: string;
+    message: string;
+};
+
+/** The failure implied purely by the environment, before any camera is requested. */
+export function environmentFailure(env: CameraEnvironment): CameraFailure | null {
+    if (!env.secureContext) {
+        return {
+            kind: "INSECURE_CONTEXT",
+            title: "Koneksi tidak aman",
+            message:
+                "Kamera hanya dapat digunakan melalui HTTPS. Buka halaman ini melalui https:// atau localhost.",
+        };
+    }
+
+    if (!env.mediaDevices) {
+        return {
+            kind: "NO_MEDIA_DEVICES",
+            title: "Kamera tidak tersedia",
+            message:
+                "Browser ini tidak menyediakan akses kamera (navigator.mediaDevices).",
+        };
+    }
+
+    if (!env.getUserMedia) {
+        return {
+            kind: "NO_GET_USER_MEDIA",
+            title: "Kamera tidak tersedia",
+            message:
+                "Browser ini tidak mendukung pengambilan kamera (getUserMedia).",
+        };
+    }
+
+    return null;
+}
+
+function errorName(error: unknown): string {
+    if (typeof error === "object" && error !== null && "name" in error) {
+        const name = (error as { name?: unknown }).name;
+        return typeof name === "string" ? name : "";
+    }
+
+    return "";
+}
+
+/**
+ * Map a `DOMException` raised by `getUserMedia`/`play()` to an actionable message.
+ *
+ * Each name is handled separately, because "camera denied", "no camera", "camera busy"
+ * and "over-constrained" demand different staff actions. Raw error text is never shown.
+ */
+export function describeCameraError(error: unknown): CameraFailure {
+    switch (errorName(error)) {
+        case "NotAllowedError":
+            return {
+                kind: "PERMISSION_DENIED",
+                title: "Akses kamera ditolak",
+                message:
+                    "Periksa izin kamera Chrome untuk situs ini, lalu coba lagi.",
+            };
+        case "SecurityError":
+            return {
+                kind: "SECURITY",
+                title: "Browser memblokir kamera",
+                message:
+                    "Browser tidak mengizinkan akses kamera pada halaman ini.",
+            };
+        case "NotFoundError":
+        case "DevicesNotFoundError":
+            return {
+                kind: "NO_CAMERA",
+                title: "Kamera tidak ditemukan",
+                message: "Tidak ada kamera yang terdeteksi di perangkat ini.",
+            };
+        case "NotReadableError":
+        case "TrackStartError":
+            return {
+                kind: "CAMERA_BUSY",
+                title: "Kamera sedang digunakan",
+                message:
+                    "Kamera sedang dipakai aplikasi lain. Tutup aplikasi itu lalu coba lagi.",
+            };
+        case "OverconstrainedError":
+        case "ConstraintNotSatisfiedError":
+            return {
+                kind: "CAMERA_CONSTRAINT",
+                title: "Kamera belakang tidak tersedia",
+                message:
+                    "Kamera belakang tidak dapat digunakan. Coba lagi untuk memakai kamera default.",
+            };
+        case "AbortError":
+            return {
+                kind: "CAMERA_UNAVAILABLE",
+                title: "Kamera gagal dimulai",
+                message: "Kamera tidak dapat diakses. Coba lagi.",
+            };
+        default:
+            return {
+                kind: "UNKNOWN",
+                title: "Kamera gagal digunakan",
+                message:
+                    "Terjadi kesalahan saat mengakses kamera. Coba lagi.",
+            };
+    }
+}
+
+const NO_DETECTOR_FAILURE: CameraFailure = {
+    kind: "NO_DETECTOR",
+    title: "QR scanner kamera tidak didukung browser ini",
+    message:
+        "Browser ini tidak menyediakan BarcodeDetector. Gunakan kolom kode manual di bawah.",
+};
+
+const VIDEO_FAILURE: CameraFailure = {
+    kind: "VIDEO_FAILED",
+    title: "Preview kamera gagal dimulai",
+    message:
+        "Kamera ditemukan tetapi gambar tidak muncul. Coba lagi, atau gunakan kolom kode manual.",
+};
+
+/**
+ * Has the video element reported usable dimensions?
+ *
+ * `detect()` against a 0×0 video throws or finds nothing, so the loop refuses to run
+ * until this is true. Pure, so it is unit-tested without a DOM.
+ */
+export function isVideoReady(video: {
+    readyState: number;
+    videoWidth: number;
+    videoHeight: number;
+}): boolean {
+    return (
+        video.readyState >= 2 /* HTMLMediaElement.HAVE_CURRENT_DATA */ &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0
+    );
+}
+
+/* ── CHECK-IN RESULT CLASSIFICATION (pure, testable) ────────────────────────────── */
+
+/** The UX bucket a server/client failure falls into. */
 export type ScanFeedback =
     | "SUCCESS"
     | "ALREADY_CHECKED_IN"
@@ -161,8 +395,7 @@ export function scanFeedbackFor(
         return "ALREADY_CHECKED_IN";
     }
 
-    const reason =
-        typeof details?.reason === "string" ? details.reason : null;
+    const reason = typeof details?.reason === "string" ? details.reason : null;
 
     if (reason === "EVENT_NOT_OPEN") {
         return "GATE_CLOSED";
@@ -195,8 +428,6 @@ type ScannerState =
     | "starting"
     | "active"
     | "stopped"
-    | "unsupported"
-    | "denied"
     | "error";
 
 /** The parts of the native detector this component actually calls. */
@@ -207,6 +438,8 @@ type DetectorInstance = {
 type BarcodeDetectorCtor = new (options?: {
     formats?: string[];
 }) => DetectorInstance;
+
+type VideoSize = { width: number; height: number };
 
 type Props = {
     eventId: string;
@@ -248,6 +481,9 @@ export default function TicketScanner({
     const [busy, setBusy] = useState(false);
     const [outcome, setOutcome] = useState<Outcome | null>(null);
     const [state, setState] = useState<ScannerState>("idle");
+    const [failure, setFailure] = useState<CameraFailure | null>(null);
+    const [detectWarning, setDetectWarning] = useState<string | null>(null);
+    const [videoSize, setVideoSize] = useState<VideoSize | null>(null);
     const [sessionCount, setSessionCount] = useState(0);
     const [items, setItems] = useState<CheckInListItem[]>(initialItems);
     const [total, setTotal] = useState(initialTotal);
@@ -258,9 +494,11 @@ export default function TicketScanner({
     const detectorRef = useRef<DetectorInstance | null>(null);
     const frameRef = useRef(0);
     const runningRef = useRef(false);
+    const detectingRef = useRef(false);
     const hiddenRef = useRef(false);
     const mountedRef = useRef(true);
     const busyRef = useRef(false);
+    const detectFailuresRef = useRef(0);
     const throttleRef = useRef<ScanThrottle>(createScanThrottle());
     const backoffUntilRef = useRef(0);
     const outcomeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -363,34 +601,115 @@ export default function TicketScanner({
         checkInRef.current = checkIn;
     });
 
+    /** Release every camera resource. Safe to call repeatedly (retry, stop, unmount). */
     function releaseCamera() {
         runningRef.current = false;
+        detectingRef.current = false;
 
         if (frameRef.current) {
             cancelAnimationFrame(frameRef.current);
             frameRef.current = 0;
         }
 
-        streamRef.current?.getTracks().forEach((track) => track.stop());
-        streamRef.current = null;
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach((track) => track.stop());
+            streamRef.current = null;
+        }
 
         if (videoRef.current) {
             videoRef.current.srcObject = null;
         }
     }
 
+    /** Resolve once the video element has real pixels, or reject after a timeout. */
+    function waitForVideoReady(
+        video: HTMLVideoElement,
+        timeoutMs: number = VIDEO_READY_TIMEOUT_MS
+    ): Promise<void> {
+        if (isVideoReady(video)) {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve, reject) => {
+            let settled = false;
+
+            const cleanup = () => {
+                video.removeEventListener("loadedmetadata", finish);
+                video.removeEventListener("canplay", finish);
+                video.removeEventListener("playing", finish);
+                clearTimeout(timer);
+            };
+
+            const finish = () => {
+                if (settled || !isVideoReady(video)) {
+                    return;
+                }
+                settled = true;
+                cleanup();
+                resolve();
+            };
+
+            const timer = setTimeout(() => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                cleanup();
+                reject(new Error("VIDEO_READY_TIMEOUT"));
+            }, timeoutMs);
+
+            video.addEventListener("loadedmetadata", finish);
+            video.addEventListener("canplay", finish);
+            video.addEventListener("playing", finish);
+        });
+    }
+
+    /** Prefer the rear camera; fall back to the default camera if that constraint fails. */
+    async function acquireStream(): Promise<MediaStream> {
+        const mediaDevices = navigator.mediaDevices;
+
+        try {
+            return await mediaDevices.getUserMedia({
+                video: { facingMode: { ideal: "environment" } },
+                audio: false,
+            });
+        } catch (error) {
+            const name = errorName(error);
+
+            if (
+                name === "OverconstrainedError" ||
+                name === "ConstraintNotSatisfiedError" ||
+                name === "NotFoundError"
+            ) {
+                return await mediaDevices.getUserMedia({
+                    video: true,
+                    audio: false,
+                });
+            }
+
+            throw error;
+        }
+    }
+
     /**
-     * One detection pass. It NEVER throws and never stops the loop: a rejected frame (the
-     * camera briefly busy) or a hidden tab simply means the next frame retries.
+     * One detection pass. It NEVER throws and never stops the loop: a rejected frame, a
+     * hidden tab or a not-yet-ready video simply means the next frame retries.
      */
     async function tick() {
-        if (
-            !mountedRef.current ||
-            !runningRef.current ||
-            hiddenRef.current ||
-            !videoRef.current ||
-            !detectorRef.current
-        ) {
+        if (hiddenRef.current || !mountedRef.current || !runningRef.current) {
+            return;
+        }
+
+        const video = videoRef.current;
+        const detector = detectorRef.current;
+
+        if (!video || !detector) {
+            return;
+        }
+
+        // Never call detect() against a zero-size video, and never overlap two detect()
+        // calls: the detector is async and a slow frame must not stack up.
+        if (!isVideoReady(video) || detectingRef.current) {
             return;
         }
 
@@ -399,32 +718,41 @@ export default function TicketScanner({
             return;
         }
 
-        let raw: string | undefined;
+        detectingRef.current = true;
 
         try {
-            const barcodes = await detectorRef.current.detect(videoRef.current);
-            raw = barcodes[0]?.rawValue;
-        } catch {
-            return;
+            const barcodes = await detector.detect(video);
+
+            if (detectFailuresRef.current !== 0) {
+                detectFailuresRef.current = 0;
+                setDetectWarning(null);
+            }
+
+            const raw = barcodes[0]?.rawValue;
+
+            if (raw && !busyRef.current) {
+                const payload = sanitizeScannedPayload(raw);
+
+                // Suppress the same QR while it lingers in frame; a different payload is
+                // processed immediately even if one request is still in flight.
+                if (
+                    payload &&
+                    throttleRef.current.shouldProcess(payload, Date.now())
+                ) {
+                    void checkInRef.current(payload);
+                }
+            }
+        } catch (error) {
+            // A detect() failure is not fatal — surface it only once it looks persistent.
+            detectFailuresRef.current += 1;
+
+            if (detectFailuresRef.current === DETECT_FAILURE_THRESHOLD) {
+                const described = describeCameraError(error);
+                setDetectWarning(`Deteksi QR bermasalah: ${described.title}.`);
+            }
+        } finally {
+            detectingRef.current = false;
         }
-
-        if (!raw || busyRef.current) {
-            return;
-        }
-
-        const payload = sanitizeScannedPayload(raw);
-
-        if (!payload) {
-            return;
-        }
-
-        // Suppress the same QR while it lingers in frame; a different payload is processed
-        // immediately even if one request is still in flight.
-        if (!throttleRef.current.shouldProcess(payload, Date.now())) {
-            return;
-        }
-
-        void checkInRef.current(payload);
     }
 
     function loop() {
@@ -442,28 +770,46 @@ export default function TicketScanner({
             return;
         }
 
+        // Always start from a clean slate, so a retry can never leak a previous stream,
+        // detector or pending frame.
+        releaseCamera();
+        detectorRef.current = null;
+
         setState("starting");
+        setFailure(null);
+        setDetectWarning(null);
         setOutcome(null);
+        setVideoSize(null);
         throttleRef.current.reset();
         backoffUntilRef.current = 0;
+        detectFailuresRef.current = 0;
+
+        const environment = readCameraEnvironment();
+        const environmentProblem = environmentFailure(environment);
+
+        if (environmentProblem) {
+            setFailure(environmentProblem);
+            setState("error");
+            return;
+        }
 
         const DetectorCtor = (window as { BarcodeDetector?: BarcodeDetectorCtor })
             .BarcodeDetector;
 
         if (!DetectorCtor) {
-            setState("unsupported");
+            setFailure(NO_DETECTOR_FAILURE);
+            setState("error");
             return;
         }
 
         let stream: MediaStream;
 
         try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "environment" },
-            });
-        } catch {
+            stream = await acquireStream();
+        } catch (error) {
             if (mountedRef.current) {
-                setState("denied");
+                setFailure(describeCameraError(error));
+                setState("error");
             }
             return;
         }
@@ -473,19 +819,52 @@ export default function TicketScanner({
             return;
         }
 
+        let detector: DetectorInstance;
+
         try {
-            detectorRef.current = new DetectorCtor({ formats: ["qr_code"] });
+            detector = new DetectorCtor({ formats: ["qr_code"] });
         } catch {
-            detectorRef.current = new DetectorCtor();
+            try {
+                detector = new DetectorCtor();
+            } catch {
+                stream.getTracks().forEach((track) => track.stop());
+                setFailure(NO_DETECTOR_FAILURE);
+                setState("error");
+                return;
+            }
+        }
+
+        const video = videoRef.current;
+
+        if (!video) {
+            stream.getTracks().forEach((track) => track.stop());
+            setFailure(VIDEO_FAILURE);
+            setState("error");
+            return;
         }
 
         streamRef.current = stream;
+        video.srcObject = stream;
 
-        if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            await videoRef.current.play().catch(() => undefined);
+        try {
+            // `play()` can reject on mobile even with `muted`/`playsInline`; surface it
+            // rather than pretending the preview is running.
+            await video.play();
+            await waitForVideoReady(video);
+        } catch {
+            releaseCamera();
+            setFailure(VIDEO_FAILURE);
+            setState("error");
+            return;
         }
 
+        if (!mountedRef.current) {
+            releaseCamera();
+            return;
+        }
+
+        detectorRef.current = detector;
+        setVideoSize({ width: video.videoWidth, height: video.videoHeight });
         runningRef.current = true;
         setState("active");
         loop();
@@ -532,8 +911,10 @@ export default function TicketScanner({
         await checkIn(payload);
     }
 
+    const environment = readCameraEnvironment();
     const isStarting = state === "starting";
     const isActive = state === "active";
+    const canRetry = state === "error";
 
     const feedback =
         outcome?.kind === "error"
@@ -542,12 +923,29 @@ export default function TicketScanner({
 
     const firstCheckedInAt =
         feedback === "ALREADY_CHECKED_IN"
-            ? detailText(outcome?.kind === "error" ? outcome.details : undefined, "firstCheckedInAt")
+            ? detailText(
+                  outcome?.kind === "error" ? outcome.details : undefined,
+                  "firstCheckedInAt"
+              )
             : null;
     const firstCheckedInBy =
         feedback === "ALREADY_CHECKED_IN"
-            ? detailText(outcome?.kind === "error" ? outcome.details : undefined, "firstCheckedInBy")
+            ? detailText(
+                  outcome?.kind === "error" ? outcome.details : undefined,
+                  "firstCheckedInBy"
+              )
             : null;
+
+    const diagnostics: Array<[string, string]> = [
+        ["Secure context", environment.secureContext ? "YA" : "TIDAK"],
+        ["Camera API", environment.mediaDevices ? "YA" : "TIDAK"],
+        ["getUserMedia", environment.getUserMedia ? "YA" : "TIDAK"],
+        ["BarcodeDetector", environment.barcodeDetector ? "YA" : "TIDAK"],
+        ["Camera stream", isActive ? "AKTIF" : "—"],
+        ["Video", videoSize ? `${videoSize.width} × ${videoSize.height}` : "—"],
+        ["Scanner", state.toUpperCase()],
+        ["Detection", detectWarning ? "BERMASALAH" : isActive ? "BERJALAN" : "—"],
+    ];
 
     return (
         <div className="flex flex-col gap-5">
@@ -617,10 +1015,10 @@ export default function TicketScanner({
                     <InfoNote tone="success">
                         <div className="flex flex-col gap-1">
                             <span className="text-base font-semibold">
-                                🟢 Scanner aktif
+                                🟢 Kamera aktif
                             </span>
                             <span className="text-sm">
-                                Silakan scan tiket berikutnya — tidak perlu menekan apa pun.
+                                Arahkan QR tiket ke kamera — tidak perlu menekan apa pun.
                             </span>
                         </div>
                     </InfoNote>
@@ -634,42 +1032,36 @@ export default function TicketScanner({
                     </InfoNote>
                 ) : null}
 
-                {state === "unsupported" ? (
+                {failure ? (
+                    <ErrorBlock
+                        title={failure.title}
+                        message={<p className="text-sm">{failure.message}</p>}
+                        action={
+                            canRetry ? (
+                                <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={startScanner}
+                                >
+                                    Coba Lagi
+                                </Button>
+                            ) : null
+                        }
+                    />
+                ) : null}
+
+                {detectWarning ? (
                     <InfoNote tone="warn">
                         <div className="flex flex-col gap-1">
                             <span className="text-sm font-semibold">
-                                Kamera QR tidak didukung browser ini.
+                                {detectWarning}
                             </span>
                             <span className="text-xs">
-                                Gunakan kolom kode di bawah, atau pemindai QR mode
-                                keyboard-wedge, untuk check-in manual.
+                                Pemindai tetap aktif. Bila berlanjut, gunakan kolom kode
+                                manual di bawah.
                             </span>
                         </div>
                     </InfoNote>
-                ) : null}
-
-                {state === "denied" ? (
-                    <ErrorBlock
-                        title="Izin kamera ditolak"
-                        message={
-                            <p className="text-sm">
-                                Aktifkan akses kamera untuk browser ini, atau gunakan
-                                kolom kode di bawah untuk check-in manual.
-                            </p>
-                        }
-                    />
-                ) : null}
-
-                {state === "error" ? (
-                    <ErrorBlock
-                        title="Kamera tidak bisa diakses"
-                        message={
-                            <p className="text-sm">
-                                Cobalah lagi, atau gunakan kolom kode di bawah untuk
-                                check-in manual.
-                            </p>
-                        }
-                    />
                 ) : null}
 
                 <div className="flex flex-wrap items-center gap-3">
@@ -689,7 +1081,11 @@ export default function TicketScanner({
                             onClick={startScanner}
                             disabled={isStarting}
                         >
-                            {isStarting ? "Menyalakan…" : "Mulai Pemindai"}
+                            {isStarting
+                                ? "Menyalakan…"
+                                : canRetry
+                                  ? "Coba Lagi"
+                                  : "Mulai Pemindai"}
                         </Button>
                     )}
 
@@ -833,6 +1229,21 @@ export default function TicketScanner({
                     </Button>
                 </div>
             </form>
+
+            {/* ── TECHNICAL DETAILS — safe diagnostics, never the payload ────── */}
+            <details className="rounded-xl border border-ink-200 px-4 py-3">
+                <summary className="cursor-pointer text-sm font-semibold">
+                    Detail teknis
+                </summary>
+                <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-xs">
+                    {diagnostics.map(([label, value]) => (
+                        <div key={label} className="flex flex-col">
+                            <dt className="text-muted-foreground">{label}</dt>
+                            <dd>{value}</dd>
+                        </div>
+                    ))}
+                </dl>
+            </details>
 
             {canReadLog ? (
                 <div className="flex flex-col gap-2">
