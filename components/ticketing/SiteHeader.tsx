@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 
 import Brand from "./Brand";
 import SearchBar from "./SearchBar";
+import SiteSignOut from "./SiteSignOut";
 
 const NAV = [
     { href: "/events", label: "Event" },
@@ -56,12 +57,16 @@ export default async function SiteHeader() {
 
                 <div className="ml-auto flex items-center gap-2 md:ml-0">
                     {signedIn ? (
-                        <Link
-                            href="/ticketing/tickets"
-                            className="hidden rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-800 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
-                        >
-                            Tiket saya
-                        </Link>
+                        <>
+                            <Link
+                                href="/ticketing/tickets"
+                                className="hidden rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-800 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
+                            >
+                                Tiket saya
+                            </Link>
+
+                            <SiteSignOut />
+                        </>
                     ) : (
                         <Link
                             href="/login"
@@ -136,6 +141,12 @@ function MobileMenu({ signedIn }: { signedIn: boolean }) {
                             </Link>
                         </li>
                     ))}
+
+                    {signedIn ? (
+                        <li>
+                            <SiteSignOut variant="menu" />
+                        </li>
+                    ) : null}
                 </ul>
             </div>
         </details>
