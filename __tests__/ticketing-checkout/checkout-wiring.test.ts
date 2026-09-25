@@ -15,6 +15,8 @@
 import fs from "fs";
 import path from "path";
 
+import { checkoutRequestSchema } from "@/lib/ticketing/checkout-validation";
+
 const ROOT = path.resolve(__dirname, "../..");
 
 function read(file: string): string {
@@ -454,5 +456,56 @@ describe("every Phase 6 route is authenticated and hardened", () => {
 
         // …and the classification test itself still passes over the new files, which is
         // asserted in __tests__/authz/route-classification.test.ts.
+    });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Frontend ⇄ backend checkout contract (Phase 22B)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PHASE 22A found that this contract had no test: the schema suite asserted omitted keys and the
+ * form's body was never run through the schema, so the two could disagree silently. They did —
+ * the form sends an explicit `null` for "no PIC token" (`shareToken?.trim() || null`) while the
+ * schema declared `.optional()` (undefined only), and every non-PIC checkout was refused with
+ * HTTP 400 "Data yang dikirim tidak valid."
+ *
+ * These guards link the two files that must agree, so a change to either one alone fails here:
+ * the first pins the form's wire normaliser, the second runs the exact body it builds through the
+ * route schema.
+ */
+describe("the purchase form's wire body is accepted by the checkout schema", () => {
+    const FORM = "components/events/TicketPurchaseForm.tsx";
+
+    test("the form still normalises an absent ?pic= token to an explicit null", () => {
+        // Not an incidental detail: `|| null` is what makes the key PRESENT with a null value.
+        // If this expression changes, the compatibility assertion below must be re-derived from
+        // the new representation rather than left proving a body the browser no longer sends.
+        expect(code(read(FORM))).toMatch(
+            /shareToken:\s*shareToken\?\.trim\(\)\s*\|\|\s*null/
+        );
+    });
+
+    test("the exact non-PIC body the form builds parses against the route schema", () => {
+        // Every key present, with `shareToken` normalised exactly as the form does it (the prop
+        // is `undefined` on `/e/{slug}` with no `?pic=`). This is the body that produced the
+        // Phase 22A HTTP 400. Read from a search-params object rather than assigned `undefined`,
+        // so the declared type stays `string | undefined` instead of collapsing to `never`.
+        const searchParams: { pic?: string } = {};
+        const picFromUrl: string | undefined = searchParams.pic;
+
+        const body = {
+            eventId: "cmabc123",
+            items: [{ ticketTypeId: "cmtt123", quantity: 1 }],
+            buyerName: "Rizky",
+            buyerEmail: "rizky@example.test",
+            buyerPhone: "08123456789",
+            shareToken: picFromUrl?.trim() || null,
+        };
+
+        expect(body.shareToken).toBeNull();
+
+        // `parse` throws on failure, so a regression surfaces as the Zod issue itself.
+        expect(checkoutRequestSchema.parse(body).shareToken).toBeNull();
     });
 });

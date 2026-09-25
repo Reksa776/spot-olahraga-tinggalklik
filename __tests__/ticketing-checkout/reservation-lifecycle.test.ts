@@ -503,8 +503,80 @@ describe("checkout request schema (design §25.5)", () => {
         ).toBe(false);
     });
 
-    test("couponCode and shareToken remain optional", () => {
+    test("couponCode remains optional and is bounded when supplied", () => {
+        // Omitted is fine (it is not in `valid`)…
         expect(checkoutRequestSchema.parse(valid)).toBeDefined();
+        // …a real code is accepted at the boundary (the service refuses it as post-MVP)…
+        expect(
+            checkoutRequestSchema.parse({ ...valid, couponCode: "SAVE10" }).couponCode
+        ).toBe("SAVE10");
+        // …and a blank code is not a code.
+        expect(
+            checkoutRequestSchema.safeParse({ ...valid, couponCode: "" }).success
+        ).toBe(false);
+    });
+
+    /*
+     * PHASE 22B — `shareToken` has THREE valid wire representations, not two.
+     *
+     * The form normalises an absent `?pic=` token with `shareToken: shareToken?.trim() || null`,
+     * so a normal non-PIC checkout sends an explicit `null` rather than omitting the key.
+     * `.optional()` alone accepts only `undefined`, which is how every non-PIC purchase came
+     * back HTTP 400 "Data yang dikirim tidak valid." — see
+     * PHASE_22A_TICKET_CHECKOUT_400_AUDIT.md.
+     */
+    test("shareToken accepts omitted, null and a real token — and still rejects a blank one", () => {
+        // A — omitted entirely (a client that simply does not send the key).
+        expect(checkoutRequestSchema.safeParse(valid).success).toBe(true);
+
+        // B — explicit null: exactly what TicketPurchaseForm sends when there is no `?pic=`.
+        const withNull = checkoutRequestSchema.parse({
+            ...valid,
+            shareToken: null,
+        });
+
+        expect(withNull.shareToken).toBeNull();
+
+        // C — a real token string survives untouched for the PIC resolver.
+        const withToken = checkoutRequestSchema.parse({
+            ...valid,
+            shareToken: "tok_abc.def.ghi",
+        });
+
+        expect(withToken.shareToken).toBe("tok_abc.def.ghi");
+
+        // Still bounded: a blank `?pic=` is not a referral, so it is refused as before.
+        expect(
+            checkoutRequestSchema.safeParse({ ...valid, shareToken: "" }).success
+        ).toBe(false);
+    });
+
+    test("the exact no-PIC body the browser builds parses (Phase 22A/22B regression)", () => {
+        // Built the way the component builds it, key for key. `/e/futsal-rizky` carries no
+        // `?pic=`, so the prop is `undefined` and the normaliser yields an explicit `null`.
+        // Read from a search-params object rather than assigned `undefined`, so the declared
+        // type stays `string | undefined` instead of collapsing to `never`.
+        const searchParams: { pic?: string } = {};
+        const picFromUrl: string | undefined = searchParams.pic;
+
+        const body = {
+            eventId: "cmabcdefghijklmnopqrstu",
+            items: [{ ticketTypeId: "cmticket123456789012345", quantity: 1 }],
+            buyerName: "Rizky",
+            buyerEmail: "rizky@example.test",
+            buyerPhone: "08123456789",
+            shareToken: picFromUrl?.trim() || null,
+        };
+
+        // The representation that used to be rejected — asserted, not assumed.
+        expect(body.shareToken).toBeNull();
+        expect(Object.keys(body)).toContain("shareToken");
+
+        const parsed = checkoutRequestSchema.parse(body);
+
+        expect(parsed.shareToken).toBeNull();
+        expect(parsed.eventId).toBe(body.eventId);
+        expect(parsed.items).toEqual(body.items);
     });
 });
 

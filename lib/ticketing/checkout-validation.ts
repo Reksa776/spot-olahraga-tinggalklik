@@ -78,8 +78,24 @@ export const checkoutRequestSchema = z.object({
      * would be worse than not offering the feature.
      */
     couponCode: z.string().trim().min(1).max(64).optional(),
-    /** PIC share token; a hint only, resolved server-side (design §25.5). */
-    shareToken: z.string().trim().min(1).max(128).optional(),
+    /**
+     * PIC share token; a hint only, resolved server-side (design §25.5).
+     *
+     * PHASE 22B — THREE WIRE REPRESENTATIONS, and why `null` is one of them.
+     *
+     * `components/events/TicketPurchaseForm.tsx` normalises an absent `?pic=` token with
+     * `shareToken: shareToken?.trim() || null`, so a normal non-PIC checkout does NOT omit the
+     * key — it sends an explicit `null`. `.optional()` accepts only `undefined`, so before this
+     * change every non-PIC purchase was refused at this boundary with HTTP 400 "Data yang
+     * dikirim tidak valid." (audit: `PHASE_22A_TICKET_CHECKOUT_400_AUDIT.md`).
+     *
+     * `.nullable()` is not a weakening — it names the second spelling of "no token" that the
+     * client, the request hash (`lib/ticketing/idempotency.ts`, `shareToken?: string | null`) and
+     * the resolver (`lib/pic/attribution.ts`, `shareToken: string | null | undefined`) already
+     * agree on. The bounds are unchanged: a blank string is still rejected, because a blank
+     * `?pic=` is not a referral.
+     */
+    shareToken: z.string().trim().min(1).max(128).optional().nullable(),
 });
 
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>;
