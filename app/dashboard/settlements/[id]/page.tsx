@@ -15,6 +15,7 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/dashboard/ui/table";
+import { notFound } from "next/navigation";
 import { getAuthzScope } from "@/lib/authz";
 import { getSettlement } from "@/lib/ticketing/settlement/service";
 import { formatIdr } from "@/lib/ticketing/ui/format";
@@ -61,7 +62,7 @@ const STATUS_TONE: Record<string, Tone> = {
 export default async function DashboardSettlementDetailPage({
     params,
 }: {
-    params: Promise<{ settlementId: string }>;
+    params: Promise<{ id: string }>;
 }) {
     const scope = await getAuthzScope();
 
@@ -69,9 +70,16 @@ export default async function DashboardSettlementDetailPage({
         return null;
     }
 
-    const { settlementId } = await params;
+    // The folder segment is `[id]`, so Next supplies `{ id }`. Read it defensively:
+    // an empty key must 404, never fall through to `getSettlement(undefined, scope)`
+    // (which hands Prisma `where: { id: undefined }` and throws a validation error).
+    const { id } = await params;
 
-    const settlement = await getSettlement(settlementId, scope);
+    if (!id) {
+        notFound();
+    }
+
+    const settlement = await getSettlement(id, scope);
 
     return (
         <div className="flex flex-col gap-6">
