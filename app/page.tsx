@@ -89,7 +89,7 @@ export default async function DiscoveryHomePage() {
 
             <div className="mx-auto max-w-7xl space-y-14 px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
                 {totalEvents === 0 ? (
-                    <section className="rounded-3xl border border-dashed border-ink-200 bg-ink-50/60 px-6 py-16 text-center">
+                    <section className="rounded-xl border border-ink-100 bg-white px-6 py-16 text-center">
                         <h2 className="text-xl font-extrabold text-ink-900">
                             Belum ada event yang tayang
                         </h2>
@@ -183,11 +183,11 @@ function Hero({
         <section className="relative overflow-hidden bg-ink-950 text-white hero-wash">
             <div className="mx-auto max-w-7xl px-4 pt-14 pb-16 sm:px-6 lg:px-8 lg:pt-20 lg:pb-24">
                 <div className="max-w-3xl">
-                    <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3.5 py-1.5 text-xs font-bold tracking-wide text-brand-200 uppercase">
+                    <p className="text-sm font-semibold text-brand-300">
                         Event &amp; olahraga
-                    </span>
+                    </p>
 
-                    <h1 className="mt-6 text-3xl leading-[1.1] font-black tracking-tight sm:text-4xl lg:text-5xl">
+                    <h1 className="mt-3 text-3xl leading-[1.1] font-black tracking-tight sm:text-4xl lg:text-5xl">
                         Temukan Event &amp; Pertandingan Favoritmu
                     </h1>
 
@@ -204,9 +204,9 @@ function Hero({
                     </div>
 
                     {shortcuts.length > 0 ? (
-                        <div className="mt-6 flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-semibold text-ink-300">
-                                Populer:
+                        <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2">
+                            <span className="text-sm font-semibold text-ink-300">
+                                Cabang:
                             </span>
                             {shortcuts.map((sport) => (
                                 <Link
@@ -214,7 +214,7 @@ function Hero({
                                     href={`/events?sport=${encodeURIComponent(
                                         sport.slug
                                     )}`}
-                                    className="rounded-full border border-white/15 bg-white/5 px-3.5 py-1.5 text-xs font-bold text-white transition hover:border-white/40 hover:bg-white/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-400"
+                                    className="text-sm font-semibold text-white underline decoration-white/40 underline-offset-4 transition hover:decoration-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-400"
                                 >
                                     {sport.name}
                                 </Link>
@@ -222,7 +222,7 @@ function Hero({
                         </div>
                     ) : null}
 
-                    <p className="mt-8 text-xs font-semibold text-ink-300">
+                    <p className="mt-8 text-sm font-medium text-ink-300">
                         {totalEvents > 0
                             ? `${totalEvents} event akan datang`
                             : "Event baru akan segera tayang"}

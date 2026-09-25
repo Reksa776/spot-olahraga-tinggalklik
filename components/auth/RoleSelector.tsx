@@ -76,7 +76,7 @@ export function RoleSelector({
                 role="radiogroup"
                 aria-label="Masuk sebagai"
                 onKeyDown={handleKeyDown}
-                className="grid grid-cols-4 gap-1.5 rounded-2xl bg-ink-100/70 p-1.5"
+                className="grid grid-cols-2 gap-1.5 rounded-2xl bg-ink-100/70 p-1.5 sm:grid-cols-4"
             >
                 {LOGIN_ROLE_INTENTS.map((intent) => {
                     const active = intent === value;

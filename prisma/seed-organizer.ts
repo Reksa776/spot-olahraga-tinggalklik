@@ -22,6 +22,14 @@
  *      `OrganizerMember` row for that organizer — the "scope" half of the
  *      intersection rule. Capability still comes from the existing maps; no
  *      permission is granted here that the maps do not already define.
+ *   3. (PHASE 38) Ensure every `platformRole = MANAGER` account has an ACTIVE
+ *      `MANAGER` `OrganizerMember` row for the same organizer — the exact
+ *      operational scope `lib/admin/users.ts` provisions when a MANAGER account
+ *      is created, backfilled here for accounts that predate the phase. Both
+ *      code paths use the same membership table and the same role map, so a
+ *      MANAGER logs in straight to the operational dashboard and application
+ *      control stays ADMIN-only (those are PLATFORM-scope permissions the
+ *      MANAGER map does not hold).
  *
  * It does NOT touch `User.role` (legacy retail, dormant), does NOT create
  * events/orders/tickets, and does NOT grant financial permissions — those stay
@@ -135,6 +143,57 @@ async function main() {
     console.log(`Admin(s)  : ${admins.length}`);
     console.log(`Memberships created  : ${membershipsCreated}`);
     console.log(`Memberships existing : ${membershipsExisting}`);
+
+    /*
+     * PHASE 38 — MANAGERs become operational through the SAME membership table the
+     * user-management service writes on MANAGER creation. Existing MANAGER accounts
+     * (created before the phase) are backfilled here, idempotently and
+     * non-destructively: an existing row is never modified, so a deliberate
+     * suspension/revocation by an operator survives a re-run.
+     */
+    const managerUsers = await prisma.user.findMany({
+        where: { platformRole: "MANAGER" },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true, email: true },
+    });
+
+    let managerMembershipsCreated = 0;
+    let managerMembershipsExisting = 0;
+
+    for (const manager of managerUsers) {
+        const existing = await prisma.organizerMember.findUnique({
+            where: {
+                organizerId_userId: {
+                    organizerId: organizer.id,
+                    userId: manager.id,
+                },
+            },
+            select: { id: true },
+        });
+
+        if (existing) {
+            managerMembershipsExisting++;
+            continue;
+        }
+
+        await prisma.organizerMember.create({
+            data: {
+                organizerId: organizer.id,
+                userId: manager.id,
+                role: "MANAGER",
+                status: "ACTIVE",
+                invitedByUserId: owner.id,
+                invitedAt: new Date(),
+                acceptedAt: new Date(),
+            },
+        });
+
+        managerMembershipsCreated++;
+    }
+
+    console.log(`Manager(s)               : ${managerUsers.length}`);
+    console.log(`Manager memberships created  : ${managerMembershipsCreated}`);
+    console.log(`Manager memberships existing : ${managerMembershipsExisting}`);
     console.log("");
     console.log("======================================");
     console.log("SEED ORGANIZER + ADMIN MEMBERSHIP SELESAI");

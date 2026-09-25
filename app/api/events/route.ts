@@ -3,8 +3,10 @@ import type { NextRequest } from "next/server";
 import { parseOrThrow } from "@/lib/api/validation";
 import { handleApi, paginated } from "@/lib/api/response";
 import { getAppOrigin } from "@/lib/app-origin";
+import { getMaintenanceState } from "@/lib/app-settings";
 import { listPublicEvents } from "@/lib/events/catalog";
 import { catalogQuerySchema } from "@/lib/events/validation";
+import { assertNotInMaintenance } from "@/lib/maintenance";
 
 /**
  * GET /api/events — public catalog (design §25.2)
@@ -16,12 +18,18 @@ import { catalogQuerySchema } from "@/lib/events/validation";
  *
  * Classified as public in `proxy.ts` PUBLIC_API_PREFIXES; the route-classification
  * test fails if that ever stops being true.
+ *
+ * PHASE 32: while application maintenance mode is ON this answers 503 instead of the
+ * catalogue. The maintenance state has to hold at the API boundary as well as in the page
+ * render, or "the site is closed" would only be true of the HTML.
  */
 
 export const runtime = "nodejs";
 
 export async function GET(request: NextRequest) {
     return handleApi(async () => {
+        assertNotInMaintenance(await getMaintenanceState());
+
         const query = parseOrThrow(
             catalogQuerySchema,
             Object.fromEntries(request.nextUrl.searchParams.entries())

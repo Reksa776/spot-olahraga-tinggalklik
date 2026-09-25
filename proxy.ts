@@ -1,3 +1,5 @@
+import { NextResponse } from "next/server";
+
 import { auth } from "@/auth";
 
 /**
@@ -60,6 +62,21 @@ export const PUBLIC_API_PREFIXES = [
     "/api/events",
     "/api/sports",
     "/api/uploads/events/",
+    // ── The application logo (PHASE 32) ────────────────────────────────────────
+    // Public for the same reason as the event imagery above, and with one extra one: the
+    // MAINTENANCE page renders this asset. A session-gated logo route would leave the
+    // product unbranded precisely while it is closed, and would break the landing page
+    // for every anonymous visitor. The upload/serve pipeline already guarantees the
+    // bytes are a signature-validated, metadata-stripped image stored under a
+    // server-generated name, and the serve route refuses any path that is not a bare
+    // basename (see the branding uploads route).
+    //
+    // NOTE FOR FUTURE EDITORS: no square brackets anywhere inside this array literal,
+    // INCLUDING in prose. `__tests__/authz/route-classification.test.ts` extracts the
+    // entries with a regex that stops at the first closing bracket, so a stray one — a
+    // dynamic-segment route written out in a comment, say — silently truncates the list
+    // and makes every later route look unclassified.
+    "/api/uploads/branding/",
     // ── The payment provider's callback ───────────────────────────────────────
     // Public BY CONTRACT, not by omission. A payment provider cannot hold a session,
     // so this one path must be reachable unauthenticated; its trust boundary is the
@@ -115,6 +132,11 @@ export const PROTECTED_API_PREFIXES = [
     // `requireAuth()` plus the ownership predicate and the own-scope permissions in the
     // service (`lib/ticketing/orders.ts`).
     "/api/ticketing/",
+    // ── PIC financial reporting and exports (Phase 31) ────────────────────────
+    // Read-only report and CSV endpoints. They require a session and the real control is
+    // the service guard: own-scope for a PIC reading their own ledger, or a tenant/platform
+    // permission for an operator. This entry is defence in depth.
+    "/api/reports/",
 ];
 
 /**
@@ -163,6 +185,31 @@ export default auth((req) => {
     const isLoggedIn = !!req.auth;
     const pathname = req.nextUrl.pathname;
 
+    /*
+     * ── THE REQUEST PATH, FORWARDED TO THE SERVER RENDER (PHASE 32) ──────────────
+     *
+     * Maintenance mode has to be decided on the server, with the request's own path in
+     * hand, and a Next.js Server Component cannot read the pathname — `headers()` exposes
+     * headers, not the routed URL. This proxy is the only place that knows the path AND
+     * runs ahead of the render, so it stamps it onto the request headers as `x-pathname`.
+     *
+     * The header is a ROUTING HINT, never an authority: `app/layout.tsx` uses it only to
+     * look up a pure decision function, and the actor's role comes from the server-side
+     * session. A forged `x-pathname` can at most cause a redirect to the maintenance page
+     * (refusing the requester's own request) — it cannot grant access to anything, because
+     * no check anywhere treats it as proof of identity or permission.
+     *
+     * The proxy itself still does NOT enforce maintenance: it runs in the Edge runtime,
+     * where Prisma is unavailable, so it cannot read the flag. Deciding there would mean
+     * deciding without the database — which is why the decision lives in the server render
+     * and in the purchase endpoints (D-49's auth-only rule is preserved).
+     */
+    const requestHeaders = new Headers(req.headers);
+    requestHeaders.set("x-pathname", pathname);
+
+    const passThrough = () =>
+        NextResponse.next({ request: { headers: requestHeaders } });
+
     // ==========================================
     // API ROUTE PROTECTION
     // ==========================================
@@ -173,7 +220,7 @@ export default auth((req) => {
     if (pathname.startsWith("/api/")) {
         // Public API routes: skip auth check
         if (isPublicApiRoute(pathname)) {
-            return;
+            return passThrough();
         }
 
         // Protected API routes: require authentication
@@ -201,11 +248,11 @@ export default auth((req) => {
                 );
             }
             // Cookie present — route handler does full auth() validation
-            return;
+            return passThrough();
         }
 
         // Unknown API routes: pass through
-        return;
+        return passThrough();
     }
 
     // ==========================================
@@ -242,6 +289,23 @@ export default auth((req) => {
         loginUrl.searchParams.set("callbackUrl", pathname);
         return Response.redirect(loginUrl);
     }
+
+    /*
+     * ── THE FALL-THROUGH MUST RETURN THE PASS-THROUGH RESPONSE ───────────────────
+     *
+     * Every branch above either redirects, refuses, or returns `passThrough()`. This final
+     * `return` covers the one remaining case: a PUBLIC page request (`/`, `/events`, a legal
+     * page) from anyone. Without it the callback returns `undefined`, next-auth substitutes
+     * its own plain `NextResponse.next()`, and the `x-pathname` header override is discarded
+     * — which is exactly the state this line was added to fix.
+     *
+     * Measured, not assumed: with a maintenance row whose mode was ON, `/`, `/events` and
+     * `/faq` all answered 200 (the root layout saw no path and therefore blocked nothing)
+     * while `/maintenance` correctly rendered the notice. The redirect only works when this
+     * header actually arrives, so the header is part of the enforcement contract rather than
+     * a nicety.
+     */
+    return passThrough();
 });
 
 export const config = {
@@ -253,5 +317,25 @@ export const config = {
         // next.config.ts and no longer render anything, so they need no session gate.
         "/dashboard/:path*",
         "/ticketing/:path*",
+
+        /*
+         * ── PHASE 32: THE PUBLIC PAGES, SO MAINTENANCE CAN CLOSE THEM ──────────
+         *
+         * The three entries above cover everywhere a SESSION gate is needed. This one
+         * additionally brings the PUBLIC pages (`/`, `/events`, `/e/[slug]`, `/login`, the
+         * legal pages) through the proxy, because the proxy is what forwards the request
+         * path to the server render (`x-pathname`) and maintenance mode has to be able to
+         * refuse exactly those pages. Without it the maintenance decision would only ever
+         * see authenticated routes, and the landing page — the first thing the brief says
+         * must be blocked — would stay open.
+         *
+         * Static assets and anything with a file extension are excluded, matching the
+         * documented Next.js pattern: a middleware run per image chunk would be pure
+         * overhead, and none of those paths is a page a maintenance page can replace.
+         * Adding coverage here does not loosen anything: the protected/public API lists and
+         * the page list still decide, and no path becomes reachable that was not reachable
+         * before (this proxy only redirects or returns 401 — it never authorizes).
+         */
+        "/((?!_next/static|_next/image|_next/data|favicon.ico|.*\\..*).*)",
     ],
 };

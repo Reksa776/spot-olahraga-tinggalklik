@@ -11,11 +11,21 @@ import { computeDashboardCapabilities } from "@/lib/dashboard/scope";
 /**
  * Settings hub.
  *
- * Two authority classes, deliberately separated and never merged: platform master data
- * (`sport.manage`, `venue.manage.global`) is canonical data shared by every organizer, and
- * organizer venue management (`venue.manage`) is private to one tenant. The page lists only
- * the sections the caller can actually open, and each destination re-checks its own
- * permission — so an organizer never reaches platform configuration even by URL.
+ * Three authority classes, deliberately separated and never merged:
+ *
+ *   1. APPLICATION CONTROL (`application.settings`, `branding.manage`, `maintenance.manage`)
+ *      — PHASE 32. The application's own configuration. ADMIN only; a MANAGER holds none of
+ *      the three, so this section does not render for them and every destination below
+ *      refuses them independently.
+ *   2. Platform master data (`sport.manage`, `venue.manage.global`) — canonical data shared
+ *      by every organizer.
+ *   3. Organizer venue management (`venue.manage`) — private to one tenant. This one is
+ *      OPERATIONAL, not system control, which is why a MANAGER legitimately keeps it: a
+ *      fully operational role manages its own tenant's venues.
+ *
+ * The page lists only the sections the caller can actually open, and each destination
+ * re-checks its own permission — so nobody reaches platform or application configuration even
+ * by URL, and a MANAGER who opens this hub sees operational settings only.
  */
 
 export const dynamic = "force-dynamic";
@@ -32,13 +42,81 @@ export default async function DashboardSettingsPage() {
     const hasPlatformSettings =
         capabilities.canManageSports || capabilities.canManageGlobalVenues;
 
+    const hasSystemControl =
+        capabilities.canManageApplicationSettings ||
+        capabilities.canManageBranding ||
+        capabilities.canManageMaintenance;
+
     return (
         <div className="flex flex-col gap-6">
             <PageHeader
                 eyebrow="Dashboard"
                 title="Pengaturan"
-                description="Konfigurasi platform (data kanonik) dan konfigurasi organizer (data milik satu penyelenggara) dipisahkan dan diatur oleh izin yang berbeda."
+                description="Pengaturan aplikasi (khusus ADMIN), data kanonik platform, dan konfigurasi organizer dipisahkan dan diatur oleh izin yang berbeda."
             />
+
+            {/* ── SISTEM (PHASE 32 — ADMIN ONLY) ─────────────────────────────── */}
+            {hasSystemControl ? (
+                <SectionCard
+                    title="Pengaturan aplikasi"
+                    description="Kontrol pemilik sistem: ketersediaan dan identitas aplikasi"
+                >
+                    <div className="flex flex-col">
+                        {capabilities.canManageUsers ? (
+                            <DataRow
+                                divider={false}
+                                title={
+                                    <TextLink href="/dashboard/users">Pengguna</TextLink>
+                                }
+                                meta="Kelola akun MANAGER dan PIC platform"
+                                trailing="Kelola"
+                            />
+                        ) : null}
+
+                        {capabilities.canManageApplicationSettings ? (
+                            <DataRow
+                                divider={capabilities.canManageUsers}
+                                title={
+                                    <TextLink href="/dashboard/settings/application">
+                                        Aplikasi
+                                    </TextLink>
+                                }
+                                meta="Status aplikasi: ketersediaan dan logo yang sedang aktif"
+                                trailing="Lihat"
+                            />
+                        ) : null}
+
+                        {capabilities.canManageBranding ? (
+                            <DataRow
+                                divider={capabilities.canManageApplicationSettings}
+                                title={
+                                    <TextLink href="/dashboard/settings/branding">
+                                        Branding
+                                    </TextLink>
+                                }
+                                meta="Logo aplikasi untuk landing page dan dashboard"
+                                trailing="Kelola"
+                            />
+                        ) : null}
+
+                        {capabilities.canManageMaintenance ? (
+                            <DataRow
+                                divider={
+                                    capabilities.canManageApplicationSettings ||
+                                    capabilities.canManageBranding
+                                }
+                                title={
+                                    <TextLink href="/dashboard/settings/maintenance">
+                                        Maintenance
+                                    </TextLink>
+                                }
+                                meta="Tutup halaman publik dan alur pembelian"
+                                trailing="Kelola"
+                            />
+                        ) : null}
+                    </div>
+                </SectionCard>
+            ) : null}
 
             {hasPlatformSettings ? (
                 <SectionCard
@@ -93,10 +171,12 @@ export default async function DashboardSettingsPage() {
                 </SectionCard>
             ) : null}
 
-            {!hasPlatformSettings && !capabilities.canManageVenues ? (
+            {!hasPlatformSettings &&
+            !hasSystemControl &&
+            !capabilities.canManageVenues ? (
                 <EmptyBlock
                     title="Tidak ada pengaturan yang tersedia"
-                    description="Peran kamu belum memiliki izin konfigurasi platform maupun organizer."
+                    description="Peran kamu belum memiliki izin konfigurasi aplikasi, platform, maupun organizer."
                 />
             ) : null}
         </div>

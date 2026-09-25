@@ -60,6 +60,7 @@ export type PicRow = {
     createdAt: string;
     account: { name: string | null; email: string | null; phone: string | null };
     counts: { assignments: number; attributions: number; orders: number };
+    /** Outstanding ledger balance: Σ CREDIT − Σ DEBIT over ALL rows (negative = owes). */
     ledgerTotal: string;
 };
 
@@ -201,7 +202,7 @@ export default function PicManager({ pics }: { pics: PicRow[] }) {
                         { header: "Tarif default", align: "right" },
                         { header: "Event", align: "right" },
                         { header: "Order", align: "right" },
-                        { header: "Fee ledger", align: "right" },
+                        { header: "Saldo fee (net)", align: "right" },
                         { header: "Aksi", align: "right" },
                     ]}
                     rows={pics.map((pic) => ({

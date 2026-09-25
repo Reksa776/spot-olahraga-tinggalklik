@@ -363,13 +363,31 @@ describe("payment, issuance and messaging stay out of Phase 6", () => {
         }
     });
 
-    test("no PIC attribution or fee-ledger writes", () => {
-        for (const file of phase6Files) {
-            const source = code(read(file));
+    test("the checkout writes PIC attribution only through the shared resolver", () => {
+        // PIC VERTICAL SLICE: Phase 6 pinned "no PIC writes" in the checkout path. The
+        // slice moves ONE writer into Phase 6 — the `PICAttribution` row (its unique
+        // orderId is the "duplicate attribution impossible" guarantee, design §14.6) —
+        // and it may ONLY be written from checkout.ts via `resolveReferralAtCheckout`
+        // from `lib/pic/attribution.ts`. Everything else stays banned:
+        //   • the FEE LEDGER has no writer in any checkout-path file — EARNED rows are
+        //     settlement's job (`postEarnedPicFees` in the SETTLED branch);
+        //   • no other Phase 6 file touches the attribution row at all.
+        const checkout = code(read(CHECKOUT));
 
-            expect(source).not.toMatch(/picAttribution\.create/);
+        expect(checkout).toMatch(/resolveReferralAtCheckout/);
+        // The attribution write is allowed here and only here.
+        expect(checkout).toMatch(/pICAttribution\.create/);
+
+        for (const file of phase6Files) {
+            const source = file === CHECKOUT ? checkout : code(read(file));
+
+            // The fee ledger never appears in the checkout path.
             expect(source).not.toMatch(/pICFeeLedger\.create/);
             expect(source).not.toMatch(/picFeeLedger\.create/);
+
+            if (file !== CHECKOUT) {
+                expect(source).not.toMatch(/pICAttribution\.create/);
+            }
         }
     });
 

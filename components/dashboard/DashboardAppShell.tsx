@@ -2,17 +2,22 @@
 
 import type { ReactNode } from "react";
 import {
+    Banknote,
     BarChart3,
     CalendarDays,
     CreditCard,
+    Image as ImageIcon,
     LayoutDashboard,
     MapPin,
     QrCode,
     Receipt,
     RotateCcw,
     Settings,
+    ShieldCheck,
+    UserCog,
     Users,
     UsersRound,
+    Wrench,
 } from "lucide-react";
 
 import type { DashboardCapabilities } from "@/lib/dashboard/scope";
@@ -74,32 +79,76 @@ const SECTION_ORDER = [
     "Orang",
     "Laporan",
     "Venue & Pengaturan",
+    // PHASE 32 — APPLICATION CONTROL. A separate section rather than more rows under
+    // "Venue & Pengaturan", because these are the ONE class of destination that separates
+    // a system owner from a fully operational operator. A MANAGER's sidebar simply has no
+    // such section, which makes the separation legible to the person holding the session as
+    // well as enforced by the API.
+    "Sistem",
 ] as const;
 
-export default function DashboardAppShell({
-    capabilities,
-    contextLabel,
-    organizerLabel,
-    userName,
-    userEmail,
-    children,
-}: {
-    capabilities: DashboardCapabilities;
-    /** e.g. "Admin platform" or "Penyelenggara" — the caller's standing, from the server. */
-    contextLabel: string;
-    organizerLabel?: string;
-    userName?: string | null;
-    userEmail?: string | null;
-    children: ReactNode;
-}) {
+/**
+ * Builds the sidebar from a capability set. Extracted (pure) so the menu can be pinned in
+ * `__tests__/pic-self-service/menu.test.ts`: the PIC rows appear exactly when the flag is true,
+ * the generic tenant row appears exactly when it is false, and a role string is never consulted —
+ * the only input is the same `DashboardCapabilities` object the layout computed.
+ */
+export function buildDashboardNav(
+    capabilities: DashboardCapabilities
+): ShellNavGroup[] {
     const items: NavItem[] = [
         {
-            visible: true,
+            // A pure PIC lives on their own-scope surface; the generic tenant dashboard row
+            // belongs to operators (and to a PIC who also holds tenant/platform capability,
+            // for whom the flag below stays false). `hasActivePicProfile` is only ever true
+            // when the actor was admitted by their ACTIVE PIC profile alone.
+            visible: !capabilities.hasActivePicProfile,
             section: "Ringkasan",
             entry: {
                 label: "Dashboard",
                 href: "/dashboard",
                 icon: <LayoutDashboard size={18} />,
+            },
+        },
+        // ── PIC SELF-SERVICE (own-scope, read-only) ───────────────────────────────
+        // Each row is an anchor into the single self-service section on `/dashboard/pic`
+        // (the same destination an ADMIN/ORGANIZER uses for PIC management — the page picks
+        // the body by authority). The menu is a rendering of the capability flag, never a
+        // role string, exactly like every other row in this file.
+        {
+            visible: capabilities.hasActivePicProfile,
+            section: "Ringkasan",
+            entry: {
+                label: "Ringkasan PIC",
+                href: "/dashboard/pic",
+                icon: <LayoutDashboard size={18} />,
+            },
+        },
+        {
+            visible: capabilities.hasActivePicProfile,
+            section: "Ringkasan",
+            entry: {
+                label: "Event Saya",
+                href: "/dashboard/pic#events",
+                icon: <CalendarDays size={18} />,
+            },
+        },
+        {
+            visible: capabilities.hasActivePicProfile,
+            section: "Ringkasan",
+            entry: {
+                label: "Referral",
+                href: "/dashboard/pic#referrals",
+                icon: <UsersRound size={18} />,
+            },
+        },
+        {
+            visible: capabilities.hasActivePicProfile,
+            section: "Ringkasan",
+            entry: {
+                label: "Pendapatan",
+                href: "/dashboard/pic#earnings",
+                icon: <BarChart3 size={18} />,
             },
         },
         {
@@ -157,6 +206,19 @@ export default function DashboardAppShell({
             },
         },
         {
+            // PIC payout / settlement V1 — one row for the whole lifecycle. The capability
+            // is `settlement.prepare` (the same permission the list + detail reads require);
+            // the financial FINAL steps additionally demand `settlement.approve` + proof
+            // upload, resolved against the row's OWN tenant in the API service.
+            visible: capabilities.canManageSettlements,
+            section: "Penjualan",
+            entry: {
+                label: "Pencairan PIC",
+                href: "/dashboard/settlements",
+                icon: <Banknote size={18} />,
+            },
+        },
+        {
             visible:
                 capabilities.canAssignPic || capabilities.canManagePlatformPic,
             section: "Orang",
@@ -196,16 +258,80 @@ export default function DashboardAppShell({
                 icon: <Settings size={18} />,
             },
         },
+        // ── SISTEM (PHASE 32, ADMIN ONLY) ──────────────────────────────────────────
+        // The three application-control destinations. Each is gated by ITS OWN capability
+        // from the server-computed set, which is itself derived from `decidePlatformPermission`
+        // — the same function the endpoints call. A MANAGER therefore sees none of these rows
+        // and is denied by every one of the endpoints if they navigate directly; the row and
+        // the rule are the same decision rendered twice.
+        {
+            visible: capabilities.canManageUsers,
+            section: "Sistem",
+            entry: {
+                label: "Pengguna",
+                href: "/dashboard/users",
+                icon: <UserCog size={18} />,
+            },
+        },
+        {
+            visible: capabilities.canManageApplicationSettings,
+            section: "Sistem",
+            entry: {
+                label: "Aplikasi",
+                href: "/dashboard/settings/application",
+                icon: <ShieldCheck size={18} />,
+            },
+        },
+        {
+            visible: capabilities.canManageBranding,
+            section: "Sistem",
+            entry: {
+                label: "Branding",
+                href: "/dashboard/settings/branding",
+                icon: <ImageIcon size={18} />,
+            },
+        },
+        {
+            visible: capabilities.canManageMaintenance,
+            section: "Sistem",
+            entry: {
+                label: "Maintenance",
+                href: "/dashboard/settings/maintenance",
+                icon: <Wrench size={18} />,
+            },
+        },
     ];
 
     const visibleItems = items.filter((item) => item.visible);
 
-    const nav: ShellNavGroup[] = SECTION_ORDER.map((section) => ({
+    return SECTION_ORDER.map((section) => ({
         label: section,
         items: visibleItems
             .filter((item) => item.section === section)
             .map((item) => item.entry),
     })).filter((section) => section.items.length > 0);
+}
+
+export default function DashboardAppShell({
+    capabilities,
+    contextLabel,
+    organizerLabel,
+    userName,
+    userEmail,
+    logoSrc = null,
+    children,
+}: {
+    capabilities: DashboardCapabilities;
+    /** e.g. "Admin platform" or "Penyelenggara" — the caller's standing, from the server. */
+    contextLabel: string;
+    organizerLabel?: string;
+    userName?: string | null;
+    userEmail?: string | null;
+    /** PHASE 32 — configured application logo, resolved server-side by the layout. */
+    logoSrc?: string | null;
+    children: ReactNode;
+}) {
+    const nav = buildDashboardNav(capabilities);
 
     const description = organizerLabel
         ? `${contextLabel} · ${organizerLabel}`
@@ -218,6 +344,7 @@ export default function DashboardAppShell({
             sectionDescription={description}
             userName={userName}
             userEmail={userEmail}
+            logoSrc={logoSrc}
         >
             {children}
         </DashboardShell>

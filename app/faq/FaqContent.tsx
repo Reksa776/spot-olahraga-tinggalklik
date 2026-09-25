@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { FiChevronDown } from "react-icons/fi";
 
 type FaqItem = {
     question: string;
@@ -10,49 +9,59 @@ type FaqItem = {
 
 const faqData: FaqItem[] = [
     {
-        question: "Bagaimana cara melakukan pembelian?",
+        question: "Bagaimana cara membeli tiket?",
         answer:
-            "Pilih produk yang diinginkan, pilih varian dan jumlah, lalu tambahkan ke keranjang. Setelah itu, buka keranjang, pilih alamat pengiriman, metode pembayaran, dan lakukan pembayaran. Pesanan akan diproses setelah pembayaran berhasil dikonfirmasi.",
+            "Masuk ke akun Anda, pilih event yang tersedia di laman Event, lalu pilih jenis tiket dan jumlah yang diinginkan. Lanjutkan ke pembayaran melalui halaman pesanan. Setelah pembayaran dikonfirmasi lunas, e-tiket beserta QR-nya tersedia di halaman Tiket saya.",
     },
     {
         question: "Metode pembayaran apa saja yang tersedia?",
         answer:
-            "Kami menyediakan beberapa metode pembayaran, antara lain: COD (Bayar di Tempat), Transfer Bank, E-Wallet, dan QRIS. Pilih metode yang paling nyaman untuk Anda saat checkout.",
+            "Pembayaran dapat dilakukan melalui QRIS atau Virtual Account. Metode yang tersedia untuk pesanan Anda akan ditampilkan pada halaman pembayaran pesanan tersebut.",
     },
     {
-        question: "Bagaimana cara mengetahui status pesanan saya?",
+        question: "Bagaimana cara mengetahui status pesanan dan pembayaran?",
         answer:
-            "Anda dapat melihat status pesanan melalui halaman Orders di akun Anda. Status pesanan akan diperbarui secara berkerti, mulai dari Menunggu Pembayaran, Diproses, Dikirim, hingga Selesai. Anda juga akan menerima notifikasi melalui WhatsApp terkait perubahan status pesanan.",
+            "Status pesanan (Menunggu pembayaran, Sudah dibayar, Dibatalkan, Kedaluwarsa, atau Dana dikembalikan) beserta status pembayaran (Belum dibayar, Menunggu konfirmasi, Lunas, atau Gagal) dapat dilihat di halaman detail pesanan. Ketika pembayaran sudah Lunas, e-tiket tersedia di halaman Tiket saya.",
     },
     {
-        question: "Bagaimana cara melacak pengiriman?",
+        question: "Bagaimana cara menggunakan e-tiket?",
         answer:
-            "Setelah pesanan dikirim, nomor resi dan kurir pengiriman akan tersedia di halaman detail pesanan Anda. Anda dapat melacak pengiriman langsung melalui link yang tersedia atau menggunakan layanan pelacakan dari kurir terkait.",
+            "Buka halaman Tiket saya, lalu pilih tiket yang akan digunakan. Tunjukkan QR pada halaman e-tiket kepada petugas di pintu masuk untuk di-scan. Kode tiket yang tertera juga dapat disebutkan atau diketik sebagai alternatif.",
     },
     {
-        question: "Berapa lama estimasi pengiriman?",
+        question: "Apakah saya perlu akun untuk membeli tiket?",
         answer:
-            "Estimasi pengiriman tergantung pada kurir dan layanan pengiriman yang Anda pilih, serta lokasi pengiriman. Estimasi akan ditampilkan saat Anda memilih layanan pengiriman di halaman checkout. Untuk wilayah Jawa, biasanya memakan waktu 1-3 hari kerja. Untuk luar Jawa, estimasi dapat bervariasi.",
-    },
-    {
-        question: "Bagaimana cara menggunakan voucher atau promo?",
-        answer:
-            "Masukkan kode voucher di kolom yang tersedia saat checkout. Pastikan voucher memenuhi syarat dan ketentuan yang berlaku, seperti minimal pembelian atau kategori produk tertentu. Diskon akan otomatis terpotong dari total belanja Anda.",
+            "Ya. Pembelian tiket memerlukan akun yang masuk (login). Anda dapat mendaftar terlebih dahulu menggunakan email dan kata sandi di laman Daftar.",
     },
     {
         question: "Bisakah saya membatalkan pesanan?",
         answer:
-            "Pesanan dapat dibatalkan selama status masih Menunggu Pembayaran atau belum diproses. Untuk membatalkan pesanan, silakan hubungi customer service kami melalui halaman Kontak. Pesanan yang sudah dikirim tidak dapat dibatalkan.",
+            "Pesanan yang masih berstatus Menunggu pembayaran dapat dibatalkan melalui halaman detail pesanan. Pesanan yang sudah dibayar tidak dapat dibatalkan, tetapi Anda dapat mengajukan pengembalian dana sesuai Kebijakan Pengembalian Dana.",
     },
     {
         question: "Bagaimana cara mengajukan pengembalian dana (refund)?",
         answer:
-            "Untuk informasi lengkap mengenai pengembalian dana, silakan kunjungi halaman Kebijakan Refund kami. Secara umum, Anda dapat mengajukan refund jika produk yang diterima dalam kondisi rusak atau tidak sesuai pesanan. Silakan hubungi customer service kami untuk memulai proses pengembalian dana.",
+            "Pengajuan refund dapat dilakukan dari halaman detail pesanan yang sudah dibayar lunas selama tiketnya masih aktif dan belum dilakukan check-in. Tekan tombol Ajukan refund pada halaman tersebut; sistem akan memeriksa kelayakan dan menghitung jumlah yang dikembalikan sesuai kebijakan. Perkembangan pengajuan dapat dipantau di halaman Refund saya.",
     },
     {
-        question: "Bagaimana cara menghubungi customer service?",
+        question: "Berapa lama refund diproses?",
         answer:
-            "Anda dapat menghubungi customer service kami melalui halaman Kontak. Kami menyediakan email dan nomor telepon yang dapat Anda hubungi. Silakan sertakan nomor pesanan Anda agar kami dapat membantu dengan lebih cepat.",
+            "Setiap pengajuan mengikuti alur status yang dapat dilihat di halaman Refund saya: Menunggu tinjauan, Disetujui, Sedang diproses, hingga Dana dikembalikan. Setelah disetujui, dana dikembalikan oleh pihak penyelenggara event melalui transfer bank. Jika pengajuan Anda tertunda, silakan hubungi bantuan melalui halaman Kontak.",
+    },
+    {
+        question: "Apakah tiket yang sudah check-in bisa direfund?",
+        answer:
+            "Tidak. Tiket yang sudah dilakukan check-in tidak dapat dikembalikan. Tiket juga hanya dapat diajukan refund satu kali. Selengkapnya dapat dibaca pada Kebijakan Pengembalian Dana.",
+    },
+    {
+        question: "Apa yang terjadi jika event dibatalkan penyelenggara?",
+        answer:
+            "Ketika event dibatalkan penyelenggara, penjualan tiket event tersebut dihentikan. Untuk pesanan yang sudah dibayar lunas, Anda dapat mengajukan pengembalian dana melalui halaman detail pesanan sesuai Kebijakan Pengembalian Dana.",
+    },
+    {
+        question: "Bagaimana cara menghubungi bantuan?",
+        answer:
+            "Kunjungi halaman Kontak untuk melihat email dan nomor telepon yang tersedia. Cantumkan nomor pesanan Anda agar tim kami dapat membantu dengan lebih cepat.",
     },
 ];
 
@@ -66,27 +75,36 @@ function FaqAccordionItem({
     onToggle: () => void;
 }) {
     return (
-        <div className="rounded-2xl border border-gray-200 bg-white transition-shadow hover:shadow-sm">
+        <div className="rounded-xl border border-ink-100 bg-white">
             <button
                 type="button"
                 onClick={onToggle}
+                aria-expanded={isOpen}
                 className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left sm:px-6"
             >
-                <span className="text-sm font-semibold text-gray-900 sm:text-base">
+                <span className="text-sm font-semibold text-ink-900 sm:text-base">
                     {item.question}
                 </span>
 
-                <FiChevronDown
-                    size={18}
-                    className={`shrink-0 text-gray-400 transition-transform duration-200 ${
+                <svg
+                    aria-hidden
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className={`h-4 w-4 shrink-0 text-ink-400 transition-transform duration-200 ${
                         isOpen ? "rotate-180" : ""
                     }`}
-                />
+                >
+                    <path d="m6 9 6 6 6-6" />
+                </svg>
             </button>
 
             {isOpen && (
-                <div className="border-t border-gray-100 px-5 pb-5 pt-4 sm:px-6">
-                    <p className="text-sm leading-7 text-gray-600">
+                <div className="border-t border-ink-100 px-5 pb-5 pt-4 sm:px-6">
+                    <p className="text-sm leading-7 text-ink-600">
                         {item.answer}
                     </p>
                 </div>
@@ -102,7 +120,7 @@ export default function FaqContent() {
         <div className="space-y-3">
             {faqData.map((item, index) => (
                 <FaqAccordionItem
-                    key={index}
+                    key={item.question}
                     item={item}
                     isOpen={openIndex === index}
                     onToggle={() =>

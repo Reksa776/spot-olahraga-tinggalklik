@@ -208,10 +208,58 @@ export const PERMISSIONS = {
     REPORT_EXPORT_OWN_PIC_FEE: "report.export.own_pic_fee",
 
     // Platform
-    USER_MANAGE: "user.manage",
-    ROLE_MANAGE: "role.manage",
     PLATFORM_CONFIG: "platform.config",
     AUDIT_LOG_READ: "audit_log.read",
+
+    /**
+     * ── PHASE 32 — APPLICATION CONTROL (ADMIN ONLY) ──────────────────────────────
+     *
+     * The three capabilities that separate a SYSTEM OWNER from a fully operational
+     * operator. They are the only new authority this phase introduces, and they are all
+     * PLATFORM-scope: they govern the APPLICATION itself (its settings, its availability,
+     * its branding), not any tenant's business data. That classification is what makes
+     * MANAGER's exclusion structural rather than cosmetic:
+     *
+     *   * `decidePlatformPermission` answers from `PLATFORM_ROLE_PLATFORM_PERMISSIONS`,
+     *     where only ADMIN holds them — so a MANAGER calling the API directly is refused
+     *     by the same function a menu row consults, not by a hidden button;
+     *   * they are absent from every ORGANIZER map, so no organizer membership role
+     *     (OWNER included) can manufacture them inside a tenant;
+     *   * they are absent from `ADMIN_GRANT_REQUIRED`, so a `PermissionGrant` row cannot
+     *     either — §5.2's "never the union of loose grants" holds for system control as
+     *     it does for tenant finances;
+     *   * they are NOT in `OWN_SCOPE`, so there is no path through a record's owner.
+     *
+     * They are deliberately three strings and not one `admin.control` string: enabling
+     * maintenance, changing branding and reading application settings are different
+     * actions with different consequences, and the brief requires each to be independently
+     * testable (role/maintenance/branding denial tests). One string would make "MANAGER
+     * cannot change branding" unprovable apart from "MANAGER cannot toggle maintenance".
+     *
+     * `APPLICATION_SETTINGS` is the READ+WRITE capability for system-level configuration.
+     * It is deliberately not split into read/write: the settings it covers are the
+     * application's own configuration, there is no role that may read but not write it
+     * (MANAGER is excluded from both — see the brief §9: a MANAGER GET must fail unless the
+     * architecture safely allows it, and here it does not need to).
+     */
+    APPLICATION_SETTINGS: "application.settings",
+    /** Enable/disable maintenance mode and edit its message + ETA. */
+    MAINTENANCE_MANAGE: "maintenance.manage",
+    /** Upload/replace/remove the application logo and save the branding config. */
+    BRANDING_MANAGE: "branding.manage",
+    /**
+     * ── PHASE 33 — USER MANAGEMENT (ADMIN ONLY) ─────────────────────────────────
+     *
+     * Create/manage the two non-ADMIN operational accounts: MANAGER and PIC. It is the
+     * vocabulary string behind `/dashboard/users` and `/api/admin/users`, and it is
+     * deliberately a SEPARATE string from `role.manage` so the report can answer "who may
+     * mint an account?" and "who may redefine authority?" as two different names. V1 is a
+     * fixed two-choice surface (MANAGER | PIC): no caller — ADMIN included — can create an
+     * arbitrary platform role through it, because the service accepts the role only from a
+     * two-value enum and never from the request body verbatim.
+     */
+    USER_MANAGE: "user.manage",
+    ROLE_MANAGE: "role.manage",
 } as const;
 
 export type Permission = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -247,6 +295,11 @@ const PLATFORM_SCOPE: readonly Permission[] = [
     P.ROLE_MANAGE,
     P.PLATFORM_CONFIG,
     P.AUDIT_LOG_READ,
+    // PHASE 32 — application control. Platform-scope because the application is one
+    // thing, not one per tenant, and ADMIN-only below.
+    P.APPLICATION_SETTINGS,
+    P.MAINTENANCE_MANAGE,
+    P.BRANDING_MANAGE,
 ];
 
 const OWN_SCOPE: readonly Permission[] = [
@@ -334,8 +387,17 @@ const PLATFORM_ROLE_PLATFORM_PERMISSIONS: Record<
         P.ROLE_MANAGE,
         P.PLATFORM_CONFIG,
         P.AUDIT_LOG_READ,
+        // PHASE 32 — the system-owner controls. ADMIN owns the application itself.
+        P.APPLICATION_SETTINGS,
+        P.MAINTENANCE_MANAGE,
+        P.BRANDING_MANAGE,
     ]),
     // §6.3: "View audit log" is YES for Manager.
+    //
+    // PHASE 32: MANAGER is a FULLY OPERATIONAL role and gets NO application control. It
+    // deliberately does not appear in the three strings above. `audit_log.read` stays: it is
+    // a read of the platform's own history, granted to Manager by §6.3, and withholding it
+    // would weaken an existing capability rather than sharpen the ADMIN/MANAGER line.
     MANAGER: toSet([P.AUDIT_LOG_READ]),
     PIC: toSet([]),
     CUSTOMER: toSet([]),

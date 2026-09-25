@@ -2,8 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { created, handleApi, ok } from "@/lib/api/response";
 import { parseOrThrow } from "@/lib/api/validation";
+import { getMaintenanceState } from "@/lib/app-settings";
 import { requireAuth } from "@/lib/authz";
 import { requireSameOrigin } from "@/lib/csrf";
+import { assertPurchasingAvailable } from "@/lib/maintenance";
 import { rateLimiters } from "@/lib/rate-limit";
 import { orderNumberParamSchema } from "@/lib/ticketing/checkout-validation";
 import { createOrderPayment } from "@/lib/ticketing/payment/service";
@@ -61,6 +63,16 @@ export async function POST(
 
         const scope = await requireAuth();
         const { orderNumber } = await params;
+
+        /*
+         * PHASE 32 — MAINTENANCE CLOSES PAYMENT INITIATION.
+         *
+         * Checked BEFORE the rate limiter on purpose: a closed site must not consume a
+         * buyer's (or a probing client's) payment-creation budget, and more importantly a
+         * 503 here must not be reported as "too many attempts". This is the second of the
+         * two endpoints that can move money; both refuse while maintenance is ON.
+         */
+        assertPurchasingAvailable(await getMaintenanceState());
 
         /*
          * RATE LIMIT (the `paymentCreation` bucket).

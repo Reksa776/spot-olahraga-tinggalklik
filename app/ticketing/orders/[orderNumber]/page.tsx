@@ -246,7 +246,7 @@ export default async function OrderPage({ params }: Props) {
                     <span aria-hidden>←</span> Semua event
                 </Link>
 
-                <div className="mt-4 overflow-hidden rounded-3xl border border-ink-100 bg-white shadow-card">
+                <div className="mt-4 overflow-hidden rounded-2xl border border-ink-100 bg-white shadow-sm">
                     {/* ── Header ────────────────────────────────────────────── */}
                     <header className="border-b border-ink-100 bg-ink-50/60 px-5 py-5 sm:px-6">
                         <div className="flex flex-wrap items-start justify-between gap-3">

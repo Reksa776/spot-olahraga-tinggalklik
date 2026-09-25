@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { writeTicketingAudit } from "../audit-log";
 import { withContentionRetry } from "../db-contention";
 import { moneyString } from "../order-payload";
+import { postEarnedPicFees } from "@/lib/pic/attribution";
 import {
     confirmOrderReservations,
     releaseOrderReservations,
@@ -27,9 +28,11 @@ import {
  *   7-10. tickets / attribution / PIC ledger / fee snapshots → Phase 8 and Phase 9
  *   11. COMMIT
  *
- * Steps 7–10 are deliberately absent: ticket issuance is Phase 8, and PIC attribution, the
- * fee ledger and the fee snapshots are Phase 9 (design §40.11). What is here is exactly the
- * pre-issuance boundary.
+ * Steps 7–10 are deliberately absent at the pre-issuance boundary: ticket issuance is
+ * Phase 8, and PIC attribution + fee snapshots are written at checkout (the PIC vertical
+ * slice). The PIC fee ledger EARNED rows ARE posted here, inside the SETTLED branch, by
+ * `postEarnedPicFees` — a REPLAY of the checkout snapshots, exactly once, in the same
+ * transaction as the money-in + inventory conversion (design §15.1 / §40.11).
  *
  * ── THE FOUR PROPERTIES THIS MODULE EXISTS TO GUARANTEE ─────────────────────────
  *
@@ -283,6 +286,7 @@ export async function settleVerifiedPayment(
                         id: true,
                         orderNumber: true,
                         organizerId: true,
+                        eventId: true,
                         status: true,
                         paymentStatus: true,
                         paidAt: true,
@@ -416,9 +420,22 @@ export async function settleVerifiedPayment(
                 // The order's own record of how many seats it bought. Lines are merged per
                 // ticket type at checkout, so one reservation per line, and
                 // `sum(items.quantity)` is the exact number of holds settlement must find.
+                // The PIC snapshot fields ride along so `postEarnedPicFees` can REPLAY the
+                // frozen fee values into the EARNED ledger rows (§15.1) without any
+                // recomputation.
                 const items = await tx.eventOrderItem.findMany({
                     where: { orderId: current.id },
-                    select: { quantity: true },
+                    select: {
+                        id: true,
+                        ticketTypeId: true,
+                        quantity: true,
+                        picFeeAmount: true,
+                        picFeeType: true,
+                        basisType: true,
+                        rateBp: true,
+                        fixedAmount: true,
+                        basisAmount: true,
+                    },
                 });
 
                 const expectedSeats = items.reduce(
@@ -443,6 +460,25 @@ export async function settleVerifiedPayment(
                         data: { fulfilmentBlockedAt: now },
                     });
                 }
+
+                // ── Step 9: the PIC fee ledger (the vertical slice) ────────────────
+                // This branch only runs for the settlement winner (step-4 CAS), in the
+                // SAME transaction as money-in and the inventory conversion, so the
+                // EARNED rows can never be posted for an order that did not actually
+                // settle, and never posted twice. `postEarnedPicFees` is a no-op for a
+                // non-PIC order, idempotent via `fee:earned:{orderItemId}` + the
+                // `@@unique([orderItemId, type])` guard, and sets the ticketTypeId /
+                // attributionId fields the refund reversal path copies FROM EARNED rows.
+                await postEarnedPicFees({
+                    db: tx,
+                    order: {
+                        id: current.id,
+                        organizerId: current.organizerId,
+                        eventId: current.eventId,
+                        currency: current.currency,
+                    },
+                    items,
+                });
 
                 return {
                     outcome: "SETTLED",

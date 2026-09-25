@@ -1,7 +1,6 @@
 "use client";
 
 import { useId, useState } from "react";
-import { FaEye, FaEyeSlash, FaLock } from "react-icons/fa";
 
 /**
  * ==========================================
@@ -91,11 +90,19 @@ export function PasswordField({
             </label>
 
             <div className="relative">
-                <FaLock
-                    size={16}
+                <svg
                     aria-hidden
-                    className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
-                />
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-ink-400"
+                >
+                    <rect width="18" height="11" x="3" y="11" rx="2" />
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
 
                 <input
                     id={inputId}
@@ -138,7 +145,37 @@ export function PasswordField({
                     title={toggleLabel}
                     className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-lg p-2 text-ink-500 transition hover:bg-ink-100 hover:text-ink-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed"
                 >
-                    {visible ? <FaEyeSlash aria-hidden /> : <FaEye aria-hidden />}
+                    {visible ? (
+                        <svg
+                            aria-hidden
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-4 w-4"
+                        >
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+                            <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+                            <path d="m1 1 22 22" />
+                            <path d="M9.88 14.88a3 3 0 1 1 4.24-4.24" />
+                        </svg>
+                    ) : (
+                        <svg
+                            aria-hidden
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-4 w-4"
+                        >
+                            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                            <circle cx="12" cy="12" r="3" />
+                        </svg>
+                    )}
                 </button>
             </div>
 

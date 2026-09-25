@@ -44,13 +44,22 @@ import { sportLabel, sportSolidTint } from "@/lib/ticketing/ui/sport-tint";
  *   • the share affordance moved into the sidebar beside the purchase card, where the buyer already
  *     is, rather than a separate block far down the page.
  *
+ * PIC VERTICAL SLICE — the `?pic=` query parameter travels from a shared link, through this page,
+ * into the purchase form as a `shareToken`. The FORM binds it into the checkout payload and
+ * idempotency signature; the checkout API uses it to resolve the PIC attribution server-side. The
+ * page itself does NOT verify the token — it is public, unauthenticated, and the server is the
+ * authority on whether the token names a real, active PIC for this event.
+ *
  * The buyer's session is read only to prefill the contact fields. The page stays public, and the
  * checkout API authenticates independently of what this render saw.
  */
 
 export const dynamic = "force-dynamic";
 
-type Props = { params: Promise<{ slug: string }> };
+type Props = {
+    params: Promise<{ slug: string }>;
+    searchParams: Promise<{ pic?: string }>;
+};
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
     const { slug } = await params;
@@ -79,8 +88,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     }
 }
 
-export default async function EventDetailPage({ params }: Props) {
+export default async function EventDetailPage({ params, searchParams }: Props) {
     const { slug } = await params;
+    const { pic } = await searchParams;
 
     const origin = await getServerOrigin();
 
@@ -281,7 +291,7 @@ export default async function EventDetailPage({ params }: Props) {
 
                     {/* ── Dokumentasi event (post-event, COMPLETED only) ──────────── */}
                     {event.status === "COMPLETED" && event.documentationUrl ? (
-                        <section className="mb-8 flex flex-col items-start justify-between gap-4 rounded-2xl border border-ink-100 bg-white p-5 shadow-sm sm:flex-row sm:items-center">
+                        <section className="mb-8 flex flex-col items-start justify-between gap-4 rounded-xl border border-ink-100 bg-white p-5 sm:flex-row sm:items-center">
                             <div>
                                 <h2 className="text-base font-extrabold text-ink-900">
                                     Dokumentasi event
@@ -298,7 +308,6 @@ export default async function EventDetailPage({ params }: Props) {
                                 className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-brand-600 px-5 py-3.5 text-sm font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
                             >
                                 Lihat dokumentasi
-                                <span aria-hidden>→</span>
                             </a>
                         </section>
                     ) : null}
@@ -321,7 +330,7 @@ export default async function EventDetailPage({ params }: Props) {
                                     <h2 className="text-lg font-extrabold text-ink-900">
                                         Peraturan &amp; kebijakan
                                     </h2>
-                                    <div className="mt-3 rounded-2xl border border-ink-100 bg-ink-50/60 p-5">
+                                    <div className="mt-3 rounded-xl border border-ink-100 bg-ink-50/60 p-5">
                                         <p className="text-sm leading-relaxed whitespace-pre-line text-ink-600">
                                             {event.rules}
                                         </p>
@@ -417,6 +426,7 @@ export default async function EventDetailPage({ params }: Props) {
                                     eventId={event.id}
                                     ticketTypes={event.ticketTypes}
                                     isAvailable={event.isAvailable}
+                                    shareToken={pic}
                                     defaultBuyer={{
                                         name: session?.user?.name ?? null,
                                         email: session?.user?.email ?? null,
@@ -452,7 +462,7 @@ export default async function EventDetailPage({ params }: Props) {
                                     )}`}
                                     className="shrink-0 rounded-lg text-sm font-semibold text-brand-700 hover:text-brand-800"
                                 >
-                                    Lihat semua →
+                                    Lihat semua
                                 </Link>
                             </div>
 

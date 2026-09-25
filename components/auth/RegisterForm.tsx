@@ -7,7 +7,6 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { getSession, signIn, signOut } from "next-auth/react";
 import toast from "react-hot-toast";
-import { FaEnvelope, FaPhone, FaUser } from "react-icons/fa";
 
 import AuthError from "@/components/auth/AuthError";
 import AuthShell from "@/components/auth/AuthShell";
@@ -261,10 +260,19 @@ export default function RegisterForm() {
                     </label>
 
                     <div className="relative">
-                        <FaUser
+                        <svg
                             aria-hidden
-                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
-                        />
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-ink-400"
+                        >
+                            <circle cx="12" cy="8" r="4" />
+                            <path d="M4 21c0-4 3.5-6 8-6s8 2 8 6" />
+                        </svg>
 
                         <input
                             id="register-name"
@@ -301,10 +309,19 @@ export default function RegisterForm() {
                     </label>
 
                     <div className="relative">
-                        <FaEnvelope
+                        <svg
                             aria-hidden
-                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
-                        />
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-ink-400"
+                        >
+                            <rect width="18" height="12" x="3" y="5" rx="2" />
+                            <path d="m3 7 9 6 9-6" />
+                        </svg>
 
                         <input
                             id="register-email"
@@ -350,10 +367,18 @@ export default function RegisterForm() {
                     </label>
 
                     <div className="relative">
-                        <FaPhone
+                        <svg
                             aria-hidden
-                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
-                        />
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-ink-400"
+                        >
+                            <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.4 2.1L8.1 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.9.6 2.9.7a2 2 0 0 1 1.6 2Z" />
+                        </svg>
 
                         <input
                             id="register-phone"

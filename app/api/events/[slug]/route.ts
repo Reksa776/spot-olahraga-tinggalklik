@@ -2,7 +2,9 @@ import type { NextRequest } from "next/server";
 
 import { handleApi, ok } from "@/lib/api/response";
 import { getAppOrigin } from "@/lib/app-origin";
+import { getMaintenanceState } from "@/lib/app-settings";
 import { getPublicEventBySlug } from "@/lib/events/catalog";
+import { assertNotInMaintenance } from "@/lib/maintenance";
 
 /**
  * GET /api/events/[slug] — public event detail (design §25.3)
@@ -28,6 +30,10 @@ export async function GET(
     { params }: { params: Promise<{ slug: string }> }
 ) {
     return handleApi(async () => {
+        // PHASE 32 — the public application is closed as a whole while maintenance is ON, and
+        // this is the JSON form of the event page, so it closes with it.
+        assertNotInMaintenance(await getMaintenanceState());
+
         const { slug } = await params;
 
         const origin = getAppOrigin(request);

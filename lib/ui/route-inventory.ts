@@ -19,6 +19,14 @@
  * reports and settings. The retired prefixes are 307-redirected in `next.config.ts`, so no inbound link is
  * broken even though no page exists at the old path.
  *
+ * PHASE 32 added four: the three ADMIN-only application-control pages under
+ * `/dashboard/settings` (application, branding, maintenance) and the public `/maintenance`
+ * page the root layout redirects to while availability is closed.
+ *
+ * PHASE 33 added one: the ADMIN-only `/dashboard/users` management surface.
+ *
+ * The total is 38 pages.
+ *
  * `referencedBy` is produced mechanically — matching each route as a complete URL token — and the
  * test re-derives each route from its own file path, so a row cannot drift from the tree.
  */
@@ -128,6 +136,39 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         referencedBy: "components/dashboard/DashboardAppShell.tsx",
     },
     {
+        route: "/dashboard/settlements",
+        file: "app/dashboard/settlements/page.tsx",
+        status: "KEEP",
+        referencedBy: "components/dashboard/DashboardAppShell.tsx, app/dashboard/settlements/[id]/page.tsx",
+    },
+    {
+        route: "/dashboard/settlements/[id]",
+        file: "app/dashboard/settlements/[id]/page.tsx",
+        status: "KEEP",
+        referencedBy: "app/dashboard/settlements/page.tsx",
+    },
+    {
+        route: "/dashboard/settings/application",
+        file: "app/dashboard/settings/application/page.tsx",
+        status: "KEEP",
+        referencedBy:
+            "app/dashboard/settings/page.tsx, components/dashboard/DashboardAppShell.tsx",
+    },
+    {
+        route: "/dashboard/settings/branding",
+        file: "app/dashboard/settings/branding/page.tsx",
+        status: "KEEP",
+        referencedBy:
+            "app/dashboard/settings/page.tsx, components/dashboard/DashboardAppShell.tsx",
+    },
+    {
+        route: "/dashboard/settings/maintenance",
+        file: "app/dashboard/settings/maintenance/page.tsx",
+        status: "KEEP",
+        referencedBy:
+            "app/dashboard/settings/page.tsx, components/dashboard/DashboardAppShell.tsx",
+    },
+    {
         route: "/dashboard/settings/sports",
         file: "app/dashboard/settings/sports/page.tsx",
         status: "KEEP",
@@ -142,6 +183,12 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
     {
         route: "/dashboard/settings",
         file: "app/dashboard/settings/page.tsx",
+        status: "KEEP",
+        referencedBy: "components/dashboard/DashboardAppShell.tsx",
+    },
+    {
+        route: "/dashboard/users",
+        file: "app/dashboard/users/page.tsx",
         status: "KEEP",
         referencedBy: "components/dashboard/DashboardAppShell.tsx",
     },
@@ -180,6 +227,15 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         file: "app/login/page.tsx",
         status: "KEEP",
         referencedBy: "components/ticketing/SiteHeader.tsx, components/events/TicketPurchaseForm.tsx, proxy.ts",
+    },
+    {
+        // PHASE 32 — the page maintenance mode redirects to. It is a real, reachable page in
+        // BOTH states (it says the site is available when the switch is off), reached by the
+        // root layout's redirect while maintenance is ON.
+        route: "/maintenance",
+        file: "app/maintenance/page.tsx",
+        status: "KEEP",
+        referencedBy: "app/layout.tsx (the maintenance redirect target)",
     },
     {
         route: "/refund-policy",

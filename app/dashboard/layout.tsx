@@ -2,11 +2,13 @@ import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { getApplicationBranding } from "@/lib/app-settings";
 import DashboardAppShell from "@/components/dashboard/DashboardAppShell";
 import DashboardProviders from "@/components/dashboard/DashboardProviders";
 import { AccessDeniedPanel } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
 import { canEnterDashboard, computeDashboardCapabilities } from "@/lib/dashboard/scope";
+import { findActivePicProfile } from "@/lib/pic/self-service";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -33,6 +35,13 @@ import { prisma } from "@/lib/prisma";
  * A plain CUSTOMER holds neither, and is the only actor refused. Refusing exactly that set
  * — rather than "must be ADMIN" — is what keeps one gate correct for both populations.
  *
+ * PHASE 34 — the gate additionally admits on the PLATFORM ROLE alone. Phase 33 provisions
+ * MANAGER and PIC accounts separately from organizer membership, so a MANAGER can exist
+ * before any membership and a PIC account exists while its profile is PENDING; both were
+ * wrongly refused. Entry is not data access: a MANAGER without a membership still reads no
+ * tenant, and a PENDING PIC still has no self-service. The pages and services below remain
+ * the data boundary — see `canEnterDashboard`.
+ *
  * The `auth()` call is DISPLAY ONLY (top-bar account menu), exactly as before.
  */
 
@@ -49,10 +58,29 @@ export default async function DashboardLayout({
         redirect("/login");
     }
 
-    const capabilities = computeDashboardCapabilities(scope);
+    let capabilities = computeDashboardCapabilities(scope);
 
     // One gate, one definition: `canEnterDashboard` is the same function the access tests
     // assert against, so the layout cannot drift from what is verified.
+    //
+    // The pure capability set cannot see a PIC's own-scope surface (a pure PIC holds no
+    // membership and no platform permission). Probe the database for:
+    //   * a PIC-role account — PHASE 34: it enters on its platform role, so the probe is
+    //     what decides whether the PIC SELF-SERVICE rows are offered (the ACTIVE profile),
+    //     and
+    //   * any first-pass-DENIED account — an ACTIVE profile can admit a non-PIC account
+    //     exactly as before.
+    // The probe resolves the caller's OWN profile from their session-derived id — never
+    // from the request — and can never widen what they may read: it only sets a menu flag.
+    if (scope.platformRole === "PIC" || !canEnterDashboard(capabilities)) {
+        const hasActivePicProfile =
+            (await findActivePicProfile(scope.userId)) !== null;
+
+        capabilities = computeDashboardCapabilities(scope, {
+            hasActivePicProfile,
+        });
+    }
+
     if (!canEnterDashboard(capabilities)) {
         return (
             <DashboardProviders>
@@ -61,8 +89,8 @@ export default async function DashboardLayout({
                     body={
                         <p className="text-sm leading-relaxed">
                             Akun kamu belum memiliki akses ke dashboard. Hubungi admin
-                            platform untuk diberikan peran penyelenggara atau izin
-                            platform.
+                            platform untuk diberikan peran penyelenggara, izin
+                            platform, atau profil PIC yang aktif.
                         </p>
                     }
                     actionHref="/events"
@@ -85,16 +113,33 @@ export default async function DashboardLayout({
           })
         : [];
 
-    const session = await auth();
+    // PHASE 32 — the dashboard lockup renders the SAME configured logo the public landing
+    // page does. Resolved here (server side, once) and threaded down to the client shell, so
+    // the sidebar and the mobile top bar cannot render two different marks, and so the source
+    // of truth stays `PlatformSetting.logoUrl` rather than a second dashboard-only setting.
+    const [session, branding] = await Promise.all([
+        auth(),
+        getApplicationBranding(),
+    ]);
 
     const hasPlatformSurface =
         capabilities.canManageSports ||
         capabilities.canManageGlobalVenues ||
         capabilities.canManagePlatformPic;
 
-    const contextLabel = hasPlatformSurface
-        ? `Platform · ${scope.platformRole}`
-        : "Penyelenggara";
+    // PHASE 34 — a platform-role account with no platform capability yet (a MANAGER
+    // without `sport.manage`, a PENDING PIC) used to fall through to "Penyelenggara",
+    // which mislabelled who they are. The label now follows the authoritative platform
+    // role first.
+    const isPlatformAdminOrManager =
+        scope.platformRole === "ADMIN" || scope.platformRole === "MANAGER";
+
+    const contextLabel =
+        hasPlatformSurface || isPlatformAdminOrManager
+            ? `Platform · ${scope.platformRole}`
+            : capabilities.hasActivePicProfile || scope.platformRole === "PIC"
+              ? "PIC"
+              : "Penyelenggara";
 
     return (
         <DashboardProviders>
@@ -108,6 +153,7 @@ export default async function DashboardLayout({
                 }
                 userName={session?.user?.name}
                 userEmail={session?.user?.email}
+                logoSrc={branding.logoUrl}
             >
                 {children}
             </DashboardAppShell>

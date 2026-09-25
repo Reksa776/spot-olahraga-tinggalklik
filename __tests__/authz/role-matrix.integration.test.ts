@@ -139,6 +139,7 @@ const ALL_TENANT_MENU = [
     "/dashboard/customers",
     "/dashboard/payments",
     "/dashboard/refunds",
+    "/dashboard/settlements",
     "/dashboard/reports",
     "/dashboard/venues",
 ];
@@ -227,6 +228,12 @@ describe("platform ADMIN", () => {
             "canManageSports",
             "canManageGlobalVenues",
             "canManagePlatformPic",
+            // PHASE 32 — the ADMIN/MANAGER separation: an ADMIN owns the application.
+            "canManageApplicationSettings",
+            "canManageMaintenance",
+            "canManageBranding",
+            // PHASE 33 — user management is the fourth ADMIN-only system capability.
+            "canManageUsers",
         ] as const) {
             expect({ key, value: capabilities[key] }).toEqual({ key, value: true });
         }
@@ -239,10 +246,16 @@ describe("platform ADMIN", () => {
             "/dashboard/customers",
             "/dashboard/payments",
             "/dashboard/refunds",
+            "/dashboard/settlements",
             "/dashboard/pic",
             "/dashboard/reports",
             "/dashboard/venues",
             "/dashboard/settings",
+            // PHASE 32/33 — the SYSTEM section, rendered last and only for an ADMIN.
+            "/dashboard/users",
+            "/dashboard/settings/application",
+            "/dashboard/settings/branding",
+            "/dashboard/settings/maintenance",
         ]);
     });
 
@@ -260,11 +273,17 @@ describe("platform ADMIN", () => {
             expect(menuHrefs(capabilities)).not.toContain(key);
         }
 
-        // Exactly the three the report described: Dashboard, PIC, Pengaturan.
+        // Dashboard, PIC, Pengaturan — plus the ADMIN-only system surfaces, which an ADMIN
+        // holds with or without a tenant membership (PHASE 32 application control, PHASE 33
+        // user management).
         expect(menuHrefs(capabilities)).toEqual([
             "/dashboard",
             "/dashboard/pic",
             "/dashboard/settings",
+            "/dashboard/users",
+            "/dashboard/settings/application",
+            "/dashboard/settings/branding",
+            "/dashboard/settings/maintenance",
         ]);
     });
 
@@ -317,13 +336,76 @@ describe("platform MANAGER", () => {
         expect(capabilities.canManageSports).toBe(false);
         expect(capabilities.canManageGlobalVenues).toBe(false);
         expect(capabilities.canManagePlatformPic).toBe(false);
+
+        // ── PHASE 32 — FULL OPERATIONAL, ZERO APPLICATION CONTROL ──────────────────
+        // The whole point of the separation, pinned here so a future map edit that leaks one
+        // of the three to MANAGER fails by NAME rather than being absorbed by a broader
+        // assertion. The operational surfaces below stay TRUE — MANAGER is not a lesser
+        // operator, it is an operator without system ownership.
+        expect(capabilities.canManageApplicationSettings).toBe(false);
+        expect(capabilities.canManageMaintenance).toBe(false);
+        expect(capabilities.canManageBranding).toBe(false);
+
+        expect(capabilities.canManageEvents).toBe(true);
+        expect(capabilities.canManageVenues).toBe(true);
+        expect(capabilities.canManageSettlements).toBe(true);
+        expect(capabilities.canCheckIn).toBe(true);
+        expect(capabilities.canAssignPic).toBe(true);
+
+        // …and the SYSTEM section is simply absent from the MANAGER menu, while every
+        // operational destination remains.
+        const hrefs = menuHrefs(capabilities);
+
+        for (const systemHref of [
+            "/dashboard/settings/application",
+            "/dashboard/settings/branding",
+            "/dashboard/settings/maintenance",
+        ]) {
+            expect(hrefs).not.toContain(systemHref);
+        }
+
+        for (const operationalHref of ALL_TENANT_MENU) {
+            expect(hrefs).toContain(operationalHref);
+        }
     });
 
-    test("without a membership: refused (audit-only is not a dashboard surface)", async () => {
+    test("PHASE 34 — without a membership: may ENTER the shell, but gets NO tenant or platform surface", async () => {
+        // Phase 33 provisions MANAGER accounts independently of organizer membership, so a
+        // MANAGER may exist before any OrganizerMember row. Dashboard ENTRY is allowed on the
+        // platform role alone; data access is not.
         const capabilities = await capabilitiesFor(managerNoMembership.id);
 
-        expect(canEnterDashboard(capabilities)).toBe(false);
+        expect(canEnterDashboard(capabilities)).toBe(true);
+        expect(capabilities.hasPlatformRoleEntry).toBe(true);
+
+        // The entry right confers nothing: no tenant data and none of the platform surfaces.
         expect(capabilities.hasTenantAccess).toBe(false);
+        expect(capabilities.canManageSports).toBe(false);
+        expect(capabilities.canManageGlobalVenues).toBe(false);
+        expect(capabilities.canManagePlatformPic).toBe(false);
+        expect(capabilities.canManageUsers).toBe(false);
+        expect(capabilities.canManageApplicationSettings).toBe(false);
+        expect(capabilities.canManageMaintenance).toBe(false);
+        expect(capabilities.canManageBranding).toBe(false);
+
+        // …and the menu is exactly the generic landing row: no tenant destination and no
+        // SYSTEM section. The onboarding state lives on `/dashboard`.
+        const hrefs = menuHrefs(capabilities);
+
+        expect(hrefs).toEqual(["/dashboard"]);
+
+        for (const tenantHref of ALL_TENANT_MENU) {
+            expect(hrefs).not.toContain(tenantHref);
+        }
+
+        for (const systemHref of [
+            "/dashboard/users",
+            "/dashboard/settings/application",
+            "/dashboard/settings/branding",
+            "/dashboard/settings/maintenance",
+        ]) {
+            expect(hrefs).not.toContain(systemHref);
+        }
     });
 
     test("MANAGER never gets platform privilege escalation", async () => {
@@ -333,6 +415,13 @@ describe("platform MANAGER", () => {
         expect(decidePlatformPermission(scope, PERMISSIONS.ROLE_MANAGE).allowed).toBe(false);
         expect(decidePlatformPermission(scope, PERMISSIONS.PLATFORM_CONFIG).allowed).toBe(false);
     });
+
+    test("PHASE 33 — a MANAGER is refused the users surface on the capability object and the menu", async () => {
+        const capabilities = await capabilitiesFor(managerWithMembership.id);
+
+        expect(capabilities.canManageUsers).toBe(false);
+        expect(menuHrefs(capabilities)).not.toContain("/dashboard/users");
+    });
 });
 
 /* ==================================================================================
@@ -340,14 +429,26 @@ describe("platform MANAGER", () => {
  * ================================================================================== */
 
 describe("PIC and CUSTOMER are own-scope only", () => {
-    test("PIC cannot enter the dashboard and holds no tenant or platform capability", async () => {
+    test("PHASE 34 — a PIC may ENTER the shell on its platform role, and holds no tenant or platform capability", async () => {
         const scope = await scopeFor(pic.id);
         const capabilities = computeDashboardCapabilities(scope);
 
-        expect(canEnterDashboard(capabilities)).toBe(false);
+        // Entry is role-derived (a PIC account exists while its profile is PENDING, and must
+        // be able to open the shell). No self-service flag without an ACTIVE profile, and no
+        // tenant/platform authority either way.
+        expect(canEnterDashboard(capabilities)).toBe(true);
+        expect(capabilities.hasPlatformRoleEntry).toBe(true);
+        expect(capabilities.hasActivePicProfile).toBe(false);
         expect(capabilities.hasTenantAccess).toBe(false);
+        expect(capabilities.canManageSports).toBe(false);
+        expect(capabilities.canManageGlobalVenues).toBe(false);
+        expect(capabilities.canManagePlatformPic).toBe(false);
         expect(decidePlatformPermission(scope, PERMISSIONS.PIC_MANAGE).allowed).toBe(false);
         expect(decidePlatformPermission(scope, PERMISSIONS.SPORT_MANAGE).allowed).toBe(false);
+
+        // With no ACTIVE profile, the menu offers no self-service rows and no tenant rows:
+        // just the generic landing row, which renders the pending/standing state.
+        expect(menuHrefs(capabilities)).toEqual(["/dashboard"]);
     });
 
     test("CUSTOMER cannot enter the dashboard and holds no tenant or platform capability", async () => {
@@ -356,6 +457,8 @@ describe("PIC and CUSTOMER are own-scope only", () => {
 
         expect(canEnterDashboard(capabilities)).toBe(false);
         expect(capabilities.hasTenantAccess).toBe(false);
+        // PHASE 34 — a CUSTOMER is the one platform role that gets NO role-derived entry.
+        expect(capabilities.hasPlatformRoleEntry).toBe(false);
     });
 
     test("own-scope still works for the owner and is denied for anyone else", async () => {

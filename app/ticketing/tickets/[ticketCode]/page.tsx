@@ -155,7 +155,7 @@ export default async function TicketDetailPage({ params }: Props) {
                 </Link>
 
                 {/* ── The ticket itself ─────────────────────────────────────────── */}
-                <article className="mt-4 overflow-hidden rounded-3xl border border-ink-100 bg-white shadow-card print:mt-0 print:rounded-none print:border-0 print:shadow-none">
+                <article className="mt-4 overflow-hidden rounded-2xl border border-ink-100 bg-white shadow-sm print:mt-0 print:rounded-none print:border-0 print:shadow-none">
                     <header
                         className={`relative px-6 py-6 text-white ${sportSolidTint(
                             ticket.event.sportName
@@ -238,7 +238,7 @@ export default async function TicketDetailPage({ params }: Props) {
                             ) : (
                                 <div
                                     role="status"
-                                    className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-5 py-8 text-center"
+                                    className="w-full rounded-xl border border-amber-200 bg-amber-50 px-5 py-8 text-center"
                                 >
                                     <p className="text-sm font-bold text-amber-900">
                                         QR tidak ditampilkan

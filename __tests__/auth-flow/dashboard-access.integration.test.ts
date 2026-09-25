@@ -182,14 +182,18 @@ describe("TEST 3 — a platform user may enter the dashboard", () => {
         expect(capabilities.canReadReports).toBe(false);
     });
 
-    test("a platform MANAGER with no membership is refused: audit-only is not a dashboard surface", async () => {
-        // MANAGER's only platform permission is `audit_log.read`, and the dashboard has no
-        // audit page, so the menu would be empty. Refusing is the honest outcome rather than
-        // admitting someone to a dashboard that offers them nothing.
+    test("PHASE 34 — a platform MANAGER with no membership may ENTER, but gets no tenant data", async () => {
+        // Phase 33 creates MANAGER accounts separately from organizer membership, so a
+        // MANAGER may not be assigned yet. Entry is granted on the platform role alone;
+        // tenant data and platform surfaces stay shut. The layout renders the
+        // "Belum Ada Organisasi" onboarding state on `/dashboard`.
         const capabilities = await capabilitiesFor(platformManager.id);
 
-        expect(canEnterDashboard(capabilities)).toBe(false);
+        expect(canEnterDashboard(capabilities)).toBe(true);
+        expect(capabilities.hasPlatformRoleEntry).toBe(true);
         expect(capabilities.hasTenantAccess).toBe(false);
+        expect(capabilities.canManageSports).toBe(false);
+        expect(capabilities.canManageUsers).toBe(false);
     });
 });
 

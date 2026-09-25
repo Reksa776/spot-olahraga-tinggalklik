@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { getApplicationBranding } from "@/lib/app-settings";
+
 import Brand from "./Brand";
 
 const EXPLORE = [
@@ -28,14 +30,20 @@ const ORGANIZER = [
  * `/products`, `/cart`, `/checkout` and `/orders` is live and its own `Footer` is untouched
  * (brief: legacy safety). Every link here points at a page that exists — a footer of dead links
  * is how a "coming soon" platform reads.
+ *
+ * PHASE 32: it renders the CONFIGURED logo (`PlatformSetting.logoUrl`) through the shared
+ * lockup, so the footer, the header and the dashboard cannot disagree about the brand. The
+ * read is request-cached, so a page that already loaded it pays nothing for this one.
  */
-export default function SiteFooter() {
+export default async function SiteFooter() {
+    const branding = await getApplicationBranding();
+
     return (
         <footer className="mt-16 bg-ink-950 text-ink-300">
             <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
                 <div className="grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="sm:col-span-2 lg:col-span-1">
-                        <Brand tone="light" />
+                        <Brand tone="light" logoSrc={branding.logoUrl} />
                         <p className="mt-4 max-w-xs text-sm leading-relaxed text-ink-400">
                             Temukan event olahraga dan pertandingan di seluruh
                             Indonesia, lalu simpan e-tiket Anda di satu tempat.

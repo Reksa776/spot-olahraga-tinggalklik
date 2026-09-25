@@ -98,6 +98,15 @@ type DashboardShellProps = {
     sectionDescription?: string;
     userName?: string | null;
     userEmail?: string | null;
+    /**
+     * PHASE 32 — the ADMIN-configured application logo URL, or `null` for the built-in mark.
+     *
+     * Passed in rather than fetched: this is a client component, so it cannot read the
+     * database, and the layout has already resolved the value server-side. The SAME value
+     * reaches the desktop sidebar and the mobile top bar, so there is one logo and one
+     * source of truth across the whole back office.
+     */
+    logoSrc?: string | null;
     children: ReactNode;
 };
 
@@ -122,6 +131,7 @@ function DashboardShellFrame({
     sectionDescription,
     userName,
     userEmail,
+    logoSrc = null,
     children,
 }: DashboardShellProps) {
     const pathname = usePathname();
@@ -165,6 +175,7 @@ function DashboardShellFrame({
                 sectionDescription={sectionDescription}
                 userName={userName}
                 userEmail={userEmail}
+                logoSrc={logoSrc}
             />
 
             <div className="flex min-w-0 flex-1 flex-col">
@@ -173,7 +184,7 @@ function DashboardShellFrame({
                     <SidebarTrigger />
 
                     <div className="md:hidden">
-                        <Brand />
+                        <Brand logoSrc={logoSrc} />
                     </div>
 
                     {/* Page context: where the user is, stated from the navigation they were given. */}
@@ -278,12 +289,14 @@ function DashboardNavSlot({
     sectionDescription,
     userName,
     userEmail,
+    logoSrc,
 }: {
     nav: ShellNavGroup[];
     sectionLabel: string;
     sectionDescription?: string;
     userName?: string | null;
     userEmail?: string | null;
+    logoSrc?: string | null;
 }) {
     const { setMobileOpen } = useSidebar();
 
@@ -295,6 +308,7 @@ function DashboardNavSlot({
                 sectionDescription={sectionDescription}
                 userName={userName}
                 userEmail={userEmail}
+                logoSrc={logoSrc}
                 onNavigate={() => setMobileOpen(false)}
             />
         </Sidebar>

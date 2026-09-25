@@ -50,6 +50,12 @@ module.exports = {
         // Phase 10B — the refund lifecycle: eligibility policy (pure), the static
         // architectural guards, and the end-to-end request→approve→settle path.
         "**/__tests__/ticketing-refunds/*.test.ts",
+        // PIC vertical slice — referral token + fee engine (pure), the wiring guards, and
+        // the checkout→settlement→EARNED integration against the real database.
+        "**/__tests__/ticketing-pic/*.test.ts",
+        // PIC self-service dashboard — entry gate, ownership isolation, metric
+        // reporting and the menu rendering of the PIC-only surface.
+        "**/__tests__/pic-self-service/*.test.ts",
         // Phase 13 — the gate: the code parser and gate predicate (pure), the static
         // guards over the manual-code contract, and the end-to-end admit/duplicate/
         // cross-tenant/concurrency behaviour against the real database.
@@ -68,6 +74,11 @@ module.exports = {
         // The route inventory, the single-identity accent contract, and the proof that
         // the check-in gate stayed closed.
         "**/__tests__/ui-consolidation/*.test.ts",
+        // PHASE 32 — ADMIN vs MANAGER separation, application maintenance mode and
+        // application branding. A namespace of its own because it is the only suite whose
+        // subject is the APPLICATION rather than a business feature: the role split, the
+        // availability switch, and the logo.
+        "**/__tests__/admin-manager/*.test.ts",
     ],
     // WHY forceExit IS SET
     // -------------------
@@ -106,6 +117,13 @@ module.exports = {
     // `globalSetup` runs once before the workers and refuses to start a run whose test
     // database does not exist or is behind, with the exact command that fixes it.
     setupFiles: ["<rootDir>/jest.setup-env.ts"],
+    // Runs inside every test file's own sandbox and therefore shares that file's
+    // `@/lib/prisma` instance, disconnecting its connection pool when the file ends. Without
+    // it each of the ~100 database-backed suites keeps a `cpus * 2 + 1` pool open for the
+    // whole run (`forceExit` skips `$disconnect`), and the later suites fail with MySQL's
+    // "Too many connections" — a flake that looks like a regression. See
+    // `jest.teardown-env.ts`.
+    setupFilesAfterEnv: ["<rootDir>/jest.teardown-env.ts"],
     globalSetup: "<rootDir>/__tests__/support/global-setup.ts",
     // Safety net for the integration suites: after the whole run, archive any stranded fixture
     // event and deactivate any stranded fixture sport, so a test that aborts before its own

@@ -183,9 +183,70 @@ export type TicketingAuditAction =
     // than a first assignment.
     | "pic.create"
     | "pic.status.update"
+    // ── PHASE 33: user management ────────────────────────────────────────────────
+    // The ADMIN-only account lifecycle the new /dashboard/users surface writes:
+    // creation of the two managed roles (a PIC creation is named distinctly from a
+    // MANAGER creation, because it also mints the PICProfile) and the reversible
+    // disable/enable pair. There is deliberately no `user.delete`: deactivation is the
+    // only removal this product performs, and no action name may promise otherwise.
+    // Credentials are never metadata: the audit writer's key filter already drops
+    // `password`/`passwordHash`, and the callers pass only ids, emails and role names.
+    | "user.created"
+    | "pic.user.created"
+    | "user.disabled"
+    | "user.enabled"
     | "pic.assign"
     | "pic.assign.reactivate"
-    | "pic.assign.revoke";
+    | "pic.assign.revoke"
+    // ── PICO payout / settlement V1 (manual bank transfer) ───────────────────────
+    // Seven actions, one per state change an auditor reconstructs a payout from.
+    // They are separate names rather than a single `settlement.update` because they
+    // have different actors and different money consequences: `prepare` snapshots the
+    // payee bank and claims the fee lines, `submit` asks for approval, `approve`
+    // authorises the transfer, `paid` is the ONLY action that moves money out of the
+    // system (ledger SETTLED + PAYOUT debit rows), and `failed` / `cancel` are the two
+    // ways a claim is released without money moving. `proof_upload` records the
+    // transfer evidence — the manual-rail counterpart of `refund.settle`'s
+    // `providerRef`.
+    //
+    // There is deliberately NO `settlement.process`: the method is MANUAL_TRANSFER
+    // (D-P17-04 = B), so there is no in-flight processing state to audit.
+    | "settlement.prepare"
+    | "settlement.submit"
+    | "settlement.approve"
+    | "settlement.proof_upload"
+    | "settlement.paid"
+    | "settlement.failed"
+    | "settlement.cancel"
+    // ── PHASE 31: financial report exports ─────────────────────────────────────
+    // An export copies financial rows OUT of the system, which is itself an auditable
+    // event ("who downloaded whose fee ledger, and when"). The two scopes get distinct
+    // action names so a reviewer can tell a PIC's own download apart from an organizer /
+    // platform-side tenant export without parsing metadata.
+    | "report.export.pic_fee"
+    | "report.export.own_pic_fee"
+    // ── PHASE 32: application control (ADMIN only) ───────────────────────────────
+    // Maintenance availability and branding are the two things this phase lets an
+    // operator change about the APPLICATION rather than about business data, and both
+    // are consequential enough (one closes the storefront, the other rewrites the
+    // identity every public page renders) that §22 requires an audit entry for each.
+    //
+    // The enable/disable pair is split from `application.maintenance.updated` for the
+    // same reason `settlement.paid` is split from `settlement.prepare`: "when was the
+    // site taken down, and by whom?" and "who rewrote the maintenance notice?" are two
+    // different incident questions, and folding them into one action would force the
+    // reader to parse `afterState`.
+    //
+    // The logo pair is split into `uploaded` / `replaced` / `removed` rather than being
+    // one `branding.logo.changed`, because `replaced` is the only one of the three that
+    // implies a previous asset existed — which is exactly what a reviewer asks when a
+    // logo changes unexpectedly.
+    | "application.maintenance.enabled"
+    | "application.maintenance.disabled"
+    | "application.maintenance.updated"
+    | "application.branding.logo_uploaded"
+    | "application.branding.logo_replaced"
+    | "application.branding.logo_removed";
 
 /** Keys that must never reach the audit table, whatever a caller passes. */
 const FORBIDDEN_METADATA_KEYS = new Set([
@@ -278,7 +339,16 @@ export type TicketingAuditParams = {
         | "Ticket"
         /** PIC surface: the profile row and the event-assignment row. */
         | "PICProfile"
-        | "PICEventAssignment";
+        | "PICEventAssignment"
+        /** Payout/settlement V1: a `Settlement` row or a `PICFeeLedger` mutation. */
+        | "Settlement"
+        | "PICFeeLedger"
+        /** Phase 31: a financial report/export (a read that leaves the system). */
+        | "Report"
+        /** Phase 32: the single-row platform configuration (maintenance + branding). */
+        | "PlatformSetting"
+        /** Phase 33: a User account created or (de)activated by user management. */
+        | "User";
     /** cuid of the affected row (goes into `entityRef`). */
     entityRef?: string | null;
     description: string;
@@ -290,66 +360,100 @@ export type TicketingAuditParams = {
 };
 
 /**
+ * Append one audit row, on the given database handle (a transaction or `prisma`).
+ *
+ * Shared by the fire-and-forget writer and the tx-aware writer so the two cannot
+ * drift into different column sets.
+ */
+async function createAuditRow(
+    params: TicketingAuditParams,
+    db: Prisma.TransactionClient | typeof prisma
+): Promise<void> {
+    const beforeState = sanitize(params.beforeState);
+    const afterState = sanitize(params.afterState);
+
+    const actorType = params.actorType ?? (params.actor ? "USER" : "SYSTEM");
+
+    if (actorType === "USER" && !params.actor) {
+        throw new Error(
+            "writeTicketingAudit: a USER action must name its actor"
+        );
+    }
+
+    await db.adminAuditLog.create({
+        data: {
+            // Legacy NOT NULL column. Carries the real actor for a user-driven action;
+            // for a system or provider action it carries the corresponding explicit
+            // marker, because the column cannot be null and the alternative would be
+            // inventing a user id. `actorType` below is what makes the marker
+            // unambiguous (design §32.1's criticism of the overloaded column).
+            adminId:
+                params.actor?.userId ??
+                (actorType === "PROVIDER" ? "PROVIDER" : "SYSTEM"),
+            action: params.action,
+            entityType: params.entityType,
+            entityRef: params.entityRef ?? null,
+            description: params.description,
+
+            actorType,
+            actorUserId: params.actor?.userId ?? null,
+            actorRole: params.actor?.platformRole ?? null,
+            actorOrganizerId: params.actorOrganizerId ?? null,
+            organizerId: params.organizerId ?? null,
+
+            ...(beforeState ? { beforeState } : {}),
+            ...(afterState ? { afterState } : {}),
+            ...(params.reason ? { reason: params.reason } : {}),
+
+            ...(params.request
+                ? {
+                      ipAddress: getClientIp(params.request),
+                      userAgent:
+                          params.request.headers.get("user-agent") ?? null,
+                  }
+                : {}),
+        },
+    });
+}
+
+/**
  * Append one audit row.
  *
  * Fire-and-forget by convention, matching the existing
  * `lib/admin/audit-log.ts#createAuditLog`: an audit write must not fail the business
- * operation it describes, and a thrown audit error inside a transaction would roll
- * back a legitimate change. The failure is logged loudly instead. Financial actions in
- * later phases are specified to require a durable audit row and will need a stronger
- * guarantee (transactional write); that is a Phase 9/10 concern and is noted in the
- * Phase 4 report rather than guessed at here.
+ * operation it describes, and a thrown audit error in a non-financial path would roll
+ * back a legitimate change. The failure is logged loudly instead.
+ *
+ * MONEY EVENTS USE `writeTicketingAuditInTx` INSTEAD. A payout settlement is a financial
+ * action: the design's strong-audit requirement (durable audit in the same transaction
+ * as the money movement, brief §22 / §32) is why the in-transaction variant exists and
+ * why it does NOT swallow errors — there, a failed audit write rolls the money movement
+ * back rather than leaving an unprovable transaction.
  */
 export async function writeTicketingAudit(
     params: TicketingAuditParams
 ): Promise<void> {
     try {
-        const beforeState = sanitize(params.beforeState);
-        const afterState = sanitize(params.afterState);
-
-        const actorType = params.actorType ?? (params.actor ? "USER" : "SYSTEM");
-
-        if (actorType === "USER" && !params.actor) {
-            throw new Error(
-                "writeTicketingAudit: a USER action must name its actor"
-            );
-        }
-
-        await prisma.adminAuditLog.create({
-            data: {
-                // Legacy NOT NULL column. Carries the real actor for a user-driven action;
-                // for a system or provider action it carries the corresponding explicit
-                // marker, because the column cannot be null and the alternative would be
-                // inventing a user id. `actorType` below is what makes the marker
-                // unambiguous (design §32.1's criticism of the overloaded column).
-                adminId:
-                    params.actor?.userId ??
-                    (actorType === "PROVIDER" ? "PROVIDER" : "SYSTEM"),
-                action: params.action,
-                entityType: params.entityType,
-                entityRef: params.entityRef ?? null,
-                description: params.description,
-
-                actorType,
-                actorUserId: params.actor?.userId ?? null,
-                actorRole: params.actor?.platformRole ?? null,
-                actorOrganizerId: params.actorOrganizerId ?? null,
-                organizerId: params.organizerId ?? null,
-
-                ...(beforeState ? { beforeState } : {}),
-                ...(afterState ? { afterState } : {}),
-                ...(params.reason ? { reason: params.reason } : {}),
-
-                ...(params.request
-                    ? {
-                          ipAddress: getClientIp(params.request),
-                          userAgent:
-                              params.request.headers.get("user-agent") ?? null,
-                      }
-                    : {}),
-            },
-        });
+        await createAuditRow(params, prisma);
     } catch (error) {
         console.error("TICKETING_AUDIT_LOG_ERROR:", error);
     }
+}
+
+/**
+ * Append one audit row inside the caller's transaction, with throw-on-failure
+ * semantics — the money equivalent of a double-entry journal, where the audit line is
+ * part of the same committed fact as the debit/credit it records.
+ *
+ * Distinct from the fire-and-forget `writeTicketingAudit`: a financial transition that
+ * cannot record itself must not happen. Used exclusively by the payout/settlement V1
+ * transactional core for `settlement.paid`, `settlement.failed` and `settlement.cancel`
+ * (and by `settlement.prepare` for the claim), where reverting the row change when the
+ * audit line fails is the correct failure mode.
+ */
+export async function writeTicketingAuditInTx(
+    params: TicketingAuditParams,
+    tx: Prisma.TransactionClient
+): Promise<void> {
+    await createAuditRow(params, tx);
 }

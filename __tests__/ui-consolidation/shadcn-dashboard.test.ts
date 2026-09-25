@@ -179,7 +179,8 @@ describe("P-S2. the dashboard menu only advertises real pages", () => {
         expect(hrefs.length).toBeGreaterThanOrEqual(4);
 
         const missing = hrefs.filter((href) => {
-            const clean = href.split("?")[0];
+            // `?` query strings and `#` in-page anchors both resolve to the same page file.
+            const clean = href.split("?")[0].split("#")[0];
             const segments = clean.split("/").filter(Boolean);
             return !exists(path.join("app", ...segments, "page.tsx"));
         });

@@ -5,6 +5,8 @@ import { created, handleApi, ok } from "@/lib/api/response";
 import { parseOrThrow } from "@/lib/api/validation";
 import { requireAuth } from "@/lib/authz";
 import { requireSameOrigin } from "@/lib/csrf";
+import { getMaintenanceState } from "@/lib/app-settings";
+import { assertPurchasingAvailable } from "@/lib/maintenance";
 import { createTicketOrder } from "@/lib/ticketing/checkout";
 import {
     checkoutRequestSchema,
@@ -61,6 +63,17 @@ export async function POST(request: NextRequest) {
         }
 
         const scope = await requireAuth();
+
+        /*
+         * PHASE 32 — MAINTENANCE CLOSES THE PURCHASE PATH.
+         *
+         * The root layout blocks the PAGES, but a purchase can be initiated by a direct API
+         * call, so the refusal has to exist here too — otherwise "the storefront is closed"
+         * would mean "the storefront's UI is closed". Placed after authentication (so an
+         * anonymous caller still gets 401 rather than learning the site's state) and before
+         * the body is parsed, so a closed site never reaches the pricing transaction.
+         */
+        assertPurchasingAvailable(await getMaintenanceState());
 
         const rawKey = request.headers.get(IDEMPOTENCY_HEADER);
 

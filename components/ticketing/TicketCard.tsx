@@ -32,7 +32,7 @@ export default function TicketCard({ item }: { item: TicketWalletItem }) {
     return (
         <Link
             href={item.walletUrl}
-            className="group flex overflow-hidden rounded-2xl border border-ink-100 bg-white shadow-sm transition hover:-translate-y-0.5 hover:border-ink-200 hover:shadow-lg hover:shadow-ink-900/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+            className="group flex overflow-hidden rounded-xl border border-ink-100 bg-white shadow-sm transition hover:border-ink-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
             <div
                 className={`flex w-20 shrink-0 flex-col items-center justify-center gap-1 px-2 py-4 text-center sm:w-24 ${sportSolidTint(
@@ -52,7 +52,7 @@ export default function TicketCard({ item }: { item: TicketWalletItem }) {
 
             <div className="flex min-w-0 flex-1 flex-col gap-2 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[0.7rem] font-bold tracking-wide text-brand-700 uppercase">
+                    <span className="text-[0.7rem] font-semibold tracking-wide text-ink-500 uppercase">
                         {item.event.sportName}
                     </span>
                     <TicketStatusBadge status={item.status} size="sm" />

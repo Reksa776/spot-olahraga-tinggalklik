@@ -26,6 +26,9 @@ const PATHS: Record<Kind, string> = {
  *
  * Always states why (there is nothing here / nothing matched) and offers a way out, because an
  * empty screen with no next step is where a purchase journey is abandoned.
+ *
+ * Phase 35 empties the shell itself: no dashed card, no boxed icon. A quiet centered column — a
+ * small line icon, the message, and a single next step.
  */
 export default function EmptyState({
     title,
@@ -35,20 +38,18 @@ export default function EmptyState({
     secondaryAction,
 }: Props) {
     return (
-        <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-50/60 px-6 py-12 text-center">
-            <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-white text-ink-400 shadow-sm">
-                <svg
-                    aria-hidden
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    className="h-6 w-6"
-                >
-                    <path d={PATHS[kind]} />
-                </svg>
-            </span>
+        <div className="px-6 py-12 text-center">
+            <svg
+                aria-hidden
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                className="mx-auto h-8 w-8 text-ink-300"
+            >
+                <path d={PATHS[kind]} />
+            </svg>
 
             <h3 className="mt-4 text-base font-bold text-ink-900">{title}</h3>
             {description ? (

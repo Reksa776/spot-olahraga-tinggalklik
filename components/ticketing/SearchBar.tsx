@@ -55,11 +55,7 @@ export default function SearchBar({
                   )
                 : null}
 
-            <div
-                className={`flex w-full items-stretch gap-2 rounded-2xl border border-ink-200 bg-white p-1.5 transition focus-within:border-ink-900 focus-within:ring-4 focus-within:ring-ink-900/5 ${
-                    large ? "shadow-lg shadow-ink-900/5" : "shadow-sm"
-                }`}
-            >
+            <div className="flex w-full items-stretch gap-2 rounded-xl border border-ink-200 bg-white p-1.5 transition focus-within:border-ink-900 focus-within:ring-4 focus-within:ring-ink-900/5">
                 {leading ? (
                     <div className="hidden shrink-0 items-center sm:flex">
                         {leading}

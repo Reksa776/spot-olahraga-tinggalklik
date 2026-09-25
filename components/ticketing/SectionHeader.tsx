@@ -43,7 +43,6 @@ export default function SectionHeader({
                     className="shrink-0 rounded-lg px-1 py-1 text-sm font-semibold text-brand-700 transition hover:text-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
                 >
                     {actionLabel}
-                    <span aria-hidden> →</span>
                 </Link>
             ) : null}
         </div>

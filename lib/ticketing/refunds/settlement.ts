@@ -387,14 +387,22 @@ export async function processConfirmedRefund(
 }
 
 /**
- * Reverse the PIC fee for every order item this refund fully refunds (D-R16).
+ * Reverse the PIC fee for the newly refunded quantity of every affected order item
+ * (D-R16, Phase 30 revision — BUG-3).
  *
- * The existing `PICFeeLedger` is the only ledger: a reversal is a new, append-only row with
- * `type = REVERSAL` and `direction = DEBIT`. `PICFeeLedger.(orderItemId, type)` is UNIQUE, so
- * a single order item can carry at most one reversal; this function only reverses when the
- * item is now fully refunded AND no reversal exists. A partial refund of an item therefore
- * posts nothing yet — the reversal is written once, when the item's last ticket is refunded,
- * the only point at which the full fee is unambiguously owed back. No payout, settlement or
+ * The existing `PICFeeLedger` is the only ledger: each refund event appends one new
+ * `type = REVERSAL`, `direction = DEBIT` row whose `reversalRef` is that refund's id, so
+ * an order item may carry many incremental reversals. `PICFeeLedger.(orderItemId, type,
+ * reversalRef)` is UNIQUE, which keeps the one-EARNED-per-item wall intact while letting
+ * each refund reverse exactly the tickets it refunded:
+ *
+ *   newlyRefundedQty = tickets(REFUNDED) − ∑ quantity of existing REVERSAL rows
+ *
+ * The amount is `earned.amount × newlyRefundedQty / quantity`, floored to 2dp for every
+ * NON-final increment; the increment that takes the item to fully refunded absorbs the
+ * rounding remainder (`earned.amount − ∑ reversals`), so the cumulative reversal is EXACTLY
+ * the original EARNED amount and can never overshoot it. A re-run of an already-settled
+ * refund finds `newlyRefundedQty = 0` and posts nothing. No payout, settlement or
  * adjustment row is invented.
  */
 async function reversePicFeesForRefund(
@@ -429,19 +437,46 @@ async function reversePicFeesForRefund(
         });
 
         const orderItem = input.orderItems.find((item) => item.id === orderItemId);
-        const fullyRefunded =
-            orderItem !== undefined && refundedTickets >= orderItem.quantity;
+        const quantity = orderItem?.quantity ?? earned.quantity;
 
-        if (!fullyRefunded) {
+        const existingReversals = await tx.pICFeeLedger.findMany({
+            where: { orderItemId, type: "REVERSAL" },
+            select: { quantity: true, amount: true },
+        });
+
+        const alreadyReversedQty = existingReversals.reduce(
+            (sum, row) => sum + row.quantity,
+            0
+        );
+        const alreadyReversedAmount = existingReversals.reduce(
+            (sum, row) => sum.plus(row.amount),
+            new Prisma.Decimal(0)
+        );
+
+        // How many of this item's tickets have been refunded but not yet reversed. A
+        // re-run of a settled refund finds zero (its reversal is already on the ledger);
+        // a legacy full-item reversal also zeroes this out, so nothing double-posts.
+        const newlyRefundedQty = refundedTickets - alreadyReversedQty;
+
+        if (newlyRefundedQty <= 0) {
             continue;
         }
 
-        const existingReversal = await tx.pICFeeLedger.findFirst({
-            where: { orderItemId, type: "REVERSAL" },
-            select: { id: true },
-        });
+        const fullyRefunded = refundedTickets >= quantity;
 
-        if (existingReversal) {
+        let amount: Prisma.Decimal;
+        if (fullyRefunded) {
+            // The increment that fully refunds the item absorbs the rounding remainder,
+            // so ∑ REVERSAL == original EARNED exactly.
+            amount = earned.amount.minus(alreadyReversedAmount);
+        } else {
+            amount = earned.amount
+                .mul(newlyRefundedQty)
+                .div(quantity)
+                .toDecimalPlaces(2, Prisma.Decimal.ROUND_DOWN);
+        }
+
+        if (amount.lessThanOrEqualTo(0)) {
             continue;
         }
 
@@ -456,17 +491,18 @@ async function reversePicFeesForRefund(
                 attributionId: earned.attributionId,
                 type: "REVERSAL",
                 direction: "DEBIT",
-                amount: earned.amount,
+                amount,
                 currency: earned.currency,
                 feeType: earned.feeType,
                 rateBp: earned.rateBp,
                 fixedAmount: earned.fixedAmount,
                 basisType: earned.basisType,
                 basisAmount: earned.basisAmount,
-                quantity: earned.quantity,
+                quantity: newlyRefundedQty,
                 status: "VOID",
                 refundId: input.refundId,
                 adjustmentReason: "REFUND",
+                reversalRef: String(input.refundId),
                 idempotencyKey: `fee:reversal:${input.refundId}:${orderItemId}`,
             },
         });

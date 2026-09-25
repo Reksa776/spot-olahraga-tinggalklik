@@ -35,6 +35,12 @@ model User {
   image         String?
   role          Role           @default(CUSTOMER)
   emailVerified DateTime?
+  /// PHASE 33 — the account's own status, additive and reversible. NULL = active; a
+  /// timestamp = deactivated by an ADMIN through `/dashboard/users`. This is the SINGLE
+  /// account-status field (there was none before): it is distinct from `PICProfile.status`
+  /// (the PIC business standing) and from `OrganizerMember.status` (the tenant seat), and
+  /// it never deletes anything — deactivation only closes the entry points.
+  disabledAt    DateTime?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
   accounts      Account[]
@@ -1094,6 +1100,19 @@ model EventOrderItem {
   priceSnapshot Decimal  @db.Decimal(14, 2)
   quantity      Int
   subtotal      Decimal  @db.Decimal(14, 2)
+
+  // --- PIC fee snapshots (frozen at checkout; design §15.1 / D-23) ---
+  // The PIC fee engine prices every line inside the checkout transaction, and these
+  // columns are the snapshot that lets settlement REPLAY the EARNED ledger rows the same
+  // way (never recompute): a later rate change cannot rewrite past earnings. Nullable and
+  // additive, so a non-PIC order is byte-identical to the pre-PIC shape.
+  picFeeAmount Decimal?    @db.Decimal(14, 2)
+  picFeeType   PICFeeType?
+  basisType    FeeBasisType?
+  rateBp       Int?
+  fixedAmount  Decimal?    @db.Decimal(14, 2)
+  basisAmount  Decimal?    @db.Decimal(14, 2)
+
   createdAt     DateTime @default(now())
 
   order      EventOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -1497,6 +1516,10 @@ model PICFeeLedger {
   settlementId  String?
   adjustmentReason String?       @db.Text
   createdByUserId  String?
+  /// Source refund for an incremental reversal (D-R16, Phase 30): "NONE" on every
+  /// other row; the refund id on REVERSAL rows so an order item may carry many
+  /// proportional reversals without ever colliding on `(orderItemId, type)`.
+  reversalRef      String        @default("NONE")
   /// Unique key that makes fee posting idempotent, e.g.
   /// "fee:earned:{orderItemId}" or "fee:reversal:{refundId}".
   idempotencyKey   String        @unique
@@ -1514,8 +1537,10 @@ model PICFeeLedger {
   createdBy  User?             @relation("PICFeeEntryCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   settlementItem SettlementItem?
 
-  /// At most one EARNED entry per order item (the idempotency guard).
-  @@unique([orderItemId, type])
+  /// At most one EARNED entry per order item (the idempotency guard). `reversalRef`
+  /// is "NONE" on every non-REVERSAL row, so the one-EARNED-per-item wall holds while
+  /// REVERSAL rows disambiguate per source refund (proportional reversal, BUG-3).
+  @@unique([orderItemId, type, reversalRef])
   @@index([picProfileId, status, createdAt])
   @@index([organizerId, createdAt])
   @@index([eventId, createdAt])
@@ -1733,6 +1758,16 @@ model PlatformSetting {
   /// Above this row count an export must run as a background job
   /// (design §24.5).
   exportSyncMaxRows       Int      @default(5000)
+
+  // --- PHASE 32: application control (ADMIN only) ----------------------------
+  /// Application-wide maintenance mode. OFF by default, so an unconfigured
+  /// deployment serves traffic rather than appearing broken.
+  maintenanceMode         Boolean  @default(false)
+  /// Shown on the maintenance page. Null falls back to the built-in wording.
+  maintenanceMessage      String?  @db.Text
+  /// Optional "back at …" line beside the message.
+  maintenanceEtaMessage   String?  @db.Text
+
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt
 

@@ -35,7 +35,7 @@ export default function StickyBuyBar({
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-ink-100 bg-white/95 backdrop-blur lg:hidden">
             <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
                 <div className="min-w-0">
-                    <p className="text-[0.65rem] font-bold tracking-wide text-ink-400 uppercase">
+                    <p className="truncate text-xs text-ink-400">
                         {disabledReason ? "Status tiket" : "Harga tiket"}
                     </p>
                     <p className="truncate text-sm font-extrabold text-ink-900">

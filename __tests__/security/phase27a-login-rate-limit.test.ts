@@ -345,11 +345,16 @@ describe("auth.ts charges the right event and no other", () => {
         expect(code).not.toMatch(/rateLimiters\.login\(/);
     });
 
-    it("records exactly three failures — unknown user, no password, wrong password", () => {
+    it("records exactly four failures — unknown user, deactivated account, no password, wrong password", () => {
+        // PHASE 33 added the deactivated-account refusal (`User.disabledAt` set): a login
+        // against a disabled account is a credential failure by the same contract, costs
+        // the same timing-equalisation dummy verify, and charges the same bucket. It is the
+        // ONLY addition; every other refusal path and the success path are unchanged.
         const recordings = code.match(/rateLimiters\.login\.recordFailure\(/g) ?? [];
 
-        expect(recordings.length).toBe(3);
+        expect(recordings.length).toBe(4);
         expect(code).toContain("if (!user) {");
+        expect(code).toContain("if (user.disabledAt) {");
         expect(code).toContain("if (!user.password) {");
         expect(code).toContain("if (!valid) {");
     });

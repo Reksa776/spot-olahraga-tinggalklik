@@ -253,7 +253,7 @@ export default function PaymentInstruction({
     const expired = hasExpiry && remaining === null;
 
     return (
-        <section className="rounded-2xl border border-ink-200 bg-ink-50/60 p-4 sm:p-5">
+        <section className="rounded-xl border border-ink-100 bg-white p-4 sm:p-5">
             <header className="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-sm font-extrabold text-ink-900">
                     {instruction.flow === "REDIRECT"
@@ -283,7 +283,7 @@ export default function PaymentInstruction({
              */}
             {isSandboxPayment(instruction) ? (
                 <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    <span className="font-extrabold">🧪 SANDBOX PAYMENT</span>
+                    <span className="font-extrabold">SANDBOX PAYMENT</span>
                     <span>
                         Lingkungan uji iPaymu. Pembayaran tetap PENDING sampai dikonfirmasi.
                     </span>

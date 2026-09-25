@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { auth } from "@/auth";
+import { getApplicationBranding } from "@/lib/app-settings";
 
 import Brand from "./Brand";
 import SearchBar from "./SearchBar";
@@ -28,13 +29,19 @@ const NAV = [
  * the reference products use.
  */
 export default async function SiteHeader() {
-    const session = await auth();
+    // PHASE 32: the public header renders the ADMIN-configured logo. Fetched beside the
+    // session rather than after it, so the two reads overlap; `getApplicationBranding` is
+    // request-cached, so the footer and the maintenance page share this one query.
+    const [session, branding] = await Promise.all([
+        auth(),
+        getApplicationBranding(),
+    ]);
     const signedIn = Boolean(session?.user);
 
     return (
         <header className="sticky top-0 z-40 border-b border-ink-100 bg-white/90 backdrop-blur">
             <div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-4 sm:px-6 lg:px-8">
-                <Brand />
+                <Brand logoSrc={branding.logoUrl} />
 
                 <nav
                     aria-label="Navigasi utama"
@@ -126,7 +133,7 @@ function MobileMenu({ signedIn }: { signedIn: boolean }) {
                 </svg>
             </summary>
 
-            <div className="absolute right-0 z-50 mt-3 w-64 rounded-2xl border border-ink-100 bg-white p-3 shadow-xl shadow-ink-900/10">
+            <div className="absolute right-0 z-50 mt-3 w-64 rounded-xl border border-ink-100 bg-white p-3 shadow-lg shadow-ink-900/10">
                 <div className="px-1 pb-3">
                     <SearchBar size="sm" placeholder="Cari event…" />
                 </div>

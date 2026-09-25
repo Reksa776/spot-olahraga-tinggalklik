@@ -11,6 +11,10 @@ import {
 } from "react-icons/fi";
 
 import {
+    AccountStandingNotice,
+    picStandingNotice,
+} from "@/components/dashboard/AccountStandingNotice";
+import {
     DataRow,
     EmptyBlock,
     PageHeader,
@@ -22,6 +26,8 @@ import {
 } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
 import { getDashboardOverview } from "@/lib/dashboard/overview";
+import { computeDashboardCapabilities } from "@/lib/dashboard/scope";
+import { findPicProfileStanding } from "@/lib/pic/self-service";
 import { eventStatusTone } from "@/lib/events/status";
 import { formatEventSchedule, formatIdr } from "@/lib/ticketing/ui/format";
 
@@ -41,6 +47,34 @@ export default async function DashboardOverviewPage() {
 
     if (!scope) {
         return null;
+    }
+
+    // PHASE 34 — dashboard ENTRY is not the same as an operational surface. A platform
+    // MANAGER with no OrganizerMember yet and a PIC whose profile is not ACTIVE may both
+    // open the shell; each gets an honest standing state instead of a dashboard of empty
+    // numbers (or the generic "no access" panel). This reads the SAME authoritative scope
+    // the layout used, so the two cannot disagree.
+    const capabilities = computeDashboardCapabilities(scope);
+    const hasOperationalSurface =
+        capabilities.hasTenantAccess ||
+        capabilities.canManageSports ||
+        capabilities.canManageGlobalVenues ||
+        capabilities.canManagePlatformPic;
+
+    if (!hasOperationalSurface) {
+        if (scope.platformRole === "MANAGER") {
+            return <AccountStandingNotice standing="manager-no-organizer" />;
+        }
+
+        if (scope.platformRole === "PIC") {
+            const standing = await findPicProfileStanding(scope.userId);
+
+            if (standing !== "ACTIVE") {
+                return (
+                    <AccountStandingNotice standing={picStandingNotice(standing)} />
+                );
+            }
+        }
     }
 
     const overview = await getDashboardOverview(scope);

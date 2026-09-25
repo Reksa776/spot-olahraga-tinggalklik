@@ -219,6 +219,24 @@ export const {
                 }
 
                 /*
+                 * PHASE 33 — a deactivated account cannot sign in.
+                 *
+                 * The check sits BEFORE password verification and reads the SAME timing-
+                 * equalisation treatment as the other refusal paths: the disabled account
+                 * costs a dummy verify and counts as a credential failure, indistinguishable
+                 * from "wrong password" to the caller (never "your account is disabled" —
+                 * that would be account-state enumeration). Reactivation by an ADMIN
+                 * restores access with no data change.
+                 */
+                if (user.disabledAt) {
+                    await verifyPassword(password, TIMING_EQUALISATION_HASH);
+
+                    rateLimiters.login.recordFailure(loginKey);
+
+                    return null;
+                }
+
+                /*
                  * User tidak mempunyai password.
                  *
                  * Biasanya bisa terjadi pada user

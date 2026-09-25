@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSession, signIn } from "next-auth/react";
 import toast from "react-hot-toast";
-import { FaEnvelope } from "react-icons/fa";
 
 import AuthError from "@/components/auth/AuthError";
 import AuthShell from "@/components/auth/AuthShell";
@@ -343,11 +342,19 @@ export default function LoginForm() {
                     </label>
 
                     <div className="relative">
-                        <FaEnvelope
-                            size={16}
+                        <svg
                             aria-hidden
-                            className="absolute top-1/2 left-4 -translate-y-1/2 text-ink-400"
-                        />
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-ink-400"
+                        >
+                            <rect width="18" height="12" x="3" y="5" rx="2" />
+                            <path d="m3 7 9 6 9-6" />
+                        </svg>
 
                         <input
                             id="login-identifier"

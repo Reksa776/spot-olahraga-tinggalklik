@@ -83,11 +83,11 @@ export default function SportGrid({
                     <li key={sport.id}>
                         <Link
                             href={`/events?sport=${encodeURIComponent(sport.slug)}`}
-                            className="group flex h-full flex-col items-start gap-3 rounded-2xl border border-ink-100 bg-white p-4 transition hover:-translate-y-0.5 hover:border-ink-200 hover:shadow-lg hover:shadow-ink-900/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                            className="group flex h-full flex-col items-start gap-2.5 rounded-xl border border-ink-100 bg-white p-4 transition hover:border-ink-200 hover:bg-ink-50/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
                         >
                             <span
                                 aria-hidden
-                                className={`grid h-10 w-10 place-items-center rounded-xl text-sm font-black ring-1 ring-inset ${sportTint(
+                                className={`grid h-9 w-9 place-items-center rounded-lg text-xs font-black ring-1 ring-inset ${sportTint(
                                     sport.slug
                                 )}`}
                             >

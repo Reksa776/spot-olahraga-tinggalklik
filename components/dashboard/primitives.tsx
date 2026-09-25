@@ -390,6 +390,14 @@ export function DataRow({
  */
 export type TableColumn = {
     header: ReactNode;
+    /**
+     * PHASE 33 — the stable identity used for the header/cell React keys when present.
+     * Optional: columns without one fall back to their position, which is the only
+     * identity a purely positional column has. Callers rendering conditional or
+     * reordered columns should name them, so React can match elements across renders
+     * by domain identity instead of by slot.
+     */
+    id?: string;
     align?: "left" | "center" | "right";
     width?: number | string;
 };
@@ -461,7 +469,7 @@ export function DataTable({
                         <TableRow className="hover:bg-transparent">
                             {columns.map((column, index) => (
                                 <TableHead
-                                    key={index}
+                                    key={column.id ?? `col-${index}`}
                                     className={ALIGN_CLASS[column.align ?? "left"]}
                                     style={{ width: column.width }}
                                 >
@@ -476,7 +484,7 @@ export function DataTable({
                             <TableRow key={row.key}>
                                 {row.cells.map((cell, index) => (
                                     <TableCell
-                                        key={index}
+                                        key={columns[index]?.id ?? `cell-${index}`}
                                         className={ALIGN_CLASS[columns[index]?.align ?? "left"]}
                                     >
                                         {cell}

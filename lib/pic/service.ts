@@ -8,6 +8,7 @@ import {
     type AuthzScope,
 } from "@/lib/authz";
 import { slugify } from "@/lib/events/slug";
+import { getPicLedgerBalance, getPicLedgerBalances } from "@/lib/pic/ledger";
 import { prisma } from "@/lib/prisma";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
@@ -127,22 +128,14 @@ export async function listPicsForAdmin(_scope: AuthzScope) {
 
     const ids = rows.map((row) => row.id);
 
-    const ledger = ids.length
-        ? await prisma.pICFeeLedger.groupBy({
-              by: ["picProfileId"],
-              where: { picProfileId: { in: ids } },
-              _sum: { amount: true },
-          })
-        : [];
-
-    const ledgerByPic = new Map(
-        ledger.map((entry) => [entry.picProfileId, entry._sum.amount ?? new Prisma.Decimal(0)])
-    );
+    const ledgerByPic = await getPicLedgerBalances(ids);
 
     return {
         items: rows.map((row) => ({
             ...toPicPayload(row),
-            ledgerTotal: (ledgerByPic.get(row.id) ?? new Prisma.Decimal(0)).toFixed(2),
+            ledgerTotal: (
+                ledgerByPic.get(row.id)?.net ?? new Prisma.Decimal(0)
+            ).toFixed(2),
         })),
     };
 }
@@ -201,7 +194,12 @@ export async function createPic(
 
     const account = await prisma.user.findUnique({
         where: { email: input.email },
-        select: { id: true, email: true, picProfile: { select: { id: true } } },
+        select: {
+            id: true,
+            email: true,
+            platformRole: true,
+            picProfile: { select: { id: true } },
+        },
     });
 
     if (!account) {
@@ -217,27 +215,60 @@ export async function createPic(
 
     const picCode = await resolvePicCode(input.displayName, input.picCode);
 
-    const created = await prisma.pICProfile.create({
-        data: {
-            userId: account.id,
-            picCode,
-            displayName: input.displayName,
-            // Deliberately PENDING: creating a profile is not approving it, and an unapproved
-            // profile cannot be assigned to an event.
-            status: "PENDING",
-            ...(input.defaultFeeRateBp === undefined
-                ? {}
-                : { defaultFeeRateBp: input.defaultFeeRateBp }),
-            ...(input.canSellAllEvents === undefined
-                ? {}
-                : { canSellAllEvents: input.canSellAllEvents }),
-            bankName: input.bankName ?? null,
-            bankAccountName: input.bankAccountName ?? null,
-            bankAccountNumber: input.bankAccountNumber ?? null,
-            taxId: input.taxId ?? null,
-            identityNote: input.identityNote ?? null,
-        },
-        select: PIC_SELECT,
+    /*
+     * PHASE 33 — the PIC BUSINESS identity implies the PIC PLATFORM role.
+     *
+     * Before this change nothing in the codebase ever set `platformRole = PIC`, so a
+     * customer who was given a PICProfile stayed `platformRole = CUSTOMER`. Entry to the
+     * self-service dashboard still worked (the layout admits on the ACTIVE profile, not on
+     * the role), but the own-scope permission map resolves against the PLATFORM ROLE — and
+     * the CUSTOMER map deliberately withholds `pic_fee.read.own` /
+     * `pic_attribution.read.own`. The result was a half-broken PIC: Event Saya and Referral
+     * rendered, Pendapatan (fee summary + ledger, `getMyPicOverview`) failed FORBIDDEN.
+     *
+     * The role is set on the SAME account, in the SAME transaction — never a second User.
+     * It is additive and preserves every customer capability: orders, tickets and refunds
+     * hang off `userId`, which does not move, and the PIC own-map is a strict superset of
+     * the customer map for everything a buyer does (see `PLATFORM_ROLE_OWN_PERMISSIONS`).
+     *
+     * DELIBERATELY NOT OVERWRITTEN: an ADMIN or MANAGER account. Promoting an operator
+     * would be irreversible through this surface and is not this route's decision; their
+     * profile still works, because their own map already includes the fee/attribution
+     * families where they hold tenant authority, and `hasActivePicProfile` gates entry.
+     */
+    const shouldSetPicPlatformRole =
+        account.platformRole === null || account.platformRole === "CUSTOMER";
+
+    const created = await prisma.$transaction(async (tx) => {
+        if (shouldSetPicPlatformRole) {
+            await tx.user.update({
+                where: { id: account.id },
+                data: { platformRole: "PIC" },
+            });
+        }
+
+        return tx.pICProfile.create({
+            data: {
+                userId: account.id,
+                picCode,
+                displayName: input.displayName,
+                // Deliberately PENDING: creating a profile is not approving it, and an
+                // unapproved profile cannot be assigned to an event.
+                status: "PENDING",
+                ...(input.defaultFeeRateBp === undefined
+                    ? {}
+                    : { defaultFeeRateBp: input.defaultFeeRateBp }),
+                ...(input.canSellAllEvents === undefined
+                    ? {}
+                    : { canSellAllEvents: input.canSellAllEvents }),
+                bankName: input.bankName ?? null,
+                bankAccountName: input.bankAccountName ?? null,
+                bankAccountNumber: input.bankAccountNumber ?? null,
+                taxId: input.taxId ?? null,
+                identityNote: input.identityNote ?? null,
+            },
+            select: PIC_SELECT,
+        });
     });
 
     await writeTicketingAudit({
@@ -253,6 +284,10 @@ export async function createPic(
             displayName: created.displayName,
             status: created.status,
             defaultFeeRateBp: created.defaultFeeRateBp,
+            // PHASE 33 — the account-role transition the creation performed (or did not).
+            // Identity-level only; the profile's own money fields are unchanged.
+            accountPlatformRole: shouldSetPicPlatformRole ? "PIC" : account.platformRole,
+            accountPlatformRoleChanged: shouldSetPicPlatformRole,
         },
         request,
     });
@@ -333,7 +368,7 @@ export async function getPicDetail(scope: AuthzScope, picId: string) {
         throw AppError.notFound("PIC tidak ditemukan.");
     }
 
-    const [assignments, ledger] = await Promise.all([
+    const [assignments, ledger, balance, totalsByType] = await Promise.all([
         prisma.pICEventAssignment.findMany({
             where: { picProfileId: pic.id },
             select: {
@@ -350,6 +385,7 @@ export async function getPicDetail(scope: AuthzScope, picId: string) {
             orderBy: [{ createdAt: "desc" }],
             take: 100,
         }),
+        // The ledger TABLE stays paginated — this is a listing, not a total.
         prisma.pICFeeLedger.findMany({
             where: { picProfileId: pic.id },
             select: {
@@ -364,10 +400,33 @@ export async function getPicDetail(scope: AuthzScope, picId: string) {
             orderBy: [{ createdAt: "desc" }],
             take: 100,
         }),
+        // The TOTALS, by contrast, read the WHOLE ledger via aggregate — never the same
+        // 100-row cap, and never a float. `net` is `Σ CREDIT − Σ DEBIT` over all rows
+        // (GAP-2): a post-paid refund that has not been netted off a payout yet shows as
+        // a negative balance instead of silently inflating the row sum.
+        getPicLedgerBalance(pic.id),
+        prisma.pICFeeLedger.groupBy({
+            by: ["type"],
+            where: { picProfileId: pic.id },
+            _count: { _all: true },
+            _sum: { amount: true },
+        }),
     ]);
 
     return {
         pic: toPicPayload(pic),
+        balance: {
+            credit: balance.credit.toFixed(2),
+            debit: balance.debit.toFixed(2),
+            net: balance.net.toFixed(2),
+        },
+        totalsByType: totalsByType
+            .map((entry) => ({
+                type: entry.type,
+                count: entry._count._all,
+                amount: (entry._sum.amount ?? new Prisma.Decimal(0)).toFixed(2),
+            }))
+            .sort((a, b) => a.type.localeCompare(b.type)),
         assignments: assignments.map((assignment) => ({
             id: assignment.id,
             eventId: assignment.eventId,

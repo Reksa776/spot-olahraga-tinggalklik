@@ -55,7 +55,7 @@ export default function CatalogFilters({ params, sports, total }: Props) {
     return (
         <section
             aria-label="Filter event"
-            className="rounded-2xl border border-ink-100 bg-white p-4 shadow-sm sm:p-5"
+            className="rounded-xl border border-ink-100 bg-white p-4 sm:p-5"
         >
             <SearchBar
                 size="lg"

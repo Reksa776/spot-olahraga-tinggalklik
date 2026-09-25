@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/dashboard/ui/button";
 import { getAuthzScope } from "@/lib/authz";
 import { isAuthzError } from "@/lib/authz/errors";
+import { getPicFeeReconciliation } from "@/lib/pic/reconciliation";
 import { getPicDetail } from "@/lib/pic/service";
 
 /**
@@ -116,11 +117,15 @@ export default async function DashboardPicDetailPage({
         notFound();
     }
 
-    const { pic, assignments, ledger } = result;
+    const { pic, assignments, ledger, balance, totalsByType } = result;
 
-    const ledgerTotal = ledger
-        .filter((entry) => entry.direction === "CREDIT")
-        .reduce((sum, entry) => sum + Number(entry.amount), 0);
+    // The reconciliation breakdown is an UNGUARDED read: it is safe here because the
+    // `getPicDetail` call above has already enforced the platform `pic.manage` permission
+    // (or the organizer scope) before a single row is fetched. It explains the operator's
+    // number — how much EARNED is settled vs still payable, and how much REVERSAL is
+    // consumed, carried (a post-paid claw-back awaiting the next settlement) or pending —
+    // so the total is not a figure the operator has to take on faith.
+    const reconciliation = await getPicFeeReconciliation(id);
 
     return (
         <div className="flex flex-col gap-6">
@@ -139,10 +144,80 @@ export default async function DashboardPicDetailPage({
                 <StatCard label="Event ditugaskan" value={pic.counts.assignments} />
                 <StatCard label="Order teratribusi" value={pic.counts.orders} />
                 <StatCard
-                    label="Total fee (kredit)"
-                    value={formatRupiah(String(ledgerTotal))}
+                    label="Saldo fee (net: kredit − debit)"
+                    value={formatRupiah(balance.net)}
                 />
             </div>
+
+            {totalsByType.length > 0 ? (
+                <SectionCard title="Rekap ledger">
+                    <div className="flex flex-wrap gap-3">
+                        {totalsByType.map((entry) => (
+                            <div
+                                key={entry.type}
+                                className="rounded-lg border bg-muted/40 px-3 py-2 text-sm"
+                            >
+                                <div className="font-medium">{entry.type}</div>
+                                <div className="tabular-nums text-muted-foreground">
+                                    {entry.count} baris · {formatRupiah(entry.amount)}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </SectionCard>
+            ) : null}
+
+            <SectionCard
+                title="Rekonsiliasi fee"
+                description="Menjelaskan angka saldo: EARNED yang sudah/belum diselesaikan, dan REVERSAL yang terpakai, tertunda ke settlement berikutnya, atau belum jatuh tempo."
+            >
+                <div className="flex flex-col">
+                    <DataRow
+                        divider={false}
+                        title="Fee diperoleh (EARNED)"
+                        meta={`Sudah diselesaikan ${formatRupiah(reconciliation.earned.settled)} · belum ${formatRupiah(reconciliation.earned.unsettled)}`}
+                        trailing={formatRupiah(reconciliation.earned.total)}
+                    />
+                    <DataRow
+                        title="Pembatalan (REVERSAL)"
+                        meta={`Terpakai ${formatRupiah(reconciliation.reversal.consumed)} · tertunda ${formatRupiah(reconciliation.reversal.carried)} · pending ${formatRupiah(reconciliation.reversal.pending)}`}
+                        trailing={formatRupiah(reconciliation.reversal.total)}
+                    />
+                    <DataRow
+                        title="Pencairan (PAYOUT)"
+                        meta={`${reconciliation.payout.count} baris debit`}
+                        trailing={formatRupiah(reconciliation.payout.total)}
+                    />
+                    <DataRow
+                        title="Saldo (Σ kredit − Σ debit)"
+                        meta="Sama dengan rumus kanonik yang dipakai di semua permukaan uang PIC"
+                        trailing={formatRupiah(reconciliation.balance.net)}
+                    />
+                    <div className="flex flex-wrap gap-2 pt-2">
+                        <StatusBadge tone={reconciliation.checks.earnedSplits ? "success" : "error"}>
+                            {reconciliation.checks.earnedSplits
+                                ? "EARNED terbagi tepat"
+                                : "EARNED tidak seimbang"}
+                        </StatusBadge>
+                        <StatusBadge
+                            tone={reconciliation.checks.reversalSplits ? "success" : "error"}
+                        >
+                            {reconciliation.checks.reversalSplits
+                                ? "REVERSAL terbagi tepat"
+                                : "REVERSAL tidak seimbang"}
+                        </StatusBadge>
+                        <StatusBadge
+                            tone={
+                                reconciliation.checks.netMatchesDirection ? "success" : "error"
+                            }
+                        >
+                            {reconciliation.checks.netMatchesDirection
+                                ? "Saldo cocok dengan arah"
+                                : "Saldo tidak cocok"}
+                        </StatusBadge>
+                    </div>
+                </div>
+            </SectionCard>
 
             <SectionCard title="Profil">
                 <div className="flex flex-col">

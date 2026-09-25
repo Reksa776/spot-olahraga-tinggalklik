@@ -3,8 +3,6 @@ import Link from "next/link";
 import type { PublicEventCard } from "@/lib/events/catalog";
 import {
     formatEventDateShort,
-    formatEventDay,
-    formatEventMonthShort,
     formatEventTime,
     formatPriceFrom,
 } from "@/lib/ticketing/ui/format";
@@ -18,15 +16,13 @@ import { sportLabel, sportTint } from "@/lib/ticketing/ui/sport-tint";
  * Still presentational only: it renders exactly the fields `PublicEventCard` exposes, so it cannot
  * become a route through which an unexposed column reaches the browser (Phase 4's rule, unchanged).
  *
- * What changed and why:
- *   • The date is now a calendar chip on the image itself, because "when" is the first thing a
- *     buyer scans and it was previously buried mid-list in a `<dl>`.
- *   • Availability moved next to the title as a badge; the old card only badged three of four sales
- *     states, so "sold out" and "closed" looked like every other card from a distance.
- *   • The sport tint is deterministic (see `sport-tint.ts`) so a grid reads as categories rather
- *     than as 20 identical grey labels.
- *   • The price is stated as "Mulai …" — the payload gives a minimum, and "Rp150.000" alone reads
- *     as *the* price of a tiered event.
+ * Phase 35 keeps the same contract and makes the card quieter: a plain photo (no gradient wash, no
+ * calendar chip over the image), the sport as a small tinted tag, and availability as a text label
+ * beside the price instead of a pill competing with the photo. The date and time now sit alongside
+ * the venue in a single `<dl>`, so the card reads top-to-bottom like a listing, not a poster.
+ *
+ * The price is stated as "Mulai …" — the payload gives a minimum, and "Rp150.000" alone reads as
+ * *the* price of a tiered event.
  *
  * The whole card stays one `<Link>` (the entire surface is the target) and contains no nested
  * interactive element, which would be invalid and would break keyboard order.
@@ -37,7 +33,7 @@ export default function EventCard({ event }: { event: PublicEventCard }) {
     return (
         <Link
             href={`/e/${event.slug}`}
-            className="group flex flex-col overflow-hidden rounded-2xl border border-ink-100 bg-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-ink-200 hover:shadow-xl hover:shadow-ink-900/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+            className="group flex flex-col overflow-hidden rounded-xl border border-ink-100 bg-white shadow-sm transition hover:border-ink-200 hover:shadow-md hover:shadow-ink-900/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
             <div className="relative aspect-16/10 w-full overflow-hidden bg-ink-100">
                 {event.bannerUrl ? (
@@ -47,65 +43,44 @@ export default function EventCard({ event }: { event: PublicEventCard }) {
                         src={event.bannerUrl}
                         alt={event.title}
                         loading="lazy"
-                        className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
+                        className="h-full w-full object-cover"
                     />
                 ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-ink-800 to-ink-950">
-                        <span className="text-sm font-semibold text-white/60">
+                    <div className="flex h-full w-full items-center justify-center bg-ink-100">
+                        <span className="text-sm font-semibold text-ink-400">
                             {event.sportName}
                         </span>
                     </div>
                 )}
-
-                {/* Gradient is below the chips, not over them, so contrast never depends on the photo. */}
-                <div
-                    aria-hidden
-                    className="absolute inset-x-0 bottom-0 h-16 bg-linear-to-t from-black/45 to-transparent"
-                />
-
-                <div className="absolute top-3 left-3 flex items-center gap-2">
-                    <span className="flex flex-col items-center rounded-xl bg-white/95 px-2.5 py-1.5 text-center leading-none shadow-sm backdrop-blur">
-                        <span className="text-base font-extrabold text-ink-900">
-                            {formatEventDay(event.startAt)}
-                        </span>
-                        <span className="mt-0.5 text-[0.65rem] font-bold tracking-wide text-brand-700 uppercase">
-                            {formatEventMonthShort(event.startAt)}
-                        </span>
-                    </span>
-                </div>
-
-                {badge ? (
-                    <span
-                        className={`absolute top-3 right-3 rounded-full px-2.5 py-1 text-[0.7rem] font-bold ${badge.className}`}
-                    >
-                        {badge.label}
-                    </span>
-                ) : null}
-
-                <span className="absolute bottom-3 left-3 text-xs font-semibold text-white drop-shadow">
-                    {formatEventTime(event.startAt)} WIB
-                </span>
             </div>
 
-            <div className="flex flex-1 flex-col gap-3 p-4">
-                <span
-                    className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-[0.7rem] font-bold ring-1 ring-inset ${sportTint(
-                        event.sportSlug
-                    )}`}
-                >
-                    {sportLabel(event.sportName)}
-                </span>
+            <div className="flex flex-1 flex-col gap-2.5 p-4">
+                <div className="flex items-center justify-between gap-2">
+                    <span
+                        className={`inline-flex w-fit items-center rounded-md px-2 py-0.5 text-[0.7rem] font-bold ring-1 ring-inset ${sportTint(
+                            event.sportSlug
+                        )}`}
+                    >
+                        {sportLabel(event.sportName)}
+                    </span>
 
-                <h3 className="line-clamp-2 text-base leading-snug font-bold text-ink-900 group-hover:text-brand-800">
+                    {badge ? (
+                        <span className={badge.className}>{badge.label}</span>
+                    ) : null}
+                </div>
+
+                <h3 className="line-clamp-2 text-[0.95rem] leading-snug font-bold text-ink-900 group-hover:text-brand-800">
                     {event.title}
                 </h3>
 
                 <dl className="mt-auto space-y-1.5 text-[0.8rem] text-ink-500">
+                    <meta itemProp="startDate" content={event.startAt} />
                     <div className="flex items-center gap-2">
                         <dt className="sr-only">Jadwal</dt>
                         <Icon path="M4 7h16v13H4zM4 11h16M9 4v4M15 4v4" />
                         <dd className="truncate">
-                            {formatEventDateShort(event.startAt)}
+                            {formatEventDateShort(event.startAt)} ·{" "}
+                            {formatEventTime(event.startAt)} WIB
                         </dd>
                     </div>
 
@@ -156,21 +131,22 @@ function Icon({ path }: { path: string }) {
  * The availability badge.
  *
  * `OPEN` is the only state without one: a badge saying "on sale" on every card is noise, and its
- * absence is not ambiguous once the other states are marked.
+ * absence is not ambiguous once the other states are marked. Rendered as a labelling caption next
+ * to the price, not a pill over the photograph.
  */
 function availabilityBadge(
     event: PublicEventCard
 ): { label: string; className: string } | null {
     if (event.isSoldOut || event.salesState === "SOLD_OUT") {
-        return { label: "Tiket habis", className: "bg-white text-red-700" };
+        return { label: "Tiket habis", className: "text-xs font-bold text-red-600" };
     }
 
     if (event.salesState === "NOT_STARTED") {
-        return { label: "Segera", className: "bg-white text-amber-700" };
+        return { label: "Segera", className: "text-xs font-bold text-amber-600" };
     }
 
     if (event.salesState === "CLOSED") {
-        return { label: "Ditutup", className: "bg-white text-ink-600" };
+        return { label: "Ditutup", className: "text-xs font-bold text-ink-500" };
     }
 
     return null;

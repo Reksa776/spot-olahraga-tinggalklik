@@ -1,40 +1,36 @@
 import type { Metadata } from "next";
+import SiteShell from "@/components/ticketing/SiteShell";
 import FaqContent from "./FaqContent";
 
 export const metadata: Metadata = {
     title: "FAQ | Pertanyaan Umum",
     description:
-        "Temukan jawaban atas pertanyaan umum seputar cara berbelanja, pembayaran, pengiriman, pengembalian, dan layanan pelanggan di toko kami.",
+        "Jawaban atas pertanyaan umum seputar event, pembelian tiket, pembayaran, dan pengembalian dana di TinggalKlik.Co.",
     openGraph: {
         title: "FAQ | Pertanyaan Umum",
         description:
-            "Temukan jawaban atas pertanyaan umum seputar cara berbelanja, pembayaran, pengiriman, pengembalian, dan layanan pelanggan.",
+            "Jawaban atas pertanyaan umum seputar event, pembelian tiket, pembayaran, dan pengembalian dana.",
     },
 };
 
 export default function FaqPage() {
     return (
-        <main className="min-h-screen bg-gray-50">
-            <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
-                {/* HEADER */}
-                <div className="mb-8 text-center">
-                    <span className="inline-flex items-center rounded-full bg-rose-100 px-4 py-1.5 text-sm font-semibold text-rose-600">
-                        ❓ FAQ
-                    </span>
-
-                    <h1 className="mt-4 text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+        <SiteShell>
+            <div className="border-b border-ink-100 bg-ink-50/50">
+                <div className="mx-auto max-w-3xl px-4 py-10 sm:px-6 sm:py-14">
+                    <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
                         Pertanyaan Umum
                     </h1>
-
-                    <p className="mt-3 text-base text-gray-500">
+                    <p className="mt-2 max-w-2xl text-sm text-ink-500">
                         Temukan jawaban atas pertanyaan yang
-                        sering ditanyakan oleh customer kami.
+                        sering ditanyakan oleh pengunjung kami.
                     </p>
                 </div>
+            </div>
 
-                {/* FAQ LIST */}
+            <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
                 <FaqContent />
             </div>
-        </main>
+        </SiteShell>
     );
 }

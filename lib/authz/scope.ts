@@ -35,6 +35,13 @@ export const AUTHZ_SCOPE_TTL_MS = 60_000;
  * Returns `null` when the user does not exist — the caller must treat that as
  * unauthenticated (fail closed), never as "no restrictions".
  *
+ * PHASE 33 — the same answer for a DEACTIVATED account (`User.disabledAt` set). Every
+ * server-side authorization check begins here, so nulling the scope closes the dashboard,
+ * the API guards and every require* path at once, for an already-open session too (the
+ * scope is re-resolved from the database per request, never read from the JWT). The login
+ * form refuses the same account independently, and the change is reversible: clearing
+ * `disabledAt` restores the exact prior authority.
+ *
  * Note on `platformRole`: `User.platformRole` is nullable (Phase 2 left it
  * nullable so the retail `role` column was untouched). A null value resolves to
  * `CUSTOMER`, which holds no platform-wide capability. There is deliberately **no
@@ -49,7 +56,7 @@ export async function resolveAuthzScope(
     const [user, memberships, grants] = await Promise.all([
         prisma.user.findUnique({
             where: { id: userId },
-            select: { id: true, platformRole: true },
+            select: { id: true, platformRole: true, disabledAt: true },
         }),
 
         // Every membership is fetched, including non-ACTIVE ones. The ACTIVE
@@ -75,7 +82,7 @@ export async function resolveAuthzScope(
         }),
     ]);
 
-    if (!user) {
+    if (!user || user.disabledAt) {
         return null;
     }
 

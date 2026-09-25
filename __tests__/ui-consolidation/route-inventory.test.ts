@@ -70,8 +70,10 @@ describe("P10-1. the inventory covers the whole application", () => {
         expect(INVENTORY_ROUTES).toEqual(PAGES_ON_DISK);
     });
 
-    it("is 31 pages, and says so", () => {
-        expect(ROUTE_INVENTORY.length).toBe(31);
+    it("is 38 pages, and says so", () => {
+        // 33 before PHASE 32 (+4: the three application-control pages and /maintenance);
+        // PHASE 33 added the ADMIN-only /dashboard/users surface.
+        expect(ROUTE_INVENTORY.length).toBe(38);
     });
 
     it("lists each route exactly once", () => {
@@ -134,9 +136,11 @@ describe("P10-3. the inventory describes reality, not intent", () => {
         );
 
         // Overview + events (list/new/detail/check-in) + venues + orders (list/detail) +
-        // customers + payments + refunds + PIC (list/detail) + reports + settings
-        // (hub/sports/venues) + check-in hub = 18.
-        expect(dashboardRoutes.length).toBe(18);
+        // customers + payments + refunds + PIC (list/detail) + settlements (list/detail) +
+        // reports + settings (hub/sports/venues) + check-in hub = 20, plus PHASE 32's three
+        // application-control pages (application, branding, maintenance) = 23, plus PHASE
+        // 33's ADMIN-only users page = 24.
+        expect(dashboardRoutes.length).toBe(24);
     });
 
     it("contains no retail route", () => {

@@ -8,6 +8,7 @@ import {
     type EventSalesWindow,
     type TicketTypeSnapshot,
 } from "@/lib/events/sales-state";
+import { resolveReferralAtCheckout } from "@/lib/pic/attribution";
 import { prisma } from "@/lib/prisma";
 
 import type { CheckoutRequest } from "./checkout-validation";
@@ -409,18 +410,21 @@ export async function createTicketOrder(params: {
     // §17.2 for MVP, with every undecided component at its documented value:
     //   discount   = 0      (coupons are post-MVP)
     //   platformFee= 0      (D-11: "Ship 0 (no fee) until configured — never a silent default")
-    //   picFeeTotal= 0      (the fee engine is Phase 9)
+    //   picFeeTotal= 0 for a non-PIC order; for a PIC order the referral resolver sets it
+    //                inside the transaction and it is absorbed by the organizer (D-23),
+    //                so the buyer's `total` is unchanged by its presence.
     //   gatewayFee = null   (provider-reported post-settlement, §12.1; never assumed)
     //   total      = grossAfterDisc + passToBuyer fees = subtotal
-    //   organizerNetAmount = grossAfterDisc − fees = subtotal
+    //   organizerNetAmount = total − platformFee − picFeeTotal
     // Because the fee values are zero, D-22/D-23's pass-to-buyer-vs-absorbed choice has
     // no observable effect at creation; the fields are stored independently (§17.3), so
     // resolving those decisions later is not a migration.
     const discount = new Prisma.Decimal(0);
     const platformFee = new Prisma.Decimal(0);
-    const picFeeTotal = new Prisma.Decimal(0);
     const total = subtotal.sub(discount);
-    const organizerNetAmount = total;
+    // Reassigned inside the transaction if the referral resolves to a real PIC fee.
+    let picFeeTotal = new Prisma.Decimal(0);
+    let organizerNetAmount = total;
 
     // Single-currency MVP (§36.5). All rows default to IDR and no client input can set
     // this, so a mismatch can only mean a data problem — refuse rather than mislabel.
@@ -476,6 +480,34 @@ export async function createTicketOrder(params: {
                         select: { id: true },
                     });
 
+                    // ── PIC attribution (vertical slice) ─────────────────────────────
+                    // Resolve the `?pic=`/shareToken into money intent. Read-only, inside
+                    // this same transaction, and FAIL-CLOSED: `null` means the sale simply
+                    // continues as a normal no-PIC order. The order create below persists
+                    // every snapshot the resolver returns, so settlement can REPLAY the
+                    // EARNED fee rows instead of recomputing them under a possibly-changed
+                    // rate (design §15.1 / D-23).
+                    const referral = await resolveReferralAtCheckout(
+                        {
+                            shareToken: request.shareToken,
+                            eventId: event.id,
+                            orderSubtotal: subtotal,
+                            discount,
+                            lines: priced.map((line) => ({
+                                ticketTypeId: line.ticketTypeId,
+                                quantity: line.quantity,
+                                lineSubtotal: line.lineSubtotal,
+                            })),
+                            buyerUserId: actor.userId,
+                        },
+                        tx
+                    );
+
+                    picFeeTotal = referral ? referral.picFeeTotal : new Prisma.Decimal(0);
+                    // D-23: the organizer ABSORBS the PIC fee — the buyer's `total` is
+                    // untouched, the organizer's net is net-of-PIC-fee.
+                    organizerNetAmount = total.sub(picFeeTotal);
+
                     const order = await tx.eventOrder.create({
                         data: {
                             orderNumber,
@@ -490,15 +522,46 @@ export async function createTicketOrder(params: {
                             subtotal: roundToRupiah(subtotal),
                             discount,
                             platformFee,
-                            picFeeTotal,
+                            picFeeTotal: roundToRupiah(picFeeTotal),
                             total: roundToRupiah(total),
                             organizerNetAmount: roundToRupiah(organizerNetAmount),
                             currency,
                             expiresAt,
                             note: null,
+                            picProfileId: referral?.picProfileId ?? null,
                         },
                         select: { id: true },
                     });
+
+                    // The one-to-one attribution row (orderId UNIQUE) — the structural
+                    // "duplicate attribution impossible" guarantee (design §14.6). Written
+                    // in the same transaction as the order, so an order cannot exist with
+                    // a fee snapshot but no attribution (or vice versa).
+                    if (referral) {
+                        await tx.pICAttribution.create({
+                            data: {
+                                orderId: order.id,
+                                organizerId: event.organizerId,
+                                eventId: event.id,
+                                picProfileId: referral.picProfileId,
+                                source: "PIC_LINK",
+                                method: "LINK",
+                                shareToken: request.shareToken ?? null,
+                                // First and last touch are the same moment for V1: the link
+                                // is only ever observable at checkout time (D-01 future).
+                                firstTouchAt: now,
+                                lastTouchAt: now,
+                                selfReferral: referral.selfReferral,
+                            },
+                        });
+                    }
+
+                    const referralLineByType = new Map(
+                        (referral?.lines ?? []).map((line) => [
+                            line.ticketTypeId,
+                            line,
+                        ])
+                    );
 
                     // `priced` is already sorted by ticketTypeId — §11.3's deterministic
                     // lock order, which is what stops two multi-line checkouts
@@ -541,6 +604,9 @@ export async function createTicketOrder(params: {
                             });
                         }
 
+                        const referralLine =
+                            referral === null ? null : referralLineByType.get(line.ticketTypeId);
+
                         await tx.eventOrderItem.create({
                             data: {
                                 orderId: order.id,
@@ -551,6 +617,25 @@ export async function createTicketOrder(params: {
                                 priceSnapshot: line.unitPrice,
                                 quantity: line.quantity,
                                 subtotal: line.lineSubtotal,
+                                // PIC fee snapshots (frozen at checkout; §15.1). NULL for
+                                // a non-PIC order, which is byte-identical to the pre-PIC
+                                // shape. `feeConfig` fields repeat per item because each
+                                // line's fee is per-line; the config is order-wide.
+                                ...(referral
+                                    ? {
+                                          picFeeAmount: roundToRupiah(
+                                              referralLine?.fee ?? new Prisma.Decimal(0)
+                                          ),
+                                          picFeeType: referral.feeConfig.feeType,
+                                          basisType: referral.feeConfig.basisType,
+                                          rateBp: referral.feeConfig.rateBp,
+                                          fixedAmount: referral.feeConfig.fixedAmount,
+                                          basisAmount: roundToRupiah(
+                                              referralLine?.basisAmount ??
+                                                  new Prisma.Decimal(0)
+                                          ),
+                                      }
+                                    : {}),
                             },
                         });
 
@@ -647,6 +732,8 @@ export async function createTicketOrder(params: {
             currency,
             subtotal: moneyString(subtotal),
             total: moneyString(total),
+            picFeeTotal: moneyString(picFeeTotal),
+            organizerNetAmount: moneyString(organizerNetAmount),
             status: "PENDING_PAYMENT",
             expiresAt: expiresAt.toISOString(),
             idempotencyKey,

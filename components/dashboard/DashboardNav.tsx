@@ -82,6 +82,7 @@ export default function DashboardNav({
     sectionDescription,
     userName,
     userEmail,
+    logoSrc = null,
     onNavigate,
 }: {
     nav: ShellNavGroup[];
@@ -89,6 +90,8 @@ export default function DashboardNav({
     sectionDescription?: string;
     userName?: string | null;
     userEmail?: string | null;
+    /** PHASE 32 — configured application logo, resolved server-side. */
+    logoSrc?: string | null;
     onNavigate?: () => void;
 }) {
     const pathname = usePathname();
@@ -139,7 +142,10 @@ export default function DashboardNav({
             {/* ── LOCKUP + SECTION CONTEXT ───────────────────────────────────────── */}
             <SidebarHeader>
                 <div className={cn("min-w-0 flex-1", collapsed && "md:hidden")}>
-                    <Brand tone="light" />
+                    {/* The lockup is a link to `/` (see `components/Brand.tsx`), so clicking the
+                        dashboard logo returns to the public landing page — the behaviour the brief
+                        asks for, and normal internal navigation rather than a `window.location`. */}
+                    <Brand tone="light" logoSrc={logoSrc} />
 
                     <div className="mt-2.5 flex flex-col gap-1">
                         <span className="w-fit rounded-full bg-sidebar-accent px-2 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wider text-sidebar-accent-foreground">

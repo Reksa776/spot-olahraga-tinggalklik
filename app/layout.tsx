@@ -1,9 +1,14 @@
 import "./globals.css";
 
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { Toaster } from "react-hot-toast";
 
+import { auth } from "@/auth";
 import AuthProvider from "@/components/providers/AuthProvider";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/components/dashboard/theme/theme-config";
+import { getMaintenanceState } from "@/lib/app-settings";
+import { MAINTENANCE_PATH, maintenanceBlocksPage } from "@/lib/maintenance";
 
 /**
  * The application root.
@@ -62,11 +67,66 @@ import { THEME_BOOTSTRAP_SCRIPT } from "@/components/dashboard/theme/theme-confi
  * contract are pinned by `__tests__/ui-consolidation/theme-hydration.test.ts`.
  */
 
-export default function RootLayout({
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PHASE 32 — APPLICATION MAINTENANCE: THE SERVER-SIDE ENFORCEMENT POINT
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Availability is decided HERE, in the root Server Component, before any page renders a
+ * single byte. The brief requires a SERVER-SIDE mechanism and explicitly forbids a
+ * client-side React check, and this is the only place that (a) runs for every page, (b) can
+ * read the database, and (c) cannot be skipped by a client, a hard refresh, a cached RSC
+ * payload or a disabled `<script>`.
+ *
+ * WHY THE PATH COMES FROM A HEADER
+ * A Server Component cannot read its own route path. `proxy.ts` therefore stamps the
+ * request path onto `x-pathname` (it is the only layer that runs before the render and knows
+ * the path). That header is a routing HINT, never an authority: it is fed to a PURE decision
+ * function, and the actor's role comes from the server-side session, so a forged value can
+ * at worst redirect the forger's own request.
+ *
+ * WHY `auth()` IS CALLED HERE AT ALL
+ * ADMIN must keep the dashboard while maintenance is ON — that is the only way to switch it
+ * back off, and the brief calls a locked-out ADMIN a failure of the feature. The role is read
+ * from the session, which is resolved server-side from the database; `platformRole` is NEVER
+ * read from a request header, body or query.
+ *
+ * WHY A MISSING HEADER DOES NOT BLOCK
+ * `x-pathname` is absent only for a request the proxy matcher does not cover — a static
+ * asset, or (in principle) a path containing a file extension, which this application serves
+ * no page for. Failing OPEN there is deliberate: the one state this must never produce is a
+ * redirect loop, and a missing path is exactly the input for which "block" and "redirect to
+ * the maintenance page" are indistinguishable. Every real page route is covered by the
+ * matcher, so the public surface is closed in practice, and the loop hazard is eliminated
+ * structurally rather than by care.
+ */
+export default async function RootLayout({
     children,
 }: Readonly<{
     children: React.ReactNode;
 }>) {
+    const [requestHeaders, session, maintenance] = await Promise.all([
+        headers(),
+        auth(),
+        getMaintenanceState(),
+    ]);
+
+    if (maintenance.enabled) {
+        const pathname = requestHeaders.get("x-pathname");
+
+        if (
+            pathname &&
+            maintenanceBlocksPage(
+                pathname,
+                session?.user?.platformRole ?? null
+            )
+        ) {
+            // `/maintenance` is exempt by definition, so this cannot re-enter itself: the
+            // decision is a function of the PATH, and that path answers `false`.
+            redirect(MAINTENANCE_PATH);
+        }
+    }
+
     return (
         <html lang="id" suppressHydrationWarning>
             <body>

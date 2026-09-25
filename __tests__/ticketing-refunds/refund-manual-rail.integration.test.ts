@@ -12,8 +12,10 @@
  *     whole-rupiah prices make Σ priceSnapshot equal the order total exactly, so the final
  *     ticket of an order is never stranded;
  *   * D-P17-06 — at most ONE `PROCESSING` refund per order, enforced under a row lock;
- *   * D-P17-12 — a PARTIAL refund retains the PIC fee and only a FULL order-item refund
- *     reverses it, exactly once.
+ *   * D-P17-12 (PHASE 30 REVISION) — the PIC fee reverse is PROPORTIONAL to the newly
+ *     refunded quantity: each refund event appends exactly one incremental REVERSAL, the
+ *     cumulative reversal converges EXACTLY on the original EARNED amount, and a retry can
+ *     never double-post (BUG-3).
  *
  * Only the cases that need a state the service can no longer produce are constructed
  * directly on the tables (the over-balance claim and a second `PROCESSING` refund, both of
@@ -599,10 +601,10 @@ describe("at most one refund may be PROCESSING for an order", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D-P17-12: full-item reversal only, and never twice
+// D-P17-12 (Phase 30 revision): proportional PIC fee reversal, exactly per refund
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("PIC fee reversal is full-item only (D-P17-12)", () => {
+describe("PIC fee reversal is proportional per refund (D-P17-12 / BUG-3)", () => {
     async function earnedFeeFor(params: {
         orderId: string;
         organizerId: string;
@@ -636,7 +638,7 @@ describe("PIC fee reversal is full-item only (D-P17-12)", () => {
         });
     }
 
-    test("a partial refund retains the fee; the final ticket reverses it exactly once", async () => {
+    test("a partial refund reverses the newly refunded share; the final refund absorbs the remainder to exactly the earned amount", async () => {
         const { order, type } = await issuedPaidOrder("pic-fee", 2);
 
         const dbOrder = await prisma.eventOrder.findUniqueOrThrow({
@@ -647,8 +649,13 @@ describe("PIC fee reversal is full-item only (D-P17-12)", () => {
         const orderItemId = dbOrder.items[0].id;
 
         // A real PIC profile (the ledger's profile FK is RESTRICT, so the row must exist).
-        const picProfile = await prisma.pICProfile.create({
-            data: {
+        // `pICProfile.userId` is UNIQUE (one profile per account), and this fixture account is
+        // shared by every test in this suite, so the row is UPSERTED rather than created — the
+        // second BUG-3 test reuses it instead of colliding on `picprofile_userId_key`.
+        const picProfile = await prisma.pICProfile.upsert({
+            where: { userId: f.buyerB.id },
+            update: {},
+            create: {
                 userId: f.buyerB.id,
                 picCode: `P18B-${Date.now()}`,
                 displayName: "PIC Phase 18B",
@@ -681,12 +688,21 @@ describe("PIC fee reversal is full-item only (D-P17-12)", () => {
             nextRequest()
         );
 
-        expect((await refundRow(first.refundId)).feeTreatment).toBe("RETAINED");
-        expect(
-            await prisma.pICFeeLedger.count({
-                where: { orderItemId, type: "REVERSAL" },
-            })
-        ).toBe(0);
+        // Proportional reversal now exists for the ONE refunded ticket: 15000 × 1 / 2.
+        expect((await refundRow(first.refundId)).feeTreatment).toBe("REVERSED");
+
+        const partialReversals = await prisma.pICFeeLedger.findMany({
+            where: { orderItemId, type: "REVERSAL" },
+            orderBy: { createdAt: "asc" },
+        });
+
+        expect(partialReversals).toHaveLength(1);
+        expect(partialReversals[0].direction).toBe("DEBIT");
+        expect(partialReversals[0].amount.toFixed(2)).toBe("7500.00");
+        expect(partialReversals[0].quantity).toBe(1);
+        expect(partialReversals[0].status).toBe("VOID");
+        expect(partialReversals[0].refundId).toBe(first.refundId);
+        expect(partialReversals[0].reversalRef).toBe(String(first.refundId));
 
         // ── Full: the item's last ticket ──────────────────────────────────────────
         // Re-issued owner scope: the guards read the LIVE session, which the second buyer
@@ -706,13 +722,111 @@ describe("PIC fee reversal is full-item only (D-P17-12)", () => {
 
         const reversals = await prisma.pICFeeLedger.findMany({
             where: { orderItemId, type: "REVERSAL" },
+            orderBy: { createdAt: "asc" },
         });
 
-        // Exactly one reversal, for the full earned amount, pointing at this refund.
-        expect(reversals).toHaveLength(1);
-        expect(reversals[0].direction).toBe("DEBIT");
-        expect(reversals[0].amount.toFixed(2)).toBe("15000.00");
-        expect(reversals[0].status).toBe("VOID");
-        expect(reversals[0].refundId).toBe(second.refundId);
+        // Two proportional reversals, one per refund, that together equal the earned fee.
+        expect(reversals).toHaveLength(2);
+        expect(reversals[1].refundId).toBe(second.refundId);
+        expect(reversals[1].reversalRef).toBe(String(second.refundId));
+
+        const cumulative = reversals.reduce(
+            (sum, row) => sum.plus(row.amount),
+            new Prisma.Decimal(0)
+        );
+        expect(cumulative.toFixed(2)).toBe("15000.00");
+        expect(reversals.every((row) => row.direction === "DEBIT")).toBe(true);
+        expect(reversals.every((row) => row.status === "VOID")).toBe(true);
+    });
+
+    test("non-divisible fees round each increment down; the final refund absorbs the remainder so cumulative equals the earned amount exactly", async () => {
+        const { order, type } = await issuedPaidOrder("pic-fee-3", 3);
+
+        const dbOrder = await prisma.eventOrder.findUniqueOrThrow({
+            where: { id: order.orderId },
+            select: { organizerId: true, items: { select: { id: true } } },
+        });
+
+        const orderItemId = dbOrder.items[0].id;
+        // Same shared fixture account as the first BUG-3 test — UPSERT, not create (one
+        // profile per account is a schema wall; see the first test's comment).
+        const picProfile = await prisma.pICProfile.upsert({
+            where: { userId: f.buyerB.id },
+            update: {},
+            create: {
+                userId: f.buyerB.id,
+                picCode: `P18BR-${Date.now()}`,
+                displayName: "PIC Phase 18B Rounding",
+            },
+            select: { id: true },
+        });
+
+        // 10000 over 3 tickets does not divide evenly at 2dp: 3333.33 + 3333.33 + 3333.34.
+        await earnedFeeFor({
+            orderId: order.orderId,
+            organizerId: dbOrder.organizerId,
+            eventId: f.eventA.id,
+            orderItemId,
+            ticketTypeId: type.id,
+            picProfileId: picProfile.id,
+            amount: "10000.00",
+            quantity: 3,
+        });
+
+        const tickets = await ticketsFor(order.orderId);
+
+        for (let i = 0; i < 3; i += 1) {
+            const refund = await requestAsBuyer(order.orderNumber, [tickets[i].id]);
+            const scope = await ownerScope();
+            await approveRefund(refund.refundId, scope, {}, nextRequest());
+            await executeRefund(refund.refundId, scope, {}, nextRequest());
+            await settleRefund(
+                refund.refundId,
+                { transferRef: `BCA-ROUND-${i}` },
+                scope,
+                nextRequest()
+            );
+        }
+
+        const reversals = await prisma.pICFeeLedger.findMany({
+            where: { orderItemId, type: "REVERSAL" },
+            orderBy: { createdAt: "asc" },
+        });
+
+        expect(reversals).toHaveLength(3);
+        expect(reversals.map((row) => row.amount.toFixed(2))).toEqual([
+            "3333.33",
+            "3333.33",
+            "3333.34",
+        ]);
+        expect(reversals.every((row) => row.quantity === 1)).toBe(true);
+
+        const cumulative = reversals.reduce(
+            (sum, row) => sum.plus(row.amount),
+            new Prisma.Decimal(0)
+        );
+        expect(cumulative.toFixed(2)).toBe("10000.00");
+
+        // Settling an already-REFUNDED refund is an idempotent replay (the service returns
+        // the payload without reprocessing) — the reversal count cannot grow.
+        const settledRefund = (await prisma.refund.findFirstOrThrow({
+            where: {
+                items: { some: { orderItemId } },
+                status: "REFUNDED",
+            },
+            select: { id: true },
+        })).id;
+        const replay = await settleRefund(
+            settledRefund,
+            { transferRef: "BCA-REPLAY" },
+            await ownerScope(),
+            nextRequest()
+        );
+        expect(replay.status).toBe("REFUNDED");
+        expect(
+            await prisma.pICFeeLedger.count({
+                where: { orderItemId, type: "REVERSAL" },
+            })
+        ).toBe(3);
     });
 });

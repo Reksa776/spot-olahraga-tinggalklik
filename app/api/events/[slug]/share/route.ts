@@ -1,8 +1,13 @@
 import type { NextRequest } from "next/server";
 
+import { getAuthzScope } from "@/lib/authz";
 import { handleApi, ok } from "@/lib/api/response";
 import { getAppOrigin } from "@/lib/app-origin";
+import { getMaintenanceState } from "@/lib/app-settings";
 import { getPublicEventBySlug } from "@/lib/events/catalog";
+import { assertNotInMaintenance } from "@/lib/maintenance";
+import { mintPicReferralToken } from "@/lib/pic/referral";
+import { prisma } from "@/lib/prisma";
 
 /**
  * GET /api/events/[slug]/share — share metadata (requirement §4, design §25.6)
@@ -20,19 +25,22 @@ import { getPublicEventBySlug } from "@/lib/events/catalog";
  * query would be a second place for the visibility filter to drift, and a drift here
  * would leak an unpublished event's metadata into a shareable card.
  *
- * WHY THE PIC-TRACKED VARIANT IS ABSENT
- * -------------------------------------
- * Design §25.6 specifies that an authorized PIC for an assigned event receives a
- * `shareUrl` carrying a **tracking token**, while "an anonymous caller can only obtain
- * the un-tracked public link, so the share surface cannot be abused to fabricate
+ * WHY THE PIC-TRACKED VARIANT IS SAFE TO MINT HERE
+ * ------------------------------------------------
+ * Design §25.6: an authorized PIC for an assigned event receives a `shareUrl`
+ * carrying a **tracking token**, while "an anonymous caller can only obtain the
+ * un-tracked public link, so the share surface cannot be abused to fabricate
  * attribution."
  *
- * The PIC model — `PICProfile`, `PICEventAssignment`, attribution windows (D-01, D-04)
- * — is Phase 9 and does not exist yet, so this endpoint always returns the un-tracked
- * link and `trackingToken: null`. It deliberately does NOT mint a token that nothing
- * can validate: a fabricated attribution value would be worse than none, because it
- * would have to be trusted at settlement time. Recorded in the Phase 4 report as a
- * Phase 9 dependency.
+ * The mint is gated by the session + CURRENT database facts, so a token can never be
+ * fabricated for attribution:
+ *   - the caller is signed in, and their OWN `PICProfile` is ACTIVE, AND
+ *   - the event has an assignment for that profile with `isActive` and no `revokedAt`
+ *     (the same facts the checkout resolver re-checks before the token becomes money).
+ * A token that fails any of these — including a revoked/suspended PIC riding on a
+ * stale session — resolves to the plain un-tracked link, never to a fabricated core.
+ * The token itself is later verified + re-authorized server-side at checkout; minting
+ * here confers nothing by itself.
  *
  * WHY THERE IS NO QR IMAGE URL
  * ---------------------------
@@ -46,11 +54,52 @@ import { getPublicEventBySlug } from "@/lib/events/catalog";
 
 export const runtime = "nodejs";
 
+/**
+ * Resolve the tracking variant for a signed-in actor, or `null` for the anonymous one.
+ *
+ * The event id comes back from the public catalog; the actor's id comes from the
+ * server-side session — never from the request. Both the profile status and the
+ * assignment's activity are re-read from CURRENT rows so a revoked or suspended PIC
+ * cannot mint.
+ */
+async function resolveTrackedShareToken(
+    userId: string,
+    eventId: string
+): Promise<string | null> {
+    // The actor's OWN profile only — a tenant membership confers nothing here.
+    const profile = await prisma.pICProfile.findFirst({
+        where: { userId, status: "ACTIVE" },
+        select: { id: true },
+    });
+
+    if (!profile) {
+        return null;
+    }
+
+    const assignment = await prisma.pICEventAssignment.findUnique({
+        where: {
+            picProfileId_eventId: { picProfileId: profile.id, eventId },
+        },
+        select: { isActive: true, revokedAt: true },
+    });
+
+    if (!assignment?.isActive || assignment.revokedAt !== null) {
+        return null;
+    }
+
+    // Fail-closed: an unset PIC_REFERRAL_SECRET means no link is exposed at all.
+    return mintPicReferralToken({ picProfileId: profile.id, eventId });
+}
+
 export async function GET(
     request: NextRequest,
     { params }: { params: Promise<{ slug: string }> }
 ) {
     return handleApi(async () => {
+        // PHASE 32 — a shareable Open Graph card is a public surface: while the application is
+        // closed, a chat client must not render a rich preview of a catalogue nobody can open.
+        assertNotInMaintenance(await getMaintenanceState());
+
         const { slug } = await params;
 
         const origin = getAppOrigin(request);
@@ -59,17 +108,35 @@ export async function GET(
 
         const canonicalUrl = event.shareUrl;
 
+        const scope = await getAuthzScope();
+
+        // §25.6: an anonymous caller gets the un-tracked link; a signed-in, ACTIVE,
+        // assigned PIC gets one carrying a signed token. `url.searchParams.append` is
+        // avoided deliberately — the token is base64url, and appending is a one-liner.
+        const trackingToken = scope?.userId
+            ? await resolveTrackedShareToken(scope.userId, event.id)
+            : null;
+
+        const shareUrl = trackingToken
+            ? `${canonicalUrl}?pic=${encodeURIComponent(trackingToken)}`
+            : canonicalUrl;
+
         return ok({
             slug: event.slug,
             title: event.title,
             /** Canonical public URL (design §10.6). Never carries tracking params. */
             canonicalUrl,
-            shareUrl: canonicalUrl,
             /**
-             * Always null in Phase 4 — the PIC attribution model is Phase 9
-             * (D-01/D-04 unresolved). See the module note above.
+             * `shareUrl` carries `?pic=<trackingToken>` when the caller is a signed-in,
+             * ACTIVE PIC with an active assignment for this event (design §25.6);
+             * otherwise it is exactly the canonical URL.
              */
-            trackingToken: null,
+            shareUrl,
+            /**
+             * Signed PIC referral token, or null — never a token nothing can validate.
+             * The checkout resolver re-authors it server-side before it can become money.
+             */
+            trackingToken,
             isAvailable: event.isAvailable,
             unavailableReason: event.unavailableReason,
             og: {

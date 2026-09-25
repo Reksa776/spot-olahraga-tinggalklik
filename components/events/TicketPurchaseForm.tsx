@@ -54,6 +54,12 @@ type Props = {
     ticketTypes: readonly PublicTicketType[];
     /** False for a DRAFT/CANCELLED event (D-14) — purchase affordances are suppressed. */
     isAvailable: boolean;
+    /**
+     * PIC referral token from the shared `?pic=` link (PIC vertical slice). Carried verbatim
+     * into the idempotency signature and the checkout body; the server — never this form —
+     * decides whether it names a real, active PIC. Empty/absent = a normal no-PIC purchase.
+     */
+    shareToken?: string | null;
     /** Prefill for a signed-in buyer; all three stay editable. */
     defaultBuyer?: {
         name?: string | null;
@@ -71,6 +77,7 @@ export default function TicketPurchaseForm({
     eventId,
     ticketTypes,
     isAvailable,
+    shareToken,
     defaultBuyer,
 }: Props) {
     const router = useRouter();
@@ -151,6 +158,10 @@ export default function TicketPurchaseForm({
             buyerName: buyerName.trim(),
             buyerEmail: buyerEmail.trim(),
             buyerPhone: buyerPhone.trim(),
+            // Entering a shared `?pic=` link is a different purchase intent, so the token
+            // participates in the signature: a PIC order must never be replayed as a no-PIC
+            // order (and vice versa), and the server's hash covers it identically (§30.4).
+            shareToken: shareToken?.trim() || null,
         });
 
         if (
@@ -178,6 +189,7 @@ export default function TicketPurchaseForm({
                     buyerName: buyerName.trim(),
                     buyerEmail: buyerEmail.trim(),
                     buyerPhone: buyerPhone.trim(),
+                    shareToken: shareToken?.trim() || null,
                 }),
             });
 
