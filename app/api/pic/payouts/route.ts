@@ -26,11 +26,17 @@ import { picPayoutRequestSchema } from "@/lib/ticketing/settlement/validation";
  * settleable amounts they may request. Read-only, so no same-origin check.
  *
  * ── POST (create request) ────────────────────────────────────────────────────────
- * State-changing, so the same-origin check runs first. The body names ONE `organizerId`
- * (and an optional note) and nothing else: no amount, no status, no bank. The service
- * claims the PIC's eligible ledger rows transactionally and lands the request as
- * `REQUESTED` for operator review. The PIC can never approve, pay or attach their own
- * transfer evidence.
+ * State-changing, so the same-origin check runs first. The body names ONE `organizerId`,
+ * an optional note, and an OPTIONAL `bank` block — and nothing else: no amount, no
+ * status, no `picProfileId`. The service claims the PIC's eligible ledger rows
+ * transactionally and lands the request as `REQUESTED` for operator review. The PIC can
+ * never approve, pay or attach their own transfer evidence.
+ *
+ * The `bank` block is the one mutation this route performs outside the money engine: it
+ * writes the caller's OWN `PICProfile` bank columns (and audits the change as
+ * `pic.bank.update`) BEFORE the engine runs, so the snapshot is taken against the account
+ * the PIC just confirmed. It carries no id — the profile comes from the session — so it
+ * cannot name another payee, and the amount stays server-derived regardless.
  */
 
 export const runtime = "nodejs";
@@ -65,7 +71,7 @@ export async function POST(request: NextRequest) {
 
         const input = parseOrThrow(picPayoutRequestSchema, body);
 
-        const payload = await createMyPicPayoutRequest(scope.userId, input);
+        const payload = await createMyPicPayoutRequest(scope.userId, input, request);
 
         return created(payload);
     });

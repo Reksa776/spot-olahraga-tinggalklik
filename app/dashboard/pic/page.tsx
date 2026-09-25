@@ -141,6 +141,23 @@ const SETTLEMENT_STATUS_TONE: Record<string, Tone> = {
     REJECTED: "error",
 };
 
+/**
+ * The status the PIC READS. The stored enum is operator vocabulary (`REQUESTED`,
+ * `PENDING_APPROVAL`); a PIC is not an operator, so their own payout history names the state
+ * in their language. Unknown values fall through to the raw enum rather than hiding it — a
+ * status this map has not learned yet must still be visible, not blank.
+ */
+const SETTLEMENT_STATUS_LABEL: Record<string, string> = {
+    REQUESTED: "Menunggu Persetujuan",
+    PENDING_APPROVAL: "Menunggu Persetujuan",
+    APPROVED: "Disetujui",
+    PAID: "Sudah Dibayar",
+    REJECTED: "Ditolak",
+    FAILED: "Gagal",
+    CANCELLED: "Dibatalkan",
+    DRAFT: "Draf",
+};
+
 export default async function DashboardPicPage() {
     const scope = await getAuthzScope();
 
@@ -693,7 +710,23 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
                 <SectionCard
                     title="Pencairan"
                     description="Ajukan pencairan fee kamu; penyelenggara meninjau, melakukan transfer bank manual, lalu mencatatnya. Status menjadi PAID hanya setelah bukti transfer tercatat. Jumlah yang diajukan dihitung server dari fee yang belum dicairkan."
-                    actions={<PicPayoutRequestDialog organizers={settleable} />}
+                    actions={
+                        <PicPayoutRequestDialog
+                            organizers={settleable}
+                            // The PIC's OWN bank destination, RAW. `getMyPicProfile` is
+                            // own-scope and identity-gated, so these values reach the
+                            // profile's owner only — which is what makes an EDITABLE
+                            // pre-fill possible at all. Every other surface (this page's
+                            // history table below, the operator views, the admin detail)
+                            // keeps the account number masked.
+                            bank={{
+                                bankName: profile.bankName,
+                                bankAccountName: profile.bankAccountName,
+                                bankAccountNumber: profile.bankAccountNumber,
+                                bankDetailsComplete: profile.bankDetailsComplete,
+                            }}
+                        />
+                    }
                 >
                     <div className="mb-4 flex flex-col">
                         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -763,7 +796,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
                                             ] ?? "neutral"
                                         }
                                     >
-                                        {request.status}
+                                        {SETTLEMENT_STATUS_LABEL[request.status] ??
+                                            request.status}
                                     </StatusBadge>,
                                     <div
                                         key="destination"

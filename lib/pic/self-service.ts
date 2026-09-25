@@ -175,7 +175,27 @@ export async function requireMyPic(
     return { scope, picProfileId: profile.id };
 }
 
-/** The PIC's own profile meta: name, public code and standing. */
+/**
+ * The PIC's own profile meta: name, public code, standing — and their OWN bank details.
+ *
+ * ── THE ONE PLACE THE RAW ACCOUNT NUMBER IS EXPOSED ──────────────────────────────
+ * Every other surface masks it (`maskAccountNumber` → `••••` + last four): the operator
+ * settlement list and detail, the PIC's own payout history, the admin PIC detail page.
+ * This function is the deliberate exception, and it is safe for a specific reason: it is
+ * own-scope and identity-gated by `requireMyPic`, so the raw value can only ever reach the
+ * authenticated owner of the profile — the same party who can change it. The dialog needs
+ * the real digits to pre-fill an EDITABLE field; a masked value cannot be corrected.
+ *
+ * The exception is scoped by construction, not by convention:
+ *   * it is NOT part of `PIC_PAYOUT_SELECT` / the payout-history payload;
+ *   * it is NOT part of `buildSettlementPayload` (the operator/admin view);
+ *   * it must never be logged or placed in a URL.
+ *
+ * `bankDetailsComplete` single-sources the money engine's own all-or-nothing rule
+ * (`settlement.ts` refuses with `BANK_DETAILS_MISSING` unless all three are present), so
+ * the dialog can show its "Data rekening belum lengkap" state from the same predicate the
+ * server will enforce — rather than a second, drift-prone copy of it.
+ */
 export async function getMyPicProfile(userId: string) {
     const { picProfileId } = await requireMyPic(userId, []);
 
@@ -188,6 +208,9 @@ export async function getMyPicProfile(userId: string) {
             status: true,
             approvedAt: true,
             createdAt: true,
+            bankName: true,
+            bankAccountName: true,
+            bankAccountNumber: true,
         },
     });
 
@@ -205,6 +228,15 @@ export async function getMyPicProfile(userId: string) {
         status: profile.status,
         approvedAt: profile.approvedAt?.toISOString() ?? null,
         createdAt: profile.createdAt.toISOString(),
+        // OWNER-ONLY, RAW — see the docblock above.
+        bankName: profile.bankName,
+        bankAccountName: profile.bankAccountName,
+        bankAccountNumber: profile.bankAccountNumber,
+        bankDetailsComplete: Boolean(
+            profile.bankName &&
+                profile.bankAccountName &&
+                profile.bankAccountNumber
+        ),
     };
 }
 

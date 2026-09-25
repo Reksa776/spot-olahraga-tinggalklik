@@ -1,12 +1,14 @@
 import { AppError, ERROR_CODES } from "@/lib/api/errors";
-import { PERMISSIONS } from "@/lib/authz";
+import { PERMISSIONS, type AuthzScope } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
 import { requireMyPic } from "@/lib/pic/self-service";
+import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 import {
     createPreparedSettlement,
     previewSettleable,
 } from "@/lib/ticketing/settlement/settlement";
 import { maskAccountNumber } from "@/lib/ticketing/settlement/payload";
+import type { PicPayoutBankInput } from "@/lib/ticketing/settlement/validation";
 
 /**
  * ==========================================
@@ -46,7 +48,115 @@ import { maskAccountNumber } from "@/lib/ticketing/settlement/payload";
  * engine itself: if the PIC holds no eligible ledger row in that tenant, nothing is
  * selectable and the request is refused (`NOTHING_SETTLEABLE`). There is no aggregation
  * across tenants, and no way to name a tenant the PIC did not earn in.
+ *
+ * ── THE PAYEE BANK RIDES WITH THE REQUEST ────────────────────────────────────────
+ * A request may carry the PIC's own `bank` block. When it does, the three bank columns on
+ * the PIC's OWN `PICProfile` are written FIRST — in the same call, under the same
+ * `requireMyPic` identity — and only then is the money engine invoked. The engine re-reads
+ * the profile and snapshots whatever it now holds, so the payout is always sent to the
+ * account the PIC just confirmed. This is why the payout dialog can offer "complete/edit
+ * your bank details" without giving the PIC any way to name someone else's destination:
+ * the write is scoped to the session's own profile, and the block carries no id.
+ *
+ * The write and the settlement CANNOT share one transaction, because
+ * `createPreparedSettlement` owns its own and accepts no client handle — deliberately, as
+ * it is the single money engine. The two steps are therefore sequential, and the failure
+ * mode is chosen rather than inherited: if the bank write succeeds and the request is
+ * then refused by a business rule (`NOTHING_SETTLEABLE`, `ALREADY_CLAIMED`, contention),
+ * the bank change simply STANDS and the PIC retries. That is the right trade — the PIC's
+ * edit is what they asked for, it moves no money, and re-submitting is idempotent because
+ * an unchanged block writes nothing.
+ *
+ * A bank write is NEVER silent: it appends a `pic.bank.update` audit row. The metadata
+ * carries `bankName`, `bankAccountName`, `hasAccountNumber` and `accountNumberLast4` —
+ * NEVER the account number (see `audit-log.ts`).
  */
+
+/**
+ * The last four characters of the account number, whitespace-stripped — the SAME
+ * normalisation `maskAccountNumber` uses, so the audit trail's `accountNumberLast4` and
+ * the operator's masked view can never disagree about which digits "last four" means.
+ */
+function accountNumberLast4(value: string): string {
+    return value.replace(/\s+/g, "").slice(-4);
+}
+
+/**
+ * Persist the PIC's own bank destination, and audit the change.
+ *
+ * Only writes when something actually DIFFERS: re-submitting an unchanged block is a
+ * no-op, so a routine re-request does not litter the audit log with rows that claim a
+ * change that never happened. The caller has already resolved the profile from the
+ * session, so there is no id to forge here.
+ */
+async function saveMyPicBankDetails(
+    picProfileId: string,
+    bank: PicPayoutBankInput,
+    scope: AuthzScope,
+    request?: Request
+): Promise<void> {
+    const before = await prisma.pICProfile.findUnique({
+        where: { id: picProfileId },
+        select: {
+            bankName: true,
+            bankAccountName: true,
+            bankAccountNumber: true,
+        },
+    });
+
+    if (!before) {
+        throw AppError.notFound("PIC tidak ditemukan.");
+    }
+
+    const changed =
+        before.bankName !== bank.bankName ||
+        before.bankAccountName !== bank.bankAccountName ||
+        before.bankAccountNumber !== bank.bankAccountNumber;
+
+    if (!changed) {
+        return;
+    }
+
+    await prisma.pICProfile.update({
+        where: { id: picProfileId },
+        data: {
+            bankName: bank.bankName,
+            bankAccountName: bank.bankAccountName,
+            bankAccountNumber: bank.bankAccountNumber,
+        },
+        select: { id: true },
+    });
+
+    /*
+     * The account number is NEVER in the metadata — not the old one and not the new one.
+     * `bankName` / `bankAccountName` are recorded because an auditor asking "who redirected
+     * this payee's account?" needs to see what it was changed TO at the institution level;
+     * the number itself is represented only by "present or not" and its last four, which is
+     * enough to recognise an account in a conversation and not enough to reuse it.
+     */
+    await writeTicketingAudit({
+        action: "pic.bank.update",
+        actor: scope,
+        actorOrganizerId: null,
+        organizerId: null,
+        entityType: "PICProfile",
+        entityRef: picProfileId,
+        description: "PIC memperbarui data rekening pencairan miliknya.",
+        beforeState: {
+            bankName: before.bankName,
+            bankAccountName: before.bankAccountName,
+            hasAccountNumber: Boolean(before.bankAccountNumber),
+        },
+        afterState: {
+            bankName: bank.bankName,
+            bankAccountName: bank.bankAccountName,
+            hasAccountNumber: true,
+            accountNumberLast4: accountNumberLast4(bank.bankAccountNumber),
+        },
+        reason: "PIC_UPDATED_PAYOUT_BANK_DETAILS",
+        request,
+    });
+}
 
 /** The organizer ids a PIC has eligible (unsettled, EARNED) fee rows in. */
 async function settleableOrganizerIds(picProfileId: string): Promise<string[]> {
@@ -293,10 +403,14 @@ export async function listMyPicPayoutRequests(
  * The window is derived server-side from the PIC's own earliest eligible row through
  * NOW, so every currently-settleable row is claimed and no client timestamp is trusted.
  * The claim is transactional and guarded by `SettlementItem.picFeeLedgerId @unique`.
+ *
+ * `bank`, when supplied, is written to the caller's OWN profile first (see the module
+ * docblock) so the snapshot the engine takes is the account the PIC just confirmed.
  */
 export async function createMyPicPayoutRequest(
     userId: string,
-    input: { organizerId: string; notes?: string }
+    input: { organizerId: string; notes?: string; bank?: PicPayoutBankInput },
+    request?: Request
 ): Promise<PicPayoutRequestPayload> {
     const { scope, picProfileId } = await requireMyPic(userId, [
         PERMISSIONS.PIC_PAYOUT_REQUEST_OWN,
@@ -306,6 +420,12 @@ export async function createMyPicPayoutRequest(
 
     if (!organizerId) {
         throw AppError.validation("Penyelenggara wajib dipilih.");
+    }
+
+    // The bank destination is settled BEFORE the money engine runs, so the snapshot taken
+    // below is the latest data. The engine itself is untouched and re-reads the profile.
+    if (input.bank) {
+        await saveMyPicBankDetails(picProfileId, input.bank, scope, request);
     }
 
     const periodStart = await settleableWindowStart(picProfileId, organizerId);

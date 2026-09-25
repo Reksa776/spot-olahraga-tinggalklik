@@ -227,6 +227,18 @@ export type TicketingAuditAction =
     // PIC-visible decision and therefore its own action rather than a `cancel`.
     | "settlement.request"
     | "settlement.reject"
+    // ── PIC payout destination (consolidated into the payout dialog) ────────────
+    // The PIC changing the bank account their own payouts are sent to. It is its own
+    // action rather than a `pic.status.update` because it is the DESTINATION OF MONEY:
+    // "who redirected this payee's account, and when?" is a question an incident review
+    // asks by name, and it must be answerable without parsing a status field. The actor
+    // is always the PIC themselves (own-scope, identity-gated).
+    //
+    // The metadata NEVER carries the account number: callers pass `bankName`,
+    // `bankAccountName`, `hasAccountNumber` and `accountNumberLast4` only. The
+    // `bankaccountnumber` key filter in `sanitize` below is a backstop for a careless
+    // caller, not the design — the caller is required to pass the masked shape.
+    | "pic.bank.update"
     // ── PHASE 31: financial report exports ─────────────────────────────────────
     // An export copies financial rows OUT of the system, which is itself an auditable
     // event ("who downloaded whose fee ledger, and when"). The two scopes get distinct

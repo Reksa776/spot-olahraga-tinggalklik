@@ -339,6 +339,69 @@ describe("PHASE 21 — a PIC requests their own payout", () => {
         expect(ledger.settlementId).toBeNull();
     });
 
+    test("a PIC completes their bank details in the same request (payout-dialog consolidation)", async () => {
+        // Before this change an empty bank profile was a DEAD END: nothing in the application
+        // could write the destination, so every request died on BANK_DETAILS_MISSING. The
+        // dialog now sends the block WITH the request; the profile is written first and the
+        // money engine snapshots the account the PIC just confirmed.
+        const { user, profile } = await makePic(`bank-${SUFFIX}`, { withBank: false });
+        const a = await makeOrderItem(profile.id);
+        await postEarned(profile.id, orgA.id, a.item, "8800.00", a.order.id);
+
+        signInAs(user.id);
+        const request = await createMyPicPayoutRequest(user.id, {
+            organizerId: orgA.id,
+            bank: {
+                bankName: "Bank Baru",
+                bankAccountName: "PIC Baru",
+                bankAccountNumber: "999888777666",
+            },
+        });
+
+        expect(request.status).toBe("REQUESTED");
+        expect(request.netAmount).toBe("8800.00");
+
+        // 1. The PIC's own profile now holds the destination.
+        expect(
+            await prisma.pICProfile.findUniqueOrThrow({
+                where: { id: profile.id },
+                select: {
+                    bankName: true,
+                    bankAccountName: true,
+                    bankAccountNumber: true,
+                },
+            })
+        ).toEqual({
+            bankName: "Bank Baru",
+            bankAccountName: "PIC Baru",
+            bankAccountNumber: "999888777666",
+        });
+
+        // 2. …and the payout snapshot is exactly what was submitted.
+        expect(
+            await prisma.settlement.findUniqueOrThrow({
+                where: { id: request.id },
+                select: {
+                    bankName: true,
+                    bankAccountName: true,
+                    bankAccountNumber: true,
+                },
+            })
+        ).toEqual({
+            bankName: "Bank Baru",
+            bankAccountName: "PIC Baru",
+            bankAccountNumber: "999888777666",
+        });
+
+        // 3. Filling in a destination still moves no money at request time.
+        const ledger = await prisma.pICFeeLedger.findFirstOrThrow({
+            where: { picProfileId: profile.id },
+            select: { status: true, settlementId: true },
+        });
+        expect(ledger.status).toBe("EARNED");
+        expect(ledger.settlementId).toBeNull();
+    });
+
     test("a second request finds nothing left to claim (fees already claimed)", async () => {
         const { user, profile } = await makePic(`second-${SUFFIX}`);
         const a = await makeOrderItem(profile.id);

@@ -162,13 +162,59 @@ export const rejectSettlementSchema = z
 
 export type RejectSettlementInput = z.infer<typeof rejectSettlementSchema>;
 
+/** Fields each capped at 64 like the PIC profile's own account fields. */
+const bankField = (label: string) =>
+    z
+        .string()
+        .trim()
+        .min(1, `${label} wajib diisi.`)
+        .max(64, `${label} maksimum 64 karakter.`);
+
+/**
+ * The payee bank block a PIC may send WITH a payout request.
+ *
+ * This is the destination of the money, so it is deliberately COMPLETE when present:
+ * a partially-filled block is refused rather than stored half-written (the money engine's
+ * `BANK_DETAILS_MISSING` guard is all-or-nothing — `bankName`, `bankAccountName` and
+ * `bankAccountNumber` must all be present for a snapshot to be taken).
+ *
+ * ── WHAT IS DELIBERATELY NOT VALIDATED ───────────────────────────────────────────
+ * There is NO digits-only rule on `bankAccountNumber`. The column is free text and always
+ * has been; imposing a numeric format here would invent a business rule that could reject
+ * a legitimate account identifier. It is trimmed and length-bounded only.
+ *
+ * The schema is `.strict()`, so `taxId`, `picProfileId`, `userId` or any future field is a
+ * 400 rather than a silent no-op — `taxId` in particular is NOT part of the payout
+ * contract (the engine never reads it).
+ */
+export const picPayoutBankSchema = z
+    .object({
+        bankName: bankField("Nama bank"),
+        bankAccountName: bankField("Nama pemilik rekening"),
+        bankAccountNumber: bankField("Nomor rekening"),
+    })
+    .strict();
+
+export type PicPayoutBankInput = z.infer<typeof picPayoutBankSchema>;
+
 /**
  * `POST /api/pic/payouts` — a PIC requests a payout for ONE organizer (PHASE 21).
  *
- * The body names the tenant only. There is NO amount, NO status, NO bank and NO
- * `picProfileId` — the amount is whatever the PIC's own eligible ledger rows add up to
- * for that tenant, derived server-side by the settlement money engine. A tampered field
- * never reaches the service (the schema is strict).
+ * The body names the tenant, an optional note, and (optionally) the payee bank block.
+ * There is NO amount, NO status and NO `picProfileId` — the amount is whatever the PIC's
+ * own eligible ledger rows add up to for that tenant, derived server-side by the
+ * settlement money engine. A tampered field never reaches the service (the schema is
+ * strict).
+ *
+ * ── THE OPTIONAL `bank` BLOCK ────────────────────────────────────────────────────
+ * When present, the service writes it onto the PIC's OWN `PICProfile` before calling the
+ * money engine, so the payout is snapshotted against the account the PIC just confirmed
+ * (the "consolidate bank details into the payout dialog" flow). When absent, the profile
+ * is left alone and the engine uses whatever it already holds — which is why an
+ * incomplete profile still answers `BANK_DETAILS_MISSING`.
+ *
+ * Only the PIC's own profile is ever written: the block carries no id, and the profile is
+ * resolved from the SESSION by `requireMyPic`, so it cannot name another payee.
  */
 export const picPayoutRequestSchema = z
     .object({
@@ -178,6 +224,7 @@ export const picPayoutRequestSchema = z
             .min(1, "Penyelenggara wajib dipilih.")
             .max(64),
         notes: z.string().trim().max(2000).optional(),
+        bank: picPayoutBankSchema.optional(),
     })
     .strict();
 
