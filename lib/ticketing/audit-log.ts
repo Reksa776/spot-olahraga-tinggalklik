@@ -246,6 +246,14 @@ export type TicketingAuditAction =
     // platform-side tenant export without parsing metadata.
     | "report.export.pic_fee"
     | "report.export.own_pic_fee"
+    // ── DASHBOARD REPORTS: the tenant transaction export ─────────────────────────
+    // The operator's own sales/order/refund workbook leaving the system. It is a THIRD
+    // action rather than a reuse of `report.export.pic_fee` because the two answer
+    // different questions — "who downloaded the PIC fee ledger?" and "who downloaded the
+    // transaction report?" — and a reviewer must be able to ask either by name. Guarded
+    // by `report.export.transaction`, so the tenant boundary is enforced by the existing
+    // decider before this is ever written.
+    | "report.export.transaction"
     // ── PHASE 32: application control (ADMIN only) ───────────────────────────────
     // Maintenance availability and branding are the two things this phase lets an
     // operator change about the APPLICATION rather than about business data, and both

@@ -79,6 +79,12 @@ module.exports = {
         // subject is the APPLICATION rather than a business feature: the role split, the
         // availability switch, and the logo.
         "**/__tests__/admin-manager/*.test.ts",
+        // The back-office reporting surface: the windowed report read model, its filters and
+        // its trend buckets, and the CSV/Excel export that must agree with it exactly. A
+        // namespace of its own because its subject is the READ MODEL and the export contract
+        // rather than any one vertical's business rules (it reads orders, tickets, payments
+        // and refunds together, and changes none of them).
+        "**/__tests__/dashboard/*.test.ts",
     ],
     // WHY forceExit IS SET
     // -------------------

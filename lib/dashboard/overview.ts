@@ -42,6 +42,35 @@ export type DashboardOverview = {
         paymentsPending: number;
         paymentsPaid: number;
         paymentsFailed: number;
+        /**
+         * The refund lifecycle, counted from the SAME permission as the orders block
+         * (`order.read.tenant` — the permission the refunds board and the refund read model both
+         * resolve). "Pending" is the operator's worklist (`PENDING`), "processing" is money the
+         * operator has started moving but not yet evidenced, and "completed" is `REFUNDED`, which
+         * is the only status that claims the money actually left.
+         */
+        refundsPending: number;
+        refundsProcessing: number;
+        refundsCompleted: number;
+        refundsTotal: number;
+    } | null;
+    /**
+     * ── SETTLEMENT / PIC PAYOUT STANDING ────────────────────────────────────────────
+     *
+     * `null` when the actor holds `settlement.prepare` in no organizer — the same condition
+     * `listSettlements` and the Pencairan PIC board use, so an actor who would see an empty board
+     * sees `null` here rather than a row of zeros that reads like "nothing is owed".
+     *
+     * `awaiting` is the operator's queue (`REQUESTED` + `PENDING_APPROVAL`); `paidAmount` is the
+     * Σ `netAmount` of settlements that actually reached `PAID`, taken from the same groupBy as the
+     * counts so the figure and the badge cannot disagree.
+     */
+    settlements: {
+        total: number;
+        awaiting: number;
+        paid: number;
+        paidAmount: string;
+        byStatus: { status: string; count: number }[];
     } | null;
     platform: {
         sportsTotal: number;
@@ -63,6 +92,9 @@ export type DashboardOverview = {
 
 const ZERO = new Prisma.Decimal(0);
 
+/** One row of a `groupBy(["status"])` count — used for the refund lifecycle tally. */
+type StatusTally = { status: string; _count: { _all: number } };
+
 export async function getDashboardOverview(
     scope: AuthzScope
 ): Promise<DashboardOverview> {
@@ -77,19 +109,60 @@ export async function getDashboardOverview(
     const canReadOrders = orderIds.length > 0;
     const canReadPayments = paymentIds.length > 0;
 
-    const [tenant, platform, upcomingEvents] = await Promise.all([
+    const [tenant, platform, upcomingEvents, settlements] = await Promise.all([
         canReadEvents || canReadOrders || canReadPayments
             ? readTenantBlock({ eventIds, orderIds, paymentIds })
             : Promise.resolve(null),
         readPlatformBlock(scope),
         readUpcomingEvents(eventIds),
+        readSettlementBlock(scope),
     ]);
 
     return {
         hasTenantData: canReadEvents || canReadOrders || canReadPayments,
         tenant,
         platform,
+        settlements,
         upcomingEvents,
+    };
+}
+
+/**
+ * The payout standing for the organizers the actor may settle in.
+ *
+ * One grouped read rather than a count per status: the status vocabulary is the schema's own enum,
+ * and a `groupBy` means a status added later shows up here without this function changing.
+ */
+async function readSettlementBlock(scope: AuthzScope) {
+    const organizerIds = organizerIdsWith(
+        scope,
+        PERMISSIONS.SETTLEMENT_PREPARE
+    );
+
+    if (organizerIds.length === 0) {
+        return null;
+    }
+
+    const groups = await prisma.settlement.groupBy({
+        by: ["status"],
+        where: { organizerId: { in: organizerIds } },
+        _count: { _all: true },
+        _sum: { netAmount: true },
+    });
+
+    const countOf = (status: string) =>
+        groups.find((group) => group.status === status)?._count._all ?? 0;
+    const sumOf = (status: string) =>
+        groups.find((group) => group.status === status)?._sum.netAmount ?? ZERO;
+
+    return {
+        total: groups.reduce((total, group) => total + group._count._all, 0),
+        awaiting: countOf("REQUESTED") + countOf("PENDING_APPROVAL"),
+        paid: countOf("PAID"),
+        paidAmount: sumOf("PAID").toFixed(2),
+        byStatus: groups
+            .map((group) => ({ status: group.status, count: group._count._all }))
+            .sort((a, b) => b.count - a.count),
     };
 }
 
@@ -120,6 +193,7 @@ async function readTenantBlock({
         paymentsPending,
         paymentsPaid,
         paymentsFailed,
+        refundGroups,
     ] = await Promise.all([
         canReadEvents
             ? prisma.event.count({ where: { organizerId: { in: eventIds } } })
@@ -212,7 +286,22 @@ async function readTenantBlock({
                   },
               })
             : Promise.resolve(0),
+        /*
+         * Refunds are read under `order.read.tenant` — deliberately the SAME permission the refunds
+         * board and `listDashboardRefunds` resolve, so an actor who sees refunds on the board sees
+         * them counted here, and one who does not sees zeroes for the same reason.
+         */
+        canReadOrders
+            ? prisma.refund.groupBy({
+                  by: ["status"],
+                  where: { organizerId: { in: orderIds } },
+                  _count: { _all: true },
+              })
+            : Promise.resolve<StatusTally[]>([]),
     ]);
+
+    const refundCount = (status: string) =>
+        refundGroups.find((group) => group.status === status)?._count._all ?? 0;
 
     return {
         eventsTotal,
@@ -226,6 +315,13 @@ async function readTenantBlock({
         paymentsPending,
         paymentsPaid,
         paymentsFailed,
+        refundsPending: refundCount("PENDING"),
+        refundsProcessing: refundCount("PROCESSING"),
+        refundsCompleted: refundCount("REFUNDED"),
+        refundsTotal: refundGroups.reduce(
+            (total, group) => total + group._count._all,
+            0
+        ),
     };
 }
 
