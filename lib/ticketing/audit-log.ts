@@ -220,6 +220,13 @@ export type TicketingAuditAction =
     | "settlement.paid"
     | "settlement.failed"
     | "settlement.cancel"
+    // ── PHASE 21: PIC-initiated payout requests ────────────────────────────────
+    // `request` is the PIC authoring a claim (distinct from the operator's
+    // `settlement.prepare`, so the audit trail names WHO started the payout);
+    // `reject` is an operator refusing that request, which is a durable,
+    // PIC-visible decision and therefore its own action rather than a `cancel`.
+    | "settlement.request"
+    | "settlement.reject"
     // ── PHASE 31: financial report exports ─────────────────────────────────────
     // An export copies financial rows OUT of the system, which is itself an auditable
     // event ("who downloaded whose fee ledger, and when"). The two scopes get distinct

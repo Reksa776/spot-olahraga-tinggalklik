@@ -126,6 +126,12 @@ export const PROTECTED_API_PREFIXES = [
     // the authorization guards, which resolve the actor's memberships from the
     // database - this entry is defence in depth, not the control.
     "/api/organizer/",
+    // ── PIC self-service (PHASE 21) ───────────────────────────────────────────
+    // The PIC's OWN payout requests. A session is required; the real control is the
+    // service guard (`requireMyPic` + the own-scope `pic_payout.request.own`), which
+    // resolves the ACTIVE profile from the session and refuses a forged caller. This entry
+    // is defence in depth, exactly like the organizer prefix above.
+    "/api/pic/",
     // ── Ticketing purchase operations ─────────────────────────────────────────
     // Checkout, the buyer's own order and its cancellation. These require a customer
     // session, so they are protected here as defence in depth; the real controls are

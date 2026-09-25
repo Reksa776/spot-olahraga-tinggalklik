@@ -156,7 +156,7 @@ describe("P13-11. the scanner credential the design wants is still unavailable",
         expect(schema).toContain("ticketId            String?       @unique");
     });
 
-    it("adds no scanner dependency", () => {
+    it("adds only the intentional jsQR fallback decoder", () => {
         const pkg = JSON.parse(read("package.json")) as {
             dependencies?: Record<string, string>;
             devDependencies?: Record<string, string>;
@@ -167,8 +167,11 @@ describe("P13-11. the scanner credential the design wants is still unavailable",
             ...Object.keys(pkg.devDependencies ?? {}),
         ].join(" ");
 
+        // PHASE 21 — jsQR is a deliberate, minimal addition so the laptop webcam scans
+        // without the browser-native BarcodeDetector; nothing else is added.
+        expect(names).toMatch(/\bjsqr\b/i);
         expect(names).not.toMatch(
-            /qr-scanner|zxing|barcode|html5-qrcode|jsqr|instascan|quagga/i
+            /qr-scanner|zxing|html5-qrcode|instascan|quagga/i
         );
     });
 });

@@ -326,6 +326,18 @@ export type PrepareSettlementInput = {
     notes?: string | null;
     actor: AuthzScope;
     now?: Date;
+    /**
+     * PHASE 21 — who authored this claim.
+     *
+     * `OPERATOR` (the default) preserves the original behaviour: a DRAFT an operator
+     * then submits and approves. `PIC_REQUEST` creates the claim directly as
+     * `REQUESTED`, authored by the PIC themselves, so the operator review surface sees
+     * it in the same queue. The money path is IDENTICAL — same `selectSettlementItems`,
+     * same `SettlementItem` claim lines, same UNIQUE `picFeeLedgerId` boundary, same
+     * manual-transfer + proof + providerReference paid step. Nothing here changes how
+     * money is calculated or moved; only the initial state and the audit verb differ.
+     */
+    origin?: "OPERATOR" | "PIC_REQUEST";
 };
 
 export type PrepareSettlementOutcome =
@@ -345,6 +357,7 @@ export async function createPreparedSettlement(
     input: PrepareSettlementInput
 ): Promise<PrepareSettlementOutcome> {
     const now = input.now ?? new Date();
+    const isPicRequest = input.origin === "PIC_REQUEST";
 
     try {
         const result = await withContentionRetry(async () =>
@@ -367,7 +380,8 @@ export async function createPreparedSettlement(
                         // the window was released — the operator must widen or shift it.
                         if (
                             existing.status === "CANCELLED" ||
-                            existing.status === "FAILED"
+                            existing.status === "FAILED" ||
+                            existing.status === "REJECTED"
                         ) {
                             throw new AppError(ERROR_CODES.CONFLICT, {
                                 message:
@@ -443,7 +457,7 @@ export async function createPreparedSettlement(
                             deductionAmount: deduction,
                             netAmount: net,
                             currency: "IDR",
-                            status: "DRAFT",
+                            status: isPicRequest ? "REQUESTED" : "DRAFT",
                             method: "MANUAL_TRANSFER",
                             bankName: profile.bankName,
                             bankAccountName: profile.bankAccountName,
@@ -468,16 +482,19 @@ export async function createPreparedSettlement(
 
                     await writeTicketingAuditInTx(
                         {
-                            action: "settlement.prepare",
+                            action: isPicRequest
+                                ? "settlement.request"
+                                : "settlement.prepare",
                             actor: input.actor,
                             actorOrganizerId: input.organizerId,
                             organizerId: input.organizerId,
                             entityType: "Settlement",
                             entityRef: number,
-                            description:
-                                "Settlement disiapkan; line fee EARNED diklaim, data bank di-snapshot.",
+                            description: isPicRequest
+                                ? "PIC mengajukan pencairan fee-nya; line fee EARNED diklaim, menunggu review penyelenggara."
+                                : "Settlement disiapkan; line fee EARNED diklaim, data bank di-snapshot.",
                             afterState: {
-                                status: "DRAFT",
+                                status: isPicRequest ? "REQUESTED" : "DRAFT",
                                 payeeType: "PIC",
                                 picProfileId: input.picProfileId,
                                 periodStart: input.periodStart.toISOString(),
@@ -488,7 +505,9 @@ export async function createPreparedSettlement(
                                 items: items.length,
                                 method: "MANUAL_TRANSFER",
                             },
-                            reason: "SETTLEMENT_PREPARED",
+                            reason: isPicRequest
+                                ? "SETTLEMENT_REQUESTED_BY_PIC"
+                                : "SETTLEMENT_PREPARED",
                         },
                         tx
                     );
@@ -633,7 +652,9 @@ export async function approveSettlement(
                     });
                 }
 
-                if (row.status !== "PENDING_APPROVAL") {
+                // PHASE 21 — an operator prepares a DRAFT (submit → PENDING_APPROVAL) and
+                // a PIC authors REQUESTED directly. Both converge here on APPROVED.
+                if (row.status !== "PENDING_APPROVAL" && row.status !== "REQUESTED") {
                     if (row.status === "APPROVED" || row.status === "PAID") {
                         return { outcome: "ALREADY", settlementId } as const;
                     }
@@ -647,7 +668,10 @@ export async function approveSettlement(
                 const now = new Date();
 
                 const cas = await tx.settlement.updateMany({
-                    where: { id: settlementId, status: "PENDING_APPROVAL" },
+                    where: {
+                        id: settlementId,
+                        status: { in: ["PENDING_APPROVAL", "REQUESTED"] },
+                    },
                     data: { status: "APPROVED", approvedByUserId: actor.userId, approvedAt: now },
                 });
 
@@ -665,7 +689,7 @@ export async function approveSettlement(
                         entityRef: row.settlementNumber,
                         description:
                             "Settlement disetujui; transfer bank kini boleh dieksekusi.",
-                        beforeState: { status: "PENDING_APPROVAL" },
+                        beforeState: { status: row.status },
                         afterState: { status: "APPROVED" },
                         reason: "SETTLEMENT_APPROVED",
                     },
@@ -1177,6 +1201,113 @@ export async function cancelSettlement(
     }
 
     return result.value;
+}
+
+/**
+ * PHASE 21 — `REQUESTED → REJECTED`: an operator refuses a PIC's payout request.
+ *
+ * The refusal is a final decision on the REQUEST only. No money moved (a `REQUESTED`
+ * row has never been approved or paid), so releasing the claim lines leaves every
+ * EARNED ledger row consumable again and the PIC may request afresh after the reason
+ * is read. The row and its reason stay as the record; the `REJECTED` state plus
+ * `rejectionReason`/`rejectedByUserId`/`rejectedAt` are the PIC-visible outcome.
+ */
+export async function rejectSettlement(
+    settlementId: string,
+    reason: string,
+    actor: AuthzScope
+): Promise<SettlementTransitionOutcome> {
+    const result = await withContentionRetry(async () =>
+        prisma.$transaction(
+            async (tx) => {
+                const row = await tx.settlement.findUnique({
+                    where: { id: settlementId },
+                    select: { settlementNumber: true, organizerId: true, status: true },
+                });
+
+                if (!row || !row.organizerId) {
+                    throw new AppError(ERROR_CODES.NOT_FOUND, {
+                        message: "Settlement tidak ditemukan.",
+                    });
+                }
+
+                if (row.status === "REJECTED") {
+                    return { outcome: "ALREADY", settlementId } as const;
+                }
+
+                if (row.status !== "REQUESTED") {
+                    throw new AppError(ERROR_CODES.SETTLEMENT_STATE_INVALID, {
+                        message: "Hanya permintaan pencairan PIC yang dapat ditolak.",
+                        details: { status: row.status, reason: "NOT_REQUESTED" },
+                    });
+                }
+
+                const now = new Date();
+
+                const cas = await tx.settlement.updateMany({
+                    where: { id: settlementId, status: "REQUESTED" },
+                    data: {
+                        status: "REJECTED",
+                        rejectionReason: reason,
+                        rejectedByUserId: actor.userId,
+                        rejectedAt: now,
+                    },
+                });
+
+                if (cas.count !== 1) {
+                    return { outcome: "ALREADY", settlementId } as const;
+                }
+
+                await releaseSettlementItems(tx, settlementId);
+
+                await writeTicketingAuditInTx(
+                    {
+                        action: "settlement.reject",
+                        actor,
+                        actorOrganizerId: row.organizerId,
+                        organizerId: row.organizerId,
+                        entityType: "Settlement",
+                        entityRef: row.settlementNumber,
+                        description:
+                            "Permintaan pencairan PIC ditolak; tidak ada dana yang dipindahkan dan klaim fee dilepas.",
+                        beforeState: { status: "REQUESTED" },
+                        afterState: { status: "REJECTED", rejectionReason: reason },
+                        reason: "SETTLEMENT_REJECTED",
+                    },
+                    tx
+                );
+
+                return { outcome: "DONE", settlementId } as const;
+            },
+            { timeout: 15_000 }
+        )
+    );
+
+    if (!result.ok) {
+        return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
+    }
+
+    return result.value;
+}
+
+/**
+ * PHASE 21 — the SETTLEABLE amount for a PIC + tenant + window, computed by the SAME
+ * `selectSettlementItems` the money engine uses.
+ *
+ * This is the amount the PIC dashboard may offer to request and the value a request
+ * claims. It is deliberately NOT `getPicLedgerBalance` (the canonical net): the net is
+ * a whole-ledger figure, while only unsettled in-window EARNED rows (minus their
+ * offsetting reversals) can actually be paid out. Exposing this helper lets the read
+ * surface label the number honestly as "saldo yang dapat dicairkan" instead of reusing
+ * a figure that includes already-paid or out-of-tenant rows.
+ */
+export async function previewSettleable(input: {
+    picProfileId: string;
+    organizerId: string;
+    periodStart: Date;
+    periodEnd: Date;
+}) {
+    return selectSettlementItems(prisma, input);
 }
 
 export const __internals = {

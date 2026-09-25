@@ -185,6 +185,16 @@ export const PERMISSIONS = {
     PIC_ATTRIBUTION_READ_ALL: "pic_attribution.read.all",
     PIC_FEE_READ_OWN: "pic_fee.read.own",
     PIC_FEE_READ_ALL: "pic_fee.read.all",
+    /**
+     * PHASE 21 — a PIC initiating their OWN payout request (own-scope).
+     *
+     * Deliberately its own key rather than a reuse of `pic_fee.read.own`: creating a
+     * request claims ledger rows and creates a `Settlement`, which is a write, and
+     * naming a write after a read would blur the capability. Identity is enforced by
+     * `decideOwnResourcePermission` + `requireMyPic` exactly like every other own-scope
+     * capability, so the permission only ever authorises the holder's OWN request.
+     */
+    PIC_PAYOUT_REQUEST_OWN: "pic_payout.request.own",
     FEE_RATE_CHANGE: "fee.rate.change",
     FEE_ADJUST: "fee.adjust",
     FEE_MARK_PAID: "fee.mark_paid",
@@ -311,6 +321,7 @@ const OWN_SCOPE: readonly Permission[] = [
     P.REFUND_REQUEST_OWN,
     P.PIC_ATTRIBUTION_READ_OWN,
     P.PIC_FEE_READ_OWN,
+    P.PIC_PAYOUT_REQUEST_OWN,
     P.REPORT_EXPORT_OWN_PIC_FEE,
 ];
 
@@ -643,6 +654,9 @@ const PLATFORM_ROLE_OWN_PERMISSIONS: Record<
         P.PAYMENT_READ_OWN,
         P.PIC_ATTRIBUTION_READ_OWN,
         P.PIC_FEE_READ_OWN,
+        // PHASE 21 — the PIC's own payout-request capability. Own-scope only; held by no
+        // other role, and identity-gated so it can never name another PIC's ledger rows.
+        P.PIC_PAYOUT_REQUEST_OWN,
         P.REPORT_EXPORT_OWN_PIC_FEE,
         // PHASE 8. A PIC is also a customer and buys tickets through the same flow.
         //

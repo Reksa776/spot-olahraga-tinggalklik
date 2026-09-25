@@ -162,11 +162,25 @@ describe("scan — the scanner page rides the API's own gate", () => {
 });
 
 describe("scan — the scanner component stays an input device", () => {
-    it("decodes with the browser-native BarcodeDetector, never a package", () => {
+    it("prefers the browser-native BarcodeDetector and falls back to the intentional jsQR decoder", () => {
         const source = code(read("components/organizer/TicketScanner.tsx"));
 
+        // PHASE 21 — the native detector is still the preferred path…
         expect(source).toMatch(/\bBarcodeDetector\b/);
-        expect(source).not.toMatch(/import .*(zxing|jsqr|barcode)/i);
+        // …and the ONLY decoder dependency is jsQR, imported by name, used purely to decode
+        // pixels (it never touches getUserMedia/the video element).
+        expect(source).toMatch(/import jsQR from "jsqr"/);
+        expect(source).not.toMatch(/zxing|html5-qrcode|instascan|quagga|react-qr-reader/i);
+    });
+
+    it("selects the fallback when BarcodeDetector is absent, without aborting the camera", () => {
+        const source = code(read("components/organizer/TicketScanner.tsx"));
+
+        // The decoder is chosen per the detector's constructibility, not gated on it.
+        expect(source).toMatch(/decodeMode|decodeModeRef/);
+        expect(source).toMatch(/jsqr/);
+        // The old hard-abort on a missing native detector is gone.
+        expect(source).not.toMatch(/NO_DETECTOR_FAILURE/);
     });
 
     it("does not persist or log the raw payload anywhere client-side", () => {

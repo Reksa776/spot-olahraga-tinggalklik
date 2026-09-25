@@ -413,8 +413,8 @@ describe("P13-5. the API surface", () => {
     });
 });
 
-describe("P13-6. no scanner dependency was added", () => {
-    it("still has no QR-decoding library", () => {
+describe("P13-6 / PHASE 21. the only scanner dependency is the intentional jsQR decoder", () => {
+    it("ships jsQR and no other QR-decoding library", () => {
         const pkg = JSON.parse(read("package.json")) as {
             dependencies?: Record<string, string>;
             devDependencies?: Record<string, string>;
@@ -425,8 +425,11 @@ describe("P13-6. no scanner dependency was added", () => {
             ...Object.keys(pkg.devDependencies ?? {}),
         ].join(" ");
 
+        // PHASE 21 — jsQR is the ONE decoder added, deliberately, to give browsers
+        // without `BarcodeDetector` (Firefox/Safari/desktop Linux) a working camera scan.
+        expect(names).toMatch(/\bjsqr\b/i);
         expect(names).not.toMatch(
-            /qr-scanner|zxing|barcode|html5-qrcode|jsqr|instascan|quagga|@zxing/i
+            /qr-scanner|zxing|html5-qrcode|instascan|quagga|@zxing/i
         );
     });
 

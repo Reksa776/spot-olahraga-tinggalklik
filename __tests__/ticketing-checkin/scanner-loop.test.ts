@@ -160,9 +160,17 @@ describe("continuous scanner — lifecycle (source-wired)", () => {
         expect(SCANNER).toMatch(/Gagal terhubung ke server/);
     });
 
-    it("maps detection to the browser-native BarcodeDetector", () => {
+    it("maps detection to BarcodeDetector, with the intentional jsQR fallback", () => {
         expect(SCANNER).toMatch(/\bBarcodeDetector\b/);
-        expect(SCANNER).not.toMatch(/import .*(zxing|jsqr|barcode)/i);
+        expect(SCANNER).toMatch(/import jsQR from "jsqr"/);
+        expect(SCANNER).not.toMatch(/zxing|html5-qrcode|instascan|quagga/i);
+    });
+
+    it("keeps the jsQR decoder out of the camera lifecycle", () => {
+        // jsQR is used ONLY to decode a canvas frame; it is never given the stream, the
+        // video element, the loop or the cleanup.
+        expect(SCANNER).toMatch(/decodeFrameWithJsQr\(video, canvas\)/);
+        expect(SCANNER).not.toMatch(/jsQR\([^)]*getUserMedia/);
     });
 });
 

@@ -437,8 +437,8 @@ describe("TEST 16 — fee summary is ledger-derived", () => {
  * TEST 17 — no public PIC financial endpoint exists
  * ================================================================================== */
 
-describe("TEST 17 — the PIC self-service surface is server-rendered reads only", () => {
-    test("there is no app/api/pic route (and no other PIC endpoint under app/api)", () => {
+describe("TEST 17 — the PIC self-service surface has exactly one owned endpoint", () => {
+    test("the only /api/pic route is the payout request, and no other PIC section exists", () => {
         const apiRoot = path.resolve(__dirname, "../../app/api");
 
         function collect(dir: string, acc: string[]): string[] {
@@ -458,19 +458,27 @@ describe("TEST 17 — the PIC self-service surface is server-rendered reads only
         const routes = collect(apiRoot, []);
 
         // Only the FIRST path segment counts: `admin/pic/…` and `organizer/pic/…` are the
-        // legitimate PIC-management endpoints this feature REUSES (never duplicated). The
-        // forbidden shape is a NEW top-level section — `/api/pic`, `/api/referral`,
-        // `/api/attribution`, `/api/fee` — which would be a second, unguarded write surface
-        // for the same business data.
-        const selfServiceRoots = ["pic", "referral", "attribution", "fee"];
+        // legitimate PIC-management endpoints this feature REUSES (never duplicated).
+        const firstSegmentOf = (route: string): string =>
+            route.split(/[\\/]/)[0].toLowerCase();
 
-        const picRoutes = routes.filter((route) => {
-            const firstSegment = route.split("/")[0].toLowerCase();
-            return selfServiceRoots.some((root) =>
-                firstSegment.includes(root)
-            );
-        });
+        // These would be a second, unguarded write surface for the same business data and
+        // must NOT exist.
+        const forbiddenRoots = ["referral", "attribution", "fee"];
 
-        expect(picRoutes).toEqual([]);
+        expect(
+            routes.filter((route) =>
+                forbiddenRoots.some((root) => firstSegmentOf(route).includes(root))
+            )
+        ).toEqual([]);
+
+        // PHASE 21 — the PIC's own payout REQUEST is a deliberate, own-scope, CSRF-checked
+        // endpoint (`requireMyPic` + `pic_payout.request.own`). It is the ONLY top-level
+        // `/api/pic` route; nothing else may be added there without updating this assertion.
+        const picRoutes = routes.filter(
+            (route) => firstSegmentOf(route) === "pic"
+        );
+
+        expect(picRoutes).toEqual([path.join("pic", "payouts", "route.ts")]);
     });
 });

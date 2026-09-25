@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import jsQR from "jsqr";
 
 import { apiFetch, ClientApiError } from "./api";
 import { Button } from "@/components/dashboard/ui/button";
@@ -58,10 +59,19 @@ import type { CheckInListItem, GateState } from "./CheckInPanel";
  *   detector    — `BarcodeDetector` is constructed with `{formats:["qr_code"]}` and falls
  *                 back to the no-argument constructor; failure is surfaced, never fatal.
  *
- * ── NO NEW DEPENDENCY ─────────────────────────────────────────────────────────────
- * Decoding uses the browser-native `BarcodeDetector` API. On a browser without it the
- * camera area says so and the MANUAL field below is the full fallback — including hardware
- * keyboard-wedge scanners. No QR library is installed.
+ * ── TWO DECODERS, ONE CAMERA (PHASE 21) ───────────────────────────────────────────
+ * Decoding prefers the browser-native `BarcodeDetector`, but it is NOT a hard requirement:
+ * Firefox, Safari and desktop Chrome on Linux/Windows do not ship it, and the camera there
+ * works fine. So the detector is chosen per session:
+ *
+ *   native  — `BarcodeDetector` when the browser provides it (fast, zero bundle cost).
+ *   jsqr    — a pure-JS decoder over an off-screen canvas frame, used whenever the native
+ *             detector is absent or cannot be constructed.
+ *
+ * The library ONLY decodes pixels; it never touches `getUserMedia`, the `<video>` element,
+ * the animation loop, the throttle or the cleanup — this component keeps owning the whole
+ * camera lifecycle. Both paths hand the SAME string to `sanitizeScannedPayload` → the
+ * existing throttle → the existing check-in call, so the server contract is unchanged.
  *
  * ── PRIVACY ──────────────────────────────────────────────────────────────────────
  * The decoded payload is never persisted (no `localStorage`/`sessionStorage`), never
@@ -329,12 +339,14 @@ export function describeCameraError(error: unknown): CameraFailure {
     }
 }
 
-const NO_DETECTOR_FAILURE: CameraFailure = {
-    kind: "NO_DETECTOR",
-    title: "QR scanner kamera tidak didukung browser ini",
-    message:
-        "Browser ini tidak menyediakan BarcodeDetector. Gunakan kolom kode manual di bawah.",
-};
+/**
+ * PHASE 21 — the decoders this component can drive.
+ *
+ * `native` is the browser `BarcodeDetector`; `jsqr` is the pure-JS fallback. The fallback is
+ * always available (the dependency is bundled), so a browser without `BarcodeDetector` still
+ * scans — it never disables the camera.
+ */
+export type DecodeMode = "native" | "jsqr";
 
 const VIDEO_FAILURE: CameraFailure = {
     kind: "VIDEO_FAILED",
@@ -342,6 +354,50 @@ const VIDEO_FAILURE: CameraFailure = {
     message:
         "Kamera ditemukan tetapi gambar tidak muncul. Coba lagi, atau gunakan kolom kode manual.",
 };
+
+/**
+ * Decode ONE frame with the pure-JS fallback.
+ *
+ * Draws the current video frame to a reused off-screen canvas, reads its pixels and runs
+ * `jsQR`. Pure w.r.t. the camera: it starts nothing and stops nothing, and it never throws
+ * — a not-yet-ready frame or a missing 2D context simply returns `null`, exactly like a
+ * frame the native detector found nothing in. The canvas is created lazily and reused, so
+ * the loop allocates nothing per frame beyond the `ImageData`.
+ */
+export function decodeFrameWithJsQr(
+    video: HTMLVideoElement,
+    canvas: HTMLCanvasElement
+): string | null {
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+
+    if (width <= 0 || height <= 0) {
+        return null;
+    }
+
+    if (canvas.width !== width) {
+        canvas.width = width;
+    }
+
+    if (canvas.height !== height) {
+        canvas.height = height;
+    }
+
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+
+    if (!context) {
+        return null;
+    }
+
+    context.drawImage(video, 0, 0, width, height);
+
+    const image = context.getImageData(0, 0, width, height);
+    const result = jsQR(image.data, width, height, {
+        inversionAttempts: "dontInvert",
+    });
+
+    return result?.data ?? null;
+}
 
 /**
  * Has the video element reported usable dimensions?
@@ -483,6 +539,7 @@ export default function TicketScanner({
     const [state, setState] = useState<ScannerState>("idle");
     const [failure, setFailure] = useState<CameraFailure | null>(null);
     const [detectWarning, setDetectWarning] = useState<string | null>(null);
+    const [decoderKind, setDecoderKind] = useState<DecodeMode | null>(null);
     const [videoSize, setVideoSize] = useState<VideoSize | null>(null);
     const [sessionCount, setSessionCount] = useState(0);
     const [items, setItems] = useState<CheckInListItem[]>(initialItems);
@@ -492,6 +549,10 @@ export default function TicketScanner({
     const videoRef = useRef<HTMLVideoElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const detectorRef = useRef<DetectorInstance | null>(null);
+    // Which decoder the current session uses. The camera loop branches on it rather than
+    // on the presence of a detector instance, so the jsQR path needs no `BarcodeDetector`.
+    const decodeModeRef = useRef<DecodeMode>("native");
+    const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const frameRef = useRef(0);
     const runningRef = useRef(false);
     const detectingRef = useRef(false);
@@ -703,7 +764,13 @@ export default function TicketScanner({
         const video = videoRef.current;
         const detector = detectorRef.current;
 
-        if (!video || !detector) {
+        if (!video) {
+            return;
+        }
+
+        // The native path needs a constructed detector; the jsQR path needs only the video
+        // (its canvas is created lazily). Either way, a zero-size frame is skipped.
+        if (decodeModeRef.current === "native" && !detector) {
             return;
         }
 
@@ -721,14 +788,29 @@ export default function TicketScanner({
         detectingRef.current = true;
 
         try {
-            const barcodes = await detector.detect(video);
+            // Two decoders, one payload. The native detector is preferred when present;
+            // jsQR otherwise. Both resolve to the same `raw` string the rest of the loop
+            // already sanitises, throttles and posts.
+            let raw: string | undefined;
+
+            if (decodeModeRef.current === "native" && detector) {
+                const barcodes = await detector.detect(video);
+                raw = barcodes[0]?.rawValue;
+            } else {
+                let canvas = canvasRef.current;
+
+                if (!canvas) {
+                    canvas = document.createElement("canvas");
+                    canvasRef.current = canvas;
+                }
+
+                raw = decodeFrameWithJsQr(video, canvas) ?? undefined;
+            }
 
             if (detectFailuresRef.current !== 0) {
                 detectFailuresRef.current = 0;
                 setDetectWarning(null);
             }
-
-            const raw = barcodes[0]?.rawValue;
 
             if (raw && !busyRef.current) {
                 const payload = sanitizeScannedPayload(raw);
@@ -796,12 +878,6 @@ export default function TicketScanner({
         const DetectorCtor = (window as { BarcodeDetector?: BarcodeDetectorCtor })
             .BarcodeDetector;
 
-        if (!DetectorCtor) {
-            setFailure(NO_DETECTOR_FAILURE);
-            setState("error");
-            return;
-        }
-
         let stream: MediaStream;
 
         try {
@@ -819,20 +895,27 @@ export default function TicketScanner({
             return;
         }
 
-        let detector: DetectorInstance;
+        // PHASE 21 — choose the decoder. `BarcodeDetector` is preferred but NEVER required:
+        // when it is absent, or throws on both constructor forms, the pure-JS fallback runs
+        // instead. A missing native detector no longer aborts the camera — the laptop webcam
+        // on Firefox/Safari/desktop Linux scans through jsQR.
+        let detector: DetectorInstance | null = null;
 
-        try {
-            detector = new DetectorCtor({ formats: ["qr_code"] });
-        } catch {
+        if (DetectorCtor) {
             try {
-                detector = new DetectorCtor();
+                detector = new DetectorCtor({ formats: ["qr_code"] });
             } catch {
-                stream.getTracks().forEach((track) => track.stop());
-                setFailure(NO_DETECTOR_FAILURE);
-                setState("error");
-                return;
+                try {
+                    detector = new DetectorCtor();
+                } catch {
+                    detector = null;
+                }
             }
         }
+
+        const decodeMode: DecodeMode = detector ? "native" : "jsqr";
+        decodeModeRef.current = decodeMode;
+        setDecoderKind(decodeMode);
 
         const video = videoRef.current;
 
@@ -941,6 +1024,7 @@ export default function TicketScanner({
         ["Camera API", environment.mediaDevices ? "YA" : "TIDAK"],
         ["getUserMedia", environment.getUserMedia ? "YA" : "TIDAK"],
         ["BarcodeDetector", environment.barcodeDetector ? "YA" : "TIDAK"],
+        ["Decoder", decoderKind ? decoderKind.toUpperCase() : "—"],
         ["Camera stream", isActive ? "AKTIF" : "—"],
         ["Video", videoSize ? `${videoSize.width} × ${videoSize.height}` : "—"],
         ["Scanner", state.toUpperCase()],

@@ -168,7 +168,12 @@ describe("camera — pipeline wiring (source)", () => {
     it("checks the environment before requesting the camera", () => {
         expect(SCANNER).toMatch(/readCameraEnvironment\(\)/);
         expect(SCANNER).toMatch(/environmentFailure\(environment\)/);
-        expect(SCANNER).toMatch(/if \(!DetectorCtor\)/);
+        // PHASE 21 — a missing `BarcodeDetector` no longer aborts the camera; the detector
+        // is chosen with the jsQR fallback instead, so the environment check still runs
+        // FIRST but a missing native decoder is not fatal.
+        expect(SCANNER).toMatch(/DetectorCtor/);
+        expect(SCANNER).not.toMatch(/NO_DETECTOR_FAILURE/);
+        expect(SCANNER).toMatch(/decodeMode/);
     });
 
     it("requests the rear camera without audio, with a safe fallback", () => {

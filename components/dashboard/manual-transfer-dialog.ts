@@ -30,7 +30,10 @@ export type ManualTransferDialogKind =
     | "settle"
     | "fail"
     | "paid"
-    | "settleFail";
+    | "settleFail"
+    // PHASE 21 — refusing a PIC-initiated payout request (distinct copy from a refund
+    // rejection, same required-reason contract).
+    | "rejectPayout";
 
 export type ManualTransferInput = Partial<Record<ManualTransferField, string>>;
 
@@ -152,6 +155,24 @@ export const MANUAL_TRANSFER_DIALOGS: Readonly<
             note: "Catatan minimal 3 karakter atau kosongkan.",
         },
         confirmLabel: "Tandai dibayar",
+        destructive: true,
+    },
+    rejectPayout: {
+        kind: "rejectPayout",
+        action: "reject",
+        title: "Tolak permintaan pencairan ini?",
+        description:
+            "Permintaan pencairan dari PIC ditolak dan klaim fee-nya dilepaskan agar PIC dapat mengajukan ulang. Tidak ada uang yang bergerak. Alasan wajib diisi dan ditampilkan kepada PIC.",
+        fields: ["reason"],
+        required: ["reason"],
+        labels: { reason: "Alasan penolakan pencairan" },
+        hints: {
+            reason: "Wajib, minimal 3 karakter. Ditampilkan kepada PIC sebagai alasan penolakan.",
+        },
+        placeholders: { reason: "Contoh: data rekening tujuan belum lengkap" },
+        maxLengths: { reason: SETTLEMENT_REASON_MAX },
+        errors: { reason: "Alasan penolakan minimal 3 karakter." },
+        confirmLabel: "Tolak pencairan",
         destructive: true,
     },
     settleFail: {

@@ -68,14 +68,25 @@ type SettlementStatus =
     | "APPROVED"
     | "PAID"
     | "FAILED"
-    | "CANCELLED";
+    | "CANCELLED"
+    | "REQUESTED"
+    | "REJECTED";
 
-type Action = "submit" | "approve" | "proof" | "paid" | "fail" | "cancel";
+type Action =
+    | "submit"
+    | "approve"
+    | "reject"
+    | "proof"
+    | "paid"
+    | "fail"
+    | "cancel";
 
 /** The actions that ask the operator something before they can proceed. */
 const DIALOG_FOR: Partial<Record<Action, ManualTransferDialogKind>> = {
     paid: "paid",
     fail: "settleFail",
+    // PHASE 21 — refusing a PIC payout request asks for a reason the PIC will read.
+    reject: "rejectPayout",
 };
 
 export function SettlementActions({
@@ -177,7 +188,12 @@ export function SettlementActions({
         void postJson(action);
     }
 
-    if (status !== "DRAFT" && status !== "PENDING_APPROVAL" && status !== "APPROVED") {
+    if (
+        status !== "DRAFT" &&
+        status !== "PENDING_APPROVAL" &&
+        status !== "APPROVED" &&
+        status !== "REQUESTED"
+    ) {
         return <p className="text-xs text-muted-foreground">Tidak ada tindakan tersisa.</p>;
     }
 
@@ -194,6 +210,30 @@ export function SettlementActions({
     return (
         <div className="flex flex-col items-start gap-2">
             <div className="flex flex-wrap gap-2">
+                {status === "REQUESTED" ? (
+                    <>
+                        <Button
+                            type="button"
+                            size="sm"
+                            disabled={disabled}
+                            onClick={() => void postJson("approve")}
+                        >
+                            {busy === "approve" ? "Menyetujui…" : "Setujui"}
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={disabled}
+                            onClick={() => onAction("reject")}
+                        >
+                            {dialog.state.openKind === "rejectPayout" && dialogBusy
+                                ? "Menolak…"
+                                : "Tolak"}
+                        </Button>
+                    </>
+                ) : null}
+
                 {status === "DRAFT" ? (
                     <>
                         <Button

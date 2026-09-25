@@ -48,6 +48,9 @@ const STATUS_TONE: Record<string, Tone> = {
     PAID: "success",
     FAILED: "error",
     CANCELLED: "neutral",
+    // PHASE 21 — PIC-initiated requests awaiting review, and refused requests.
+    REQUESTED: "pending",
+    REJECTED: "error",
 };
 
 function parseStatus(

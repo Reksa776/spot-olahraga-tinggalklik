@@ -316,7 +316,7 @@ describe("P16-U6. the gate input stays scanner-friendly and feeds the ticketCode
         expect(panel).toMatch(/setCode\(""\);\s*\n\s*await refresh\(\)/);
     });
 
-    it("adds no scanner dependency — the wedge is the scanner", () => {
+    it("adds only the intentional jsQR decoder — no other scanner bundle", () => {
         const pkg = JSON.parse(read("package.json")) as {
             dependencies: Record<string, string>;
         };
@@ -324,7 +324,6 @@ describe("P16-U6. the gate input stays scanner-friendly and feeds the ticketCode
         for (const banned of [
             "zxing",
             "@zxing/library",
-            "jsqr",
             "html5-qrcode",
             "instascan",
             "quagga",
@@ -339,7 +338,10 @@ describe("P16-U6. the gate input stays scanner-friendly and feeds the ticketCode
             expect(pkg.dependencies[banned]).toBeUndefined();
         }
 
-        // The one QR dependency is the renderer that was already installed.
+        // PHASE 21 — jsQR is the ONE scanner dependency, added on purpose so the gate
+        // scanner works on browsers without BarcodeDetector. The QR RENDERER stays the
+        // already-installed `qrcode.react`.
+        expect(pkg.dependencies["jsqr"]).toBeDefined();
         expect(pkg.dependencies["qrcode.react"]).toBeDefined();
     });
 });

@@ -76,6 +76,9 @@ export type SettlementPayload = {
     proofFileName: string | null;
     providerReference: string | null;
     failureReason: string | null;
+    /** PHASE 21 — the PIC-visible reason a `REJECTED` request was refused. */
+    rejectionReason: string | null;
+    rejectedAt: string | null;
     notes: string | null;
     preparedByUserId: string;
     preparedAt: string;
@@ -107,6 +110,8 @@ export type SettlementRow = {
     proofFilePath: string | null;
     providerReference: string | null;
     failureReason: string | null;
+    rejectionReason: string | null;
+    rejectedAt: Date | null;
     notes: string | null;
     preparedByUserId: string;
     preparedAt: Date;
@@ -150,6 +155,8 @@ export const SETTLEMENT_SELECT = {
     proofFilePath: true,
     providerReference: true,
     failureReason: true,
+    rejectionReason: true,
+    rejectedAt: true,
     notes: true,
     preparedByUserId: true,
     preparedAt: true,
@@ -206,6 +213,8 @@ export function buildSettlementPayload(row: WithItems<SettlementRow>): Settlemen
         proofFileName: row.proofFilePath,
         providerReference: row.providerReference,
         failureReason: row.failureReason,
+        rejectionReason: row.rejectionReason,
+        rejectedAt: row.rejectedAt?.toISOString() ?? null,
         notes: row.notes,
         preparedByUserId: row.preparedByUserId,
         preparedAt: row.preparedAt.toISOString(),

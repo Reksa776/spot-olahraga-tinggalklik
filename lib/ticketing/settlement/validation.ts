@@ -34,6 +34,9 @@ export const SETTLEMENT_STATUSES = [
     "PAID",
     "FAILED",
     "CANCELLED",
+    // PHASE 21 — the PIC-initiated payout-request states.
+    "REQUESTED",
+    "REJECTED",
 ] as const;
 
 export const settlementStatusSchema = z.enum(SETTLEMENT_STATUSES);
@@ -137,6 +140,48 @@ export const failSettlementSchema = z.object({
 });
 
 export type FailSettlementInput = z.infer<typeof failSettlementSchema>;
+
+/**
+ * `POST /api/organizer/settlements/[id]/reject` — refuse a PIC-initiated `REQUESTED`
+ * payout.
+ *
+ * The reason is REQUIRED (min 3 chars, the same floor every rejection/failure note
+ * uses) because it is shown to the PIC as `rejectionReason` — a silent refusal would
+ * leave the requester unable to fix whatever was wrong. No amount, status or actor is
+ * accepted; the server writes the state, the actor and the timestamp.
+ */
+export const rejectSettlementSchema = z
+    .object({
+        reason: z
+            .string()
+            .trim()
+            .min(3, "Alasan penolakan wajib diisi")
+            .max(500, "Alasan penolakan maksimum 500 karakter"),
+    })
+    .strict();
+
+export type RejectSettlementInput = z.infer<typeof rejectSettlementSchema>;
+
+/**
+ * `POST /api/pic/payouts` — a PIC requests a payout for ONE organizer (PHASE 21).
+ *
+ * The body names the tenant only. There is NO amount, NO status, NO bank and NO
+ * `picProfileId` — the amount is whatever the PIC's own eligible ledger rows add up to
+ * for that tenant, derived server-side by the settlement money engine. A tampered field
+ * never reaches the service (the schema is strict).
+ */
+export const picPayoutRequestSchema = z
+    .object({
+        organizerId: z
+            .string()
+            .trim()
+            .min(1, "Penyelenggara wajib dipilih.")
+            .max(64),
+        notes: z.string().trim().max(2000).optional(),
+    })
+    .strict();
+
+export type PicPayoutRequestInput = z.infer<typeof picPayoutRequestSchema>;
 
 /** The `[settlementId]` path segment. `Settlement.id` is a cuid string. */
 export const settlementIdParamSchema = z.string().trim().min(1).max(64);

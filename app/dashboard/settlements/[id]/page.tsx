@@ -48,6 +48,9 @@ const STATUS_TONE: Record<string, Tone> = {
     PAID: "success",
     FAILED: "error",
     CANCELLED: "neutral",
+    // PHASE 21 — a PIC-initiated request awaiting review, and a refused request.
+    REQUESTED: "pending",
+    REJECTED: "error",
 };
 
 export default async function DashboardSettlementDetailPage({
@@ -86,7 +89,13 @@ export default async function DashboardSettlementDetailPage({
 
                 <SettlementActions
                     settlementId={settlement.id}
-                    status={settlement.status as "DRAFT" | "PENDING_APPROVAL" | "APPROVED"}
+                    status={
+                        settlement.status as
+                            | "DRAFT"
+                            | "PENDING_APPROVAL"
+                            | "APPROVED"
+                            | "REQUESTED"
+                    }
                     proofAvailable={settlement.proofAvailable}
                 />
             </div>
@@ -254,6 +263,16 @@ export default async function DashboardSettlementDetailPage({
                                     </span>
                                     <p className="rounded-md bg-destructive/10 p-3 text-xs leading-relaxed">
                                         {settlement.failureReason}
+                                    </p>
+                                </div>
+                            ) : null}
+                            {settlement.rejectionReason ? (
+                                <div className="flex flex-col gap-1">
+                                    <span className="text-sm text-muted-foreground">
+                                        Alasan penolakan (terlihat oleh PIC)
+                                    </span>
+                                    <p className="rounded-md bg-destructive/10 p-3 text-xs leading-relaxed">
+                                        {settlement.rejectionReason}
                                     </p>
                                 </div>
                             ) : null}

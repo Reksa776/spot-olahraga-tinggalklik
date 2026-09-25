@@ -76,6 +76,7 @@ model User {
   settlementsPrepared    Settlement[]           @relation("SettlementPreparedBy")
   settlementsApproved    Settlement[]           @relation("SettlementApprovedBy")
   settlementsPaid        Settlement[]           @relation("SettlementPaidBy")
+  settlementsRejected    Settlement[]           @relation("SettlementRejectedBy")
   idempotencyKeys        IdempotencyKey[]
   auditLogs              AdminAuditLog[]        @relation("AuditLogActor")
 
@@ -610,6 +611,12 @@ enum SettlementStatus {
   PAID
   FAILED
   CANCELLED
+  /// PHASE 21 — a PIC-initiated payout request awaiting operator review. Created
+  /// directly in this state (no DRAFT/PENDING_APPROVAL walk) by the PIC's own surface.
+  REQUESTED
+  /// PHASE 21 — an operator refused a PIC payout request; `rejectionReason` carries the
+  /// PIC-visible reason and the claim lines are released.
+  REJECTED
 }
 
 /// MANUAL_TRANSFER vs GATEWAY_SPLIT. GATEWAY_SPLIT exists as a value but
@@ -1604,6 +1611,12 @@ model Settlement {
   approvedAt        DateTime?
   paidByUserId      String?
   paidAt            DateTime?
+  /// PHASE 21 — the operator who refused a `REQUESTED` PIC payout. Null on every
+  /// other row, so a rejection stamp can never describe an approved or paid payout.
+  rejectedByUserId  String?
+  rejectedAt        DateTime?
+  /// PHASE 21 — the PIC-VISIBLE reason a `REJECTED` payout request was refused.
+  rejectionReason   String?              @db.Text
   failureReason     String?              @db.Text
   notes             String?              @db.Text
   createdAt         DateTime             @default(now())
@@ -1614,6 +1627,7 @@ model Settlement {
   preparedBy User        @relation("SettlementPreparedBy", fields: [preparedByUserId], references: [id], onDelete: Restrict)
   approvedBy User?       @relation("SettlementApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
   paidBy     User?       @relation("SettlementPaidBy", fields: [paidByUserId], references: [id], onDelete: SetNull)
+  rejectedBy User?       @relation("SettlementRejectedBy", fields: [rejectedByUserId], references: [id], onDelete: SetNull)
   items      SettlementItem[]
   feeEntries PICFeeLedger[]
 

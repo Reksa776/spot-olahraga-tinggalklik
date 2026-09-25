@@ -18,6 +18,7 @@ import {
     failSettlement as failSettlementCore,
     markSettlementPaid,
     readSettlementPayload,
+    rejectSettlement as rejectSettlementCore,
     submitSettlement as submitSettlementCore,
     type PrepareSettlementOutcome,
 } from "./settlement";
@@ -35,6 +36,7 @@ import type {
     FailSettlementInput,
     MarkPaidInput,
     PrepareSettlementInput,
+    RejectSettlementInput,
     SettlementListQuery,
 } from "./validation";
 
@@ -255,6 +257,47 @@ export async function paySettlement(
     }
 
     return readSettlementPayload(outcome.settlementId);
+}
+
+/**
+ * `POST /api/organizer/settlements/[id]/reject` — refuse a PIC-initiated `REQUESTED`
+ * payout, with a reason the PIC will read.
+ *
+ * The review is an approval-level decision (`settlement.approve`) and carries the same
+ * separation of duties as approval/payment: whoever authored the claim may not refuse
+ * their own claim. For a PIC request the author is the PIC (`preparedByUserId`), so an
+ * operator always passes the SoD check while the PIC — who holds no `settlement.*`
+ * capability at all — can never reach this path. The reason is required and persisted
+ * on `rejectionReason`, which is what `listMyPicPayoutRequests` renders back to the PIC.
+ */
+export async function rejectSettlement(
+    settlementId: string,
+    input: RejectSettlementInput,
+    actor: AuthzScope
+): Promise<ReturnType<typeof buildSettlementPayload>> {
+    const row = await prisma.settlement.findUniqueOrThrow({
+        where: { id: settlementId },
+        select: { organizerId: true, preparedByUserId: true },
+    });
+
+    if (!row.organizerId) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, {
+            message: "Settlement tidak ditemukan.",
+        });
+    }
+
+    await requireSettlementPermission(row.organizerId, PERMISSIONS.SETTLEMENT_APPROVE);
+
+    if (row.preparedByUserId === actor.userId) {
+        throw new AppError(ERROR_CODES.FORBIDDEN, {
+            message: "Pengaju pencairan tidak dapat menolak pengajuannya sendiri.",
+            details: { reason: "SEPARATION_OF_DUTIES" },
+        });
+    }
+
+    const outcome = await rejectSettlementCore(settlementId, input.reason, actor);
+
+    return readSettlementPayload(resolveTransitionOutcome(outcome).settlementId);
 }
 
 /**

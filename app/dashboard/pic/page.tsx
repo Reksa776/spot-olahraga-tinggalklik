@@ -34,8 +34,12 @@ import {
     listMyFeeLedger,
     listMyPicAssignments,
     listMyReferralLinks,
-    listMySettlements,
 } from "@/lib/pic/self-service";
+import {
+    listMyPicPayoutRequests,
+    listMyPicSettleableOrganizers,
+} from "@/lib/pic/payout";
+import { PicPayoutRequestDialog } from "@/components/dashboard/PicPayoutRequestDialog";
 import { getOrganizerPageContext } from "@/lib/organizer/context";
 import { listOrganizerPicAssignments, listPicsForAdmin } from "@/lib/pic/service";
 import { formatIdr } from "@/lib/ticketing/ui/format";
@@ -132,6 +136,9 @@ const SETTLEMENT_STATUS_TONE: Record<string, Tone> = {
     PAID: "success",
     FAILED: "error",
     CANCELLED: "neutral",
+    // PHASE 21 — the PIC's own request lifecycle, shown in their dashboard.
+    REQUESTED: "pending",
+    REJECTED: "error",
 };
 
 export default async function DashboardPicPage() {
@@ -320,7 +327,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
         assignments: Awaited<ReturnType<typeof listMyPicAssignments>>;
         attributions: Awaited<ReturnType<typeof listMyAttributions>>;
         ledgerEntries: Awaited<ReturnType<typeof listMyFeeLedger>>;
-        settlements: Awaited<ReturnType<typeof listMySettlements>>;
+        requests: Awaited<ReturnType<typeof listMyPicPayoutRequests>>;
+        settleable: Awaited<ReturnType<typeof listMyPicSettleableOrganizers>>;
         referralLinks: Awaited<ReturnType<typeof listMyReferralLinks>>;
     };
 
@@ -333,7 +341,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
             assignments,
             attributions,
             ledgerEntries,
-            settlements,
+            requests,
+            settleable,
             referralLinks,
         ] = await Promise.all([
             getMyPicProfile(userId),
@@ -341,7 +350,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
             listMyPicAssignments(userId),
             listMyAttributions(userId),
             listMyFeeLedger(userId),
-            listMySettlements(userId),
+            listMyPicPayoutRequests(userId),
+            listMyPicSettleableOrganizers(userId),
             listMyReferralLinks(userId),
         ]);
 
@@ -351,7 +361,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
             assignments,
             attributions,
             ledgerEntries,
-            settlements,
+            requests,
+            settleable,
             referralLinks,
         };
     } catch (error) {
@@ -379,7 +390,8 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
         assignments,
         attributions,
         ledgerEntries,
-        settlements,
+        requests,
+        settleable,
         referralLinks,
     } = view;
 
@@ -680,70 +692,109 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
 
                 <SectionCard
                     title="Pencairan"
-                    description="Pembayaran fee yang disiapkan penyelenggara, terbaru di atas. Status hanya menjadi PAID setelah bukti transfer tercatat; debit PAYOUT lalu muncul di ledger."
+                    description="Ajukan pencairan fee kamu; penyelenggara meninjau, melakukan transfer bank manual, lalu mencatatnya. Status menjadi PAID hanya setelah bukti transfer tercatat. Jumlah yang diajukan dihitung server dari fee yang belum dicairkan."
+                    actions={<PicPayoutRequestDialog organizers={settleable} />}
                 >
-                    {settlements.length === 0 ? (
+                    <div className="mb-4 flex flex-col">
+                        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            Saldo yang dapat dicairkan
+                        </p>
+                        {settleable.length === 0 ? (
+                            <DataRow
+                                divider={false}
+                                title="Belum ada saldo yang dapat dicairkan"
+                                meta="Fee yang sudah lunas akan tersedia untuk dicairkan."
+                                trailing={<Money value={formatIdr(0)} />}
+                            />
+                        ) : (
+                            settleable.map((organizer, index) => (
+                                <DataRow
+                                    key={organizer.organizerId}
+                                    divider={index > 0}
+                                    title={organizer.organizerName}
+                                    meta="Belum dicairkan"
+                                    trailing={
+                                        <Money
+                                            value={formatIdr(
+                                                Number(organizer.settleableNet)
+                                            )}
+                                        />
+                                    }
+                                />
+                            ))
+                        )}
+                    </div>
+
+                    {requests.length === 0 ? (
                         <EmptyBlock
                             title="Belum ada pencairan."
-                            description="Penyelenggara akan menyiapkan pembayaran fee kamu setelah periode penjualan berjalan."
+                            description="Ajukan pencairan bila saldo fee kamu sudah dapat dicairkan."
                         />
                     ) : (
                         <DataTable
+                            minWidth={1000}
                             columns={[
                                 { header: "Pencairan" },
-                                { header: "Periode", align: "right" },
+                                { header: "Penyelenggara" },
                                 { header: "Status" },
-                                { header: "Jumlah dibayar", align: "right" },
+                                { header: "Tujuan" },
+                                { header: "Jumlah", align: "right" },
                                 { header: "Dibayar", align: "right" },
                             ]}
-                            rows={settlements.map((settlement) => ({
-                                key: settlement.id,
+                            rows={requests.map((request) => ({
+                                key: request.id,
                                 cells: [
-                                    <span
-                                        key="number"
-                                        className="font-mono text-xs"
-                                    >
-                                        {settlement.settlementNumber}
-                                    </span>,
-                                    <div
-                                        key="period"
-                                        className="flex flex-col text-right"
-                                    >
-                                        <span className="text-xs">
-                                            {DATE_FORMAT.format(
-                                                new Date(settlement.periodStart)
-                                            )}
+                                    <div key="number" className="flex flex-col">
+                                        <span className="font-mono text-xs">
+                                            {request.settlementNumber}
                                         </span>
                                         <span className="text-xs text-muted-foreground">
-                                            s.d.{" "}
                                             {DATE_FORMAT.format(
-                                                new Date(settlement.periodEnd)
+                                                new Date(request.createdAt)
                                             )}
                                         </span>
                                     </div>,
+                                    request.organizerName ?? "—",
                                     <StatusBadge
                                         key="status"
                                         tone={
                                             SETTLEMENT_STATUS_TONE[
-                                                settlement.status
+                                                request.status
                                             ] ?? "neutral"
                                         }
                                     >
-                                        {settlement.status}
+                                        {request.status}
                                     </StatusBadge>,
+                                    <div
+                                        key="destination"
+                                        className="flex flex-col"
+                                    >
+                                        <span className="text-xs">
+                                            {request.bankName ?? "—"}
+                                        </span>
+                                        {request.bankAccountNumber ? (
+                                            <span className="font-mono text-xs text-muted-foreground">
+                                                {request.bankAccountNumber}
+                                            </span>
+                                        ) : null}
+                                    </div>,
                                     <span
                                         key="amount"
                                         className="whitespace-nowrap tabular-nums"
                                     >
-                                        {formatIdr(Number(settlement.netAmount))}
+                                        <Money
+                                            value={formatIdr(
+                                                Number(request.netAmount)
+                                            )}
+                                        />
                                     </span>,
                                     <span
                                         key="paid"
                                         className="text-xs text-muted-foreground"
                                     >
-                                        {settlement.paidAt
+                                        {request.paidAt
                                             ? DATE_FORMAT.format(
-                                                  new Date(settlement.paidAt)
+                                                  new Date(request.paidAt)
                                               )
                                             : "—"}
                                     </span>,
@@ -751,6 +802,33 @@ async function PicSelfServiceSection({ userId }: { userId: string }) {
                             }))}
                         />
                     )}
+
+                    {requests.some(
+                        (request) =>
+                            request.status === "REJECTED" && request.rejectionReason
+                    ) ? (
+                        <div className="mt-4 flex flex-col gap-2">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                Alasan penolakan
+                            </span>
+                            {requests
+                                .filter(
+                                    (request) =>
+                                        request.status === "REJECTED" &&
+                                        request.rejectionReason
+                                )
+                                .slice(0, 5)
+                                .map((request) => (
+                                    <p
+                                        key={request.id}
+                                        className="rounded-md bg-destructive/10 p-3 text-xs leading-relaxed"
+                                    >
+                                        {request.settlementNumber}:{" "}
+                                        {request.rejectionReason}
+                                    </p>
+                                ))}
+                        </div>
+                    ) : null}
                 </SectionCard>
             </div>
         </div>
