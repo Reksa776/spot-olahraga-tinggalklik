@@ -15,9 +15,13 @@ import { markPaidSchema, settlementIdParamSchema } from "@/lib/ticketing/settlem
  * The single most sensitive route in the feature. It is served on the organizer prefix
  * and CSRF-checked, then the service:
  *
- *   1. requires `settlement.approve` AND `settlement.proof.upload` against the row's own
- *      tenant (a MANAGER cannot pay out; a FINANCE-only approver without proof access
- *      cannot either),
+ *   1. requires `settlement.approve` against the row's OWN tenant — the SAME capability the
+ *      approve step uses, held BY ROLE by MANAGER (platform role) and by the membership
+ *      roles OWNER / MANAGER / FINANCE, and by ADMIN only with an explicit
+ *      `PermissionGrant` (D-19). It deliberately does NOT require `settlement.proof.upload`:
+ *      the proof is enforced as DATA rather than as a caller capability —
+ *      `markSettlementPaid` refuses unless `Settlement.proofFilePath` is already set
+ *      (`PROOF_REQUIRED`), and uploading it happens on the separate proof route.
  *   2. enforces the separation of duties against the person who PREPARED the payout,
  *   3. CASes `APPROVED → PAID` and, atomically, marks the claim lines SETTLED, links the
  *      offsetting REVERSAL rows and appends the one-per-item PAYOUT DEBIT ledger rows

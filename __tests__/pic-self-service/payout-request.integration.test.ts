@@ -450,8 +450,52 @@ describe("PHASE 21 — PIC identity, isolation and permission", () => {
 });
 
 describe("PHASE 21 — operator review and separation of duties", () => {
-    test("the author (PIC) can never approve, reject or pay their own request", async () => {
-        const { user, profile } = await makePic(`sod-${SUFFIX}`);
+    test("a plain PIC is refused by tenant authorization on every operator action", async () => {
+        // A qualifying PIC holds NO `settlement.*` permission and NO organizer membership,
+        // so the FIRST gate on approve/reject/pay is
+        // `requireOrganizerAccess(row.organizerId, settlement.approve)`. It answers
+        // ORGANIZER_ACCESS_DENIED — the never-confirming 404 shape — BEFORE the
+        // separation-of-duties comparison is ever reached.
+        const { user, profile } = await makePic(`sod-authz-${SUFFIX}`);
+        const item = await makeOrderItem(profile.id);
+        await postEarned(profile.id, orgA.id, item.item, "4450.00", item.order.id);
+
+        signInAs(user.id);
+        const request = await createMyPicPayoutRequest(user.id, {
+            organizerId: orgA.id,
+        });
+
+        const scope = await resolveAuthzScope(user.id);
+        expect(scope).not.toBeNull();
+
+        await expect(approveSettlement(request.id, scope!)).rejects.toMatchObject({
+            code: "ORGANIZER_ACCESS_DENIED",
+        });
+        await expect(
+            rejectSettlement(request.id, { reason: "nope nope" }, scope!)
+        ).rejects.toMatchObject({ code: "ORGANIZER_ACCESS_DENIED" });
+        await expect(
+            paySettlement(request.id, { providerReference: "TRX-1" }, scope!)
+        ).rejects.toMatchObject({ code: "ORGANIZER_ACCESS_DENIED" });
+    });
+
+    test("the author is refused by SEPARATION_OF_DUTIES even when they hold settlement.approve", async () => {
+        // To REACH the SoD comparison the actor must first pass the capability gate, so
+        // this PIC is also an ACTIVE OWNER member of the tenant (and therefore holds
+        // `settlement.approve`). The request is still authored by the PIC, so approve,
+        // reject and pay must each be refused by the separation-of-duties layer itself —
+        // the branch this test pins (previously asserted only with `toBeDefined()`).
+        const { user, profile } = await makePic(`sod-code-${SUFFIX}`);
+
+        await prisma.organizerMember.create({
+            data: {
+                organizerId: orgA.id,
+                userId: user.id,
+                role: "OWNER",
+                status: "ACTIVE",
+            },
+        });
+
         const item = await makeOrderItem(profile.id);
         await postEarned(profile.id, orgA.id, item.item, "4400.00", item.order.id);
 
@@ -463,15 +507,29 @@ describe("PHASE 21 — operator review and separation of duties", () => {
         const scope = await resolveAuthzScope(user.id);
         expect(scope).not.toBeNull();
 
-        await expect(
-            approveSettlement(request.id, scope!)
-        ).rejects.toBeDefined();
+        await expect(approveSettlement(request.id, scope!)).rejects.toMatchObject({
+            code: "FORBIDDEN",
+            details: { reason: "SEPARATION_OF_DUTIES" },
+        });
         await expect(
             rejectSettlement(request.id, { reason: "nope nope" }, scope!)
-        ).rejects.toBeDefined();
+        ).rejects.toMatchObject({
+            code: "FORBIDDEN",
+            details: { reason: "SEPARATION_OF_DUTIES" },
+        });
         await expect(
             paySettlement(request.id, { providerReference: "TRX-1" }, scope!)
-        ).rejects.toBeDefined();
+        ).rejects.toMatchObject({
+            code: "FORBIDDEN",
+            details: { reason: "SEPARATION_OF_DUTIES" },
+        });
+
+        // Every refusal happened BEFORE any state change: the request is still REQUESTED.
+        const row = await prisma.settlement.findUniqueOrThrow({
+            where: { id: request.id },
+            select: { status: true },
+        });
+        expect(row.status).toBe("REQUESTED");
     });
 
     test("an operator approves, and PAID still requires proof and a reference", async () => {
@@ -530,5 +588,55 @@ describe("PHASE 21 — operator review and separation of duties", () => {
 
         const organizers = await listMyPicSettleableOrganizers(user.id);
         expect(organizers[0]?.settleableNet).toBe("2600.00");
+    });
+
+    test("after a rejection the PIC can request again, and the same fee is never double-consumed", async () => {
+        const { user, profile } = await makePic(`retry-${SUFFIX}`);
+        const item = await makeOrderItem(profile.id);
+        await postEarned(profile.id, orgA.id, item.item, "5100.00", item.order.id);
+
+        // 1. The PIC requests — it lands as REQUESTED and claims the EARNED row.
+        signInAs(user.id);
+        const first = await createMyPicPayoutRequest(user.id, { organizerId: orgA.id });
+        expect(first.status).toBe("REQUESTED");
+
+        // 2. An operator rejects it with a required reason.
+        signInAs(manager.id);
+        const managerScope = await resolveAuthzScope(manager.id);
+        const rejected = await rejectSettlement(
+            first.id,
+            { reason: "Rekening perlu diperbaiki" },
+            managerScope!
+        );
+        expect(rejected.status).toBe("REJECTED");
+
+        // 3. The claimed lines are released.
+        expect(
+            await prisma.settlementItem.count({ where: { settlementId: first.id } })
+        ).toBe(0);
+
+        // 4. The PIC can submit a NEW request successfully…
+        signInAs(user.id);
+        const second = await createMyPicPayoutRequest(user.id, { organizerId: orgA.id });
+        expect(second.id).not.toBe(first.id);
+        expect(second.status).toBe("REQUESTED");
+        expect(second.netAmount).toBe("5100.00");
+
+        // 5. …and the SAME ledger row is claimed exactly once, by the new settlement.
+        const ledgerRow = await prisma.pICFeeLedger.findFirstOrThrow({
+            where: { picProfileId: profile.id },
+            select: { id: true, status: true, settlementId: true },
+        });
+        // No money moved at request time: the EARNED row is not settled yet.
+        expect(ledgerRow.status).toBe("EARNED");
+        expect(ledgerRow.settlementId).toBeNull();
+
+        const claims = await prisma.settlementItem.findMany({
+            where: { settlement: { picProfileId: profile.id } },
+            select: { settlementId: true, picFeeLedgerId: true },
+        });
+        expect(claims).toHaveLength(1);
+        expect(claims[0].settlementId).toBe(second.id);
+        expect(claims[0].picFeeLedgerId).toBe(ledgerRow.id);
     });
 });
