@@ -328,6 +328,24 @@ model Refund {
   /// only reach REFUNDED once the operator has recorded transfer evidence (reference +
   /// this note), so the row itself explains how the money left the platform.
   evidenceNote      String?              @db.Text
+  /// PHASE NEXT (D03): the ACTUAL proof-of-transfer FILE the operator attached when it
+  /// recorded the bank transfer — a transfer receipt / screenshot (jpeg|png|webp) or PDF.
+  ///
+  /// The file NEVER lives in the DB: these fields only pin the server-generated storage
+  /// key (under `UPLOAD_DIR/refund-evidence/`, magic-byte-validated, ≤5MB, server file
+  /// name) plus validated metadata and WHO pinned it + WHEN. NULL until the operator
+  /// attaches evidence on an executed refund — every pre-NEXT row and every read path
+  /// keeps working unchanged (additive only).
+  ///
+  /// Authz keeps a hard line (Part C/K): the OWNING customer of the refunded order may
+  /// fetch their OWN evidence through a tenant-scoped, own-scope GET; a PIC — even the
+  /// referral PIC — can never attach or read it; cross-tenant reads are 404-masked.
+  evidenceFileKey          String?  @db.VarChar(191)
+  evidenceFileName         String?  @db.VarChar(255)
+  evidenceFileSizeB        Int?
+  evidenceMimeType         String?  @db.VarChar(100)
+  evidenceUploadedByUserId String?  @db.VarChar(191)
+  evidenceUploadedAt       DateTime?
   feeTreatment      RefundFeeTreatment?
   idempotencyKey    String?              @unique
 
