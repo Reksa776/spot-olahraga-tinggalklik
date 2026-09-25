@@ -26,8 +26,13 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * the snapshotted payee bank (masked), the evidence recorded so far (transfer reference,
  * proof, failure reason) and the claim lines. Every enabled button posts to the authorized
  * API route; the SoD and the permission set live in the service, so the person who
- * prepared a payout can click "Setujui" here and will receive the server's `FORBIDDEN`
+ * prepared a payout can click through here and will receive the server's `FORBIDDEN`
  * rather than a silent lie.
+ *
+ * `SettlementActions` is handed the SAME already-masked, server-derived facts this page
+ * renders, so its combined approve-and-pay dialog can show the payee, the tenant, the
+ * amount and the masked destination without a second read — and without ever holding a raw
+ * account number (`buildSettlementPayload` masks it before it reaches any client).
  *
  * The tenant guard is the row's OWN organizer — this page can never be argued into showing
  * another organizer's payout by any query value.
@@ -97,6 +102,18 @@ export default async function DashboardSettlementDetailPage({
                             | "REQUESTED"
                     }
                     proofAvailable={settlement.proofAvailable}
+                    summary={{
+                        payeeName:
+                            settlement.picDisplayName ??
+                            settlement.picCode ??
+                            "PIC",
+                        organizerName: settlement.organizerName,
+                        netAmount: settlement.netAmount,
+                        bankName: settlement.bankName,
+                        bankAccountName: settlement.bankAccountName,
+                        // Masked (`••••` + last four) by the server payload builder.
+                        bankAccountNumber: settlement.bankAccountNumber,
+                    }}
                 />
             </div>
 

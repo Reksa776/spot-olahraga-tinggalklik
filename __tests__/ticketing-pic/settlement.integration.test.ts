@@ -50,6 +50,7 @@ import {
     failSettlement,
     cancelSettlement,
 } from "@/lib/ticketing/settlement/service";
+import { createPreparedSettlement } from "@/lib/ticketing/settlement/settlement";
 
 const { auth } = require("@/auth") as { auth: jest.Mock };
 
@@ -699,6 +700,121 @@ describe("settlement lifecycle — money moves exactly once", () => {
         });
         expect(ledger?.status).toBe("EARNED");
         expect(ledger?.settlementId).toBeNull();
+    });
+});
+
+/*
+ * The operator's simplified "Approve & Bayar" control drives exactly the three
+ * transitions below, in this order, over the same three authorized service calls. This
+ * suite pins that ORDER and the money boundary it implies: a PIC's REQUESTED payout can be
+ * completed without a submit step, and the ledger still moves ONLY at `paid`.
+ */
+describe("operator approve-and-pay — the PIC-request path, end to end", () => {
+    test("REQUESTED → APPROVED → proof → PAID, with money moving only at the last step", async () => {
+        const solo = await makePic();
+
+        const picUserId = (
+            await prisma.pICProfile.findUniqueOrThrow({
+                where: { id: solo.id },
+                select: { userId: true },
+            })
+        ).userId;
+
+        const { item } = await makeOrder();
+        const earned = await postEarned(item, "125000.00", solo);
+
+        // 1. The PIC's own request. Authored by the PIC, so it lands as REQUESTED and needs
+        //    no submit step — the operator's first look at it is already actionable.
+        signInAs(picUserId);
+        const requested = await createPreparedSettlement({
+            organizerId: orgA.id,
+            picProfileId: solo.id,
+            periodStart: new Date(windowOffset(30).start),
+            periodEnd: new Date(windowOffset(30).end),
+            actor: (await resolveAuthzScope(picUserId))!,
+            origin: "PIC_REQUEST",
+        });
+
+        expect(requested.outcome).toBe("CREATED");
+
+        const id = requested.outcome === "CREATED" ? requested.settlementId : "";
+
+        expect((await settleStatus(id)).status).toBe("REQUESTED");
+
+        // The author holds no tenant membership, so the authorization gate answers the
+        // never-confirming 404 BEFORE separation of duties is even consulted.
+        await expect(
+            approveSettlement(id, (await resolveAuthzScope(picUserId))!)
+        ).rejects.toMatchObject({ code: "ORGANIZER_ACCESS_DENIED" });
+
+        // Nothing has moved yet: the fee is claimed, not settled.
+        const claimed = await prisma.pICFeeLedger.findUniqueOrThrow({
+            where: { id: earned.id },
+        });
+        expect(claimed.status).toBe("EARNED");
+        expect(claimed.settlementId).toBeNull();
+
+        // 2. APPROVE — the operator (a different person) authorizes it. Still no movement.
+        const approver = await actor(orgA.id, manager.id, PERMISSIONS.SETTLEMENT_APPROVE);
+        const approved = await approveSettlement(id, approver);
+        expect(approved.id).toBe(id);
+        expect((await settleStatus(id)).status).toBe("APPROVED");
+
+        const afterApprove = await prisma.pICFeeLedger.findUniqueOrThrow({
+            where: { id: earned.id },
+        });
+        expect(afterApprove.status).toBe("EARNED");
+        expect(afterApprove.settlementId).toBeNull();
+
+        // Approving alone must NOT be able to finish the payout: without evidence the paid
+        // step is refused, which is what stops "Approve & Bayar" from being a one-click lie.
+        await expect(
+            paySettlement(id, { providerReference: "TRF-APPROVE-ONLY" }, approver)
+        ).rejects.toMatchObject({ code: "CONFLICT" });
+        expect((await settleStatus(id)).status).toBe("APPROVED");
+
+        // 3. PROOF — the existing multipart upload. Still no movement.
+        const proof = await recordSettlementProof(
+            id,
+            pdfFile("approve-and-pay"),
+            await proofActor()
+        );
+        expect(proof.status).toBe("APPROVED");
+        expect(proof.proofAvailable).toBe(true);
+
+        const afterProof = await prisma.pICFeeLedger.findUniqueOrThrow({
+            where: { id: earned.id },
+        });
+        expect(afterProof.status).toBe("EARNED");
+        expect(afterProof.settlementId).toBeNull();
+
+        // 4. PAID — the only money-moving edge, unchanged.
+        const paid = await paySettlement(
+            id,
+            { providerReference: "TRF-APPROVE-AND-PAY", note: "BCA 09.15" },
+            approver
+        );
+        expect(paid.status).toBe("PAID");
+        expect(paid.providerReference).toBe("TRF-APPROVE-AND-PAY");
+
+        const after = await settleStatus(id);
+        expect(after.status).toBe("PAID");
+        expect(after.paidAt).not.toBeNull();
+
+        const settled = await prisma.pICFeeLedger.findUniqueOrThrow({
+            where: { id: earned.id },
+        });
+        expect(settled.status).toBe("SETTLED");
+        expect(settled.settlementId).toBe(id);
+
+        const payouts = await prisma.pICFeeLedger.findMany({
+            where: { picProfileId: solo.id, settlementId: id, type: "PAYOUT" },
+        });
+        expect(payouts).toHaveLength(1);
+        expect(payouts[0].direction).toBe("DEBIT");
+        expect(payouts[0].status).toBe("SETTLED");
+        expect(payouts[0].amount.toFixed(2)).toBe("125000.00");
+        expect(payouts[0].idempotencyKey).toBe(`fee:payout:${id}:${earned.id}`);
     });
 });
 
