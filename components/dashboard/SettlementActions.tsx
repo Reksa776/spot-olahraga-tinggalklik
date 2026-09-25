@@ -4,6 +4,21 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/dashboard/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
+import {
+    getManualTransferDefinition,
+    isManualTransferInputValid,
+    type ManualTransferDialogKind,
+} from "./manual-transfer-dialog";
+import { useManualTransferDialog } from "./use-manual-transfer-dialog";
 
 /**
  * ==========================================
@@ -32,8 +47,19 @@ import { Button } from "@/components/dashboard/ui/button";
  * payout — they will receive a `FORBIDDEN` answer (SoD) rather than a hidden button,
  * exactly like the refunds dashboard.
  *
- * Prompts are `window.prompt` — internal operator decisions, and the same pattern the
- * refunds dashboard uses. The server still validates presence and length.
+ * ── WHY THE TWO EDGES THAT ASK ASK IN A DIALOG (Phase 20B) ────────────────────────
+ * `Tandai dibayar` (a transfer reference plus an optional note) and `Gagalkan` (a reason)
+ * used to chain `window.prompt` calls. They now open the dashboard's own shadcn `Dialog` —
+ * the same surface every other dashboard mutation uses. What did not change: the required
+ * field, the 3-character minimum before a request is made, the trimmed body, the endpoints,
+ * the in-flight label, and the cancellation (a cancelled dialog sends nothing, exactly as a
+ * cancelled prompt did). `Ajukan persetujuan`, `Setujui` and `Batalkan` need no input and
+ * therefore still fire straight from their button, and the proof upload is still a file
+ * input, not a prompt.
+ *
+ * The validation and the body live in `./manual-transfer-dialog` (pure, tested without a
+ * DOM); the request lives in the hook; this file only decides WHICH dialog an action opens
+ * and renders the copy. The server still validates presence and length.
  */
 
 type SettlementStatus =
@@ -44,13 +70,13 @@ type SettlementStatus =
     | "FAILED"
     | "CANCELLED";
 
-type Action =
-    | "submit"
-    | "approve"
-    | "proof"
-    | "paid"
-    | "fail"
-    | "cancel";
+type Action = "submit" | "approve" | "proof" | "paid" | "fail" | "cancel";
+
+/** The actions that ask the operator something before they can proceed. */
+const DIALOG_FOR: Partial<Record<Action, ManualTransferDialogKind>> = {
+    paid: "paid",
+    fail: "settleFail",
+};
 
 export function SettlementActions({
     settlementId,
@@ -67,10 +93,13 @@ export function SettlementActions({
     const [busy, setBusy] = useState<Action | null>(null);
     const [error, setError] = useState<string | null>(null);
 
-    async function postJson(
-        action: Action,
-        body?: Record<string, unknown>
-    ) {
+    // The dialog hook posts its `start` effect to the same URL `postJson` uses; the
+    // `proof` action is never a dialog action, so it never takes this path.
+    const actionUrl = (action: string) =>
+        `/api/organizer/settlements/${settlementId}/${action}`;
+    const dialog = useManualTransferDialog(actionUrl);
+
+    async function postJson(action: Action, body?: Record<string, unknown>) {
         setBusy(action);
         setError(null);
 
@@ -88,10 +117,7 @@ export function SettlementActions({
                 init.body = JSON.stringify(body ?? {});
             }
 
-            const response = await fetch(
-                `/api/organizer/settlements/${settlementId}/${path}`,
-                init
-            );
+            const response = await fetch(actionUrl(path), init);
 
             const payload = await response.json().catch(() => null);
 
@@ -140,47 +166,15 @@ export function SettlementActions({
         }
     }
 
-    function onMarkPaid() {
-        const reference = window.prompt(
-            "Nomor referensi transfer bank (wajib, minimal 3 karakter):"
-        );
+    function onAction(action: Action) {
+        const kind = DIALOG_FOR[action];
 
-        if (reference === null) {
+        if (kind) {
+            dialog.open(kind);
             return;
         }
 
-        if (reference.trim().length < 3) {
-            setError("Nomor referensi transfer minimal 3 karakter.");
-            return;
-        }
-
-        const note = window.prompt(
-            "Catatan transfer (opsional — bank pengirim, tanggal, nama penerima):"
-        );
-
-        const trimmedNote = note?.trim() ?? "";
-
-        void postJson("paid", {
-            providerReference: reference.trim(),
-            ...(trimmedNote.length >= 3 ? { note: trimmedNote } : {}),
-        });
-    }
-
-    function onFail() {
-        const reason = window.prompt(
-            "Alasan kegagalan transfer (wajib, minimal 3 karakter):"
-        );
-
-        if (reason === null) {
-            return;
-        }
-
-        if (reason.trim().length < 3) {
-            setError("Alasan kegagalan minimal 3 karakter.");
-            return;
-        }
-
-        void postJson("fail", { reason: reason.trim() });
+        void postJson(action);
     }
 
     if (status !== "DRAFT" && status !== "PENDING_APPROVAL" && status !== "APPROVED") {
@@ -188,6 +182,14 @@ export function SettlementActions({
     }
 
     const disabled = busy !== null || pending;
+    const definition = dialog.state.openKind
+        ? getManualTransferDefinition(dialog.state.openKind)
+        : null;
+    const dialogBusy = dialog.isBusy;
+    const canSubmit =
+        definition !== null && isManualTransferInputValid(definition, dialog.values);
+    const showFieldError =
+        definition !== null && dialog.state.showErrors && !canSubmit;
 
     return (
         <div className="flex flex-col items-start gap-2">
@@ -267,18 +269,22 @@ export function SettlementActions({
                             type="button"
                             size="sm"
                             disabled={disabled}
-                            onClick={onMarkPaid}
+                            onClick={() => onAction("paid")}
                         >
-                            {busy === "paid" ? "Menyimpan…" : "Tandai dibayar"}
+                            {dialog.state.openKind === "paid" && dialogBusy
+                                ? "Menyimpan…"
+                                : "Tandai dibayar"}
                         </Button>
                         <Button
                             type="button"
                             size="sm"
                             variant="outline"
                             disabled={disabled}
-                            onClick={onFail}
+                            onClick={() => onAction("fail")}
                         >
-                            {busy === "fail" ? "Menggagalkan…" : "Gagalkan"}
+                            {dialog.state.openKind === "settleFail" && dialogBusy
+                                ? "Menggagalkan…"
+                                : "Gagalkan"}
                         </Button>
                     </>
                 ) : null}
@@ -286,6 +292,135 @@ export function SettlementActions({
 
             {error ? (
                 <span className="max-w-md text-xs text-destructive">{error}</span>
+            ) : null}
+
+            {definition ? (
+                <Dialog
+                    open
+                    onOpenChange={(next) => {
+                        if (!next && !dialogBusy) {
+                            dialog.close();
+                        }
+                    }}
+                >
+                    <DialogContent
+                        onInteractOutside={(event) => {
+                            if (dialogBusy) {
+                                event.preventDefault();
+                            }
+                        }}
+                    >
+                        <DialogHeader>
+                            <DialogTitle>{definition.title}</DialogTitle>
+                            <DialogDescription>
+                                {definition.description}
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {definition.fields.includes("reference") ? (
+                            <Field
+                                label={definition.labels.reference}
+                                htmlFor={`settlement-reference-${settlementId}`}
+                                hint={definition.hints.reference}
+                                required
+                                error={
+                                    showFieldError
+                                        ? definition.errors.reference
+                                        : undefined
+                                }
+                            >
+                                <Input
+                                    id={`settlement-reference-${settlementId}`}
+                                    value={dialog.values.reference ?? ""}
+                                    placeholder={definition.placeholders.reference}
+                                    maxLength={definition.maxLengths.reference}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("reference", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {definition.fields.includes("note") ? (
+                            <Field
+                                label={definition.labels.note}
+                                htmlFor={`settlement-note-${settlementId}`}
+                                hint={definition.hints.note}
+                                error={
+                                    showFieldError
+                                        ? definition.errors.note
+                                        : undefined
+                                }
+                            >
+                                <Textarea
+                                    id={`settlement-note-${settlementId}`}
+                                    rows={3}
+                                    value={dialog.values.note ?? ""}
+                                    placeholder={definition.placeholders.note}
+                                    maxLength={definition.maxLengths.note}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("note", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {definition.fields.includes("reason") ? (
+                            <Field
+                                label={definition.labels.reason}
+                                htmlFor={`settlement-reason-${settlementId}`}
+                                hint={definition.hints.reason}
+                                required
+                                error={
+                                    showFieldError
+                                        ? definition.errors.reason
+                                        : undefined
+                                }
+                            >
+                                <Textarea
+                                    id={`settlement-reason-${settlementId}`}
+                                    rows={3}
+                                    value={dialog.values.reason ?? ""}
+                                    placeholder={definition.placeholders.reason}
+                                    maxLength={definition.maxLengths.reason}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("reason", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {dialog.state.error ? (
+                            <p className="text-sm font-medium text-destructive">
+                                {dialog.state.error}
+                            </p>
+                        ) : null}
+
+                        <DialogFooter>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                disabled={dialogBusy}
+                                onClick={dialog.close}
+                            >
+                                Batal
+                            </Button>
+                            <Button
+                                type="button"
+                                variant={definition.destructive ? "destructive" : "default"}
+                                disabled={dialogBusy || !canSubmit}
+                                onClick={dialog.submit}
+                            >
+                                {dialogBusy
+                                    ? "Menyimpan…"
+                                    : definition.confirmLabel}
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             ) : null}
         </div>
     );

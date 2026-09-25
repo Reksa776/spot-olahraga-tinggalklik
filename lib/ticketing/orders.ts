@@ -1,3 +1,6 @@
+import type { OrderStatus } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+
 import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import { requireOwnResource } from "@/lib/authz/guards";
 
@@ -8,8 +11,11 @@ import { prisma } from "@/lib/prisma";
 
 import {
     ORDER_PAYLOAD_SELECT,
+    ORDER_SUMMARY_SELECT,
     buildOrderPayload,
+    buildOrderSummary,
     type OrderPayload,
+    type OrderSummaryPayload,
 } from "./order-payload";
 import { releaseOrderReservations } from "./reservations";
 
@@ -62,6 +68,117 @@ async function findOwnOrderRow(orderNumber: string, actor: AuthzScope) {
     }
 
     return order;
+}
+
+/**
+ * Default and maximum page size for the own-order list.
+ *
+ * Design §26.1 caps `limit` at 50 for this endpoint, so the same ceiling is applied here
+ * rather than letting an authenticated caller ask for an unbounded page — the default is
+ * the list's own 20, matching the refund and wallet lists.
+ */
+const ORDER_LIST_DEFAULT_LIMIT = 20;
+const ORDER_LIST_MAX_LIMIT = 50;
+
+/**
+ * The filters §26.1 declares, as this module consumes them (already parsed at the
+ * boundary). Every one narrows the caller's OWN set; none can widen it.
+ */
+export type OwnOrderListQuery = {
+    status?: string;
+    /** Inclusive lower bound on `EventOrder.createdAt`. */
+    dateFrom?: Date;
+    /** Exclusive upper bound on `EventOrder.createdAt` (a date-only value means "before
+     *  the start of that day", which is what makes a from/to pair cover whole days). */
+    dateTo?: Date;
+    eventId?: string;
+    page?: number;
+    limit?: number;
+};
+
+/**
+ * `GET /api/orders` — the buyer's own orders (design §26.1).
+ *
+ * This is the read the "Pesanan Saya" surface is built on, and it applies §26's mandate in
+ * the same two layers as `getOwnOrder`:
+ *
+ *   1. **Ownership is a PREDICATE**, not a comparison. `userId: actor.userId` is in the
+ *      `where` clause, and the client supplies no user identifier at all. A foreign order
+ *      is not filtered out after the fact — it was never in the result set.
+ *   2. **The capability is re-applied** (`order.read.own` against the actor's own id), so a
+ *      role that is authenticated but has no own-scope order capability is refused even for
+ *      the rows it owns — which is the same answer `getOwnOrder` gives.
+ *
+ * Ordering is `createdAt` descending: newest purchase first, which is what a buyer opens
+ * this page to see. It is deterministic, which matters because the list paginates — an
+ * unstable sort would show duplicates and skip rows across pages.
+ *
+ * The projection is `ORDER_SUMMARY_SELECT`: no payment instruction, no QR material, no
+ * ticket codes, no tenant or internal columns. See `OrderSummaryPayload` for why.
+ */
+export async function listOwnOrders(
+    query: OwnOrderListQuery,
+    actor: AuthzScope
+): Promise<{
+    items: OrderSummaryPayload[];
+    page: number;
+    limit: number;
+    total: number;
+}> {
+    if (!actor?.userId) {
+        throw AppError.validation("Pemanggil tidak terautentikasi.");
+    }
+
+    await requireOwnResource(PERMISSIONS.ORDER_READ_OWN, actor.userId);
+
+    const page = Math.max(1, Math.trunc(query.page ?? 1));
+    const limit = Math.min(
+        ORDER_LIST_MAX_LIMIT,
+        Math.max(1, Math.trunc(query.limit ?? ORDER_LIST_DEFAULT_LIMIT))
+    );
+
+    const where: Prisma.EventOrderWhereInput = {
+        userId: actor.userId,
+    };
+
+    if (query.status) {
+        // Already constrained to the `OrderStatus` vocabulary by the boundary schema; the
+        // cast only narrows `string` back to the enum Prisma filters on.
+        where.status = query.status as OrderStatus;
+    }
+
+    if (query.eventId) {
+        where.eventId = query.eventId;
+    }
+
+    if (query.dateFrom || query.dateTo) {
+        where.createdAt = {
+            ...(query.dateFrom ? { gte: query.dateFrom } : {}),
+            ...(query.dateTo ? { lt: query.dateTo } : {}),
+        };
+    }
+
+    const [total, rows] = await Promise.all([
+        prisma.eventOrder.count({ where }),
+        prisma.eventOrder.findMany({
+            where,
+            select: ORDER_SUMMARY_SELECT,
+            orderBy: { createdAt: "desc" },
+            skip: (page - 1) * limit,
+            take: limit,
+        }),
+    ]);
+
+    // One clock read for the whole page, so every `canPay` row is decided against the same
+    // instant — a page that straddles the boundary would otherwise disagree with itself.
+    const now = new Date();
+
+    return {
+        items: rows.map((row) => buildOrderSummary(row, now)),
+        page,
+        limit,
+        total,
+    };
 }
 
 /** `GET /api/orders/{orderNumber}` — the buyer's own order (design §26.2). */

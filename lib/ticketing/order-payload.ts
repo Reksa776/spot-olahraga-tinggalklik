@@ -86,6 +86,255 @@ export type OrderPayloadTicket = {
     ticketTypeId: string;
 };
 
+/**
+ * ── THE THREE ADVISORY PREDICATES, SHARED BY BOTH PAYLOADS ──────────────────────
+ *
+ * The order detail (`OrderPayload`) and the order list (`OrderSummaryPayload`) answer the
+ * same questions about the same columns. They were about to be written twice — once per
+ * builder — which is exactly how a list and a detail start disagreeing about whether a
+ * buyer can still pay. They live here as PURE functions of the row so both builders call
+ * the same expression, and so a test can enumerate the state space once.
+ *
+ * All three are ADVISORY. They decide what a page offers, never what the server accepts:
+ * the payment, cancellation, issuance and refund services each re-derive their own rules
+ * from the database and refuse on their own (brief §25: "Frontend must not be the source of
+ * truth").
+ */
+
+/**
+ * Whether the server would accept a start/resume-payment for this order (design §26.3).
+ *
+ * `expiresAt === null` means no window was recorded, so nothing is presumed to have lapsed
+ * — the payment service still re-checks. Kept in the same shape `buildOrderPayload` always
+ * used, so this is an extraction rather than a behaviour change.
+ */
+export function orderCanPay(
+    order: { status: string; paymentStatus: string; expiresAt: Date | null },
+    now: Date = new Date()
+): boolean {
+    const windowOpen =
+        order.expiresAt === null || order.expiresAt.getTime() > now.getTime();
+
+    return (
+        order.status === "PENDING_PAYMENT" &&
+        order.paymentStatus !== "PAID" &&
+        windowOpen
+    );
+}
+
+/**
+ * Whether the refund page would offer a request (Phase 10B, D-R01).
+ *
+ * Offered only while EVERY ticket is still `ISSUED`, so the button can never send a set
+ * the policy would refuse for a checked-in ticket. `PARTIALLY_REFUNDED` counts as paid
+ * because the order was paid; the refund service re-derives eligibility from scratch.
+ */
+export function orderCanRequestRefund(order: {
+    paymentStatus: string;
+    tickets: readonly { status: string }[];
+}): boolean {
+    const paid =
+        order.paymentStatus === "PAID" ||
+        order.paymentStatus === "PARTIALLY_REFUNDED";
+
+    return (
+        paid &&
+        order.tickets.length > 0 &&
+        order.tickets.every((ticket) => ticket.status === "ISSUED")
+    );
+}
+
+/**
+ * The fulfilment leg, as a state rather than as copy.
+ *
+ * Four real states, derived from the payload and nothing else: tickets exist, tickets can
+ * be created, the order is held by the operator (Phase 7's late-settlement flag, which the
+ * UI must never "repair"), or payment has not landed yet. The LABELS live in the page that
+ * renders them; keeping them out of here is what stops this module from becoming a second
+ * copy of the UI.
+ */
+export type OrderFulfilment = "ISSUED" | "READY" | "HELD" | "AWAITING_PAYMENT";
+
+export function orderFulfilment(order: {
+    paymentStatus: string;
+    tickets: readonly { status: string }[];
+    canIssueTickets: boolean;
+}): OrderFulfilment {
+    if (order.tickets.length > 0) {
+        return "ISSUED";
+    }
+
+    if (order.paymentStatus === "PAID" && order.canIssueTickets) {
+        return "READY";
+    }
+
+    if (order.paymentStatus === "PAID") {
+        return "HELD";
+    }
+
+    return "AWAITING_PAYMENT";
+}
+
+/**
+ * One row of the customer's own order LIST (design §26.1 `GET /api/orders`).
+ *
+ * Field names follow §26.1's table verbatim (`eventTitle`, `eventSlug`, `startAt`,
+ * `venueName`, `ticketSummary`, `ticketCount`, `total`, `status`, `paymentStatus`,
+ * `createdAt`, `canPay`, `canRefund`) because that table IS the contract for this endpoint,
+ * rather than the nested `event` object the detail payload uses.
+ *
+ * Three fields are ADDITIVE to §26.1 and each earns its place:
+ *
+ *   * `endAt` — the event half of a schedule the card already shows the start of.
+ *   * `fulfilment` — §26.1 has no word for "are the tickets actually issued yet?", and a
+ *     buyer scanning a list of orders needs exactly that. It is the SAME state the detail
+ *     page renders (`orderFulfilment`), so the two cannot drift.
+ *   * `refundStatus` — the current refund lifecycle status (Phase 10B) when one exists, so
+ *     "where did my refund get to?" is answerable from the list.
+ *
+ * ── WHAT IS DELIBERATELY ABSENT ──────────────────────────────────────────────────
+ * No `userId`, no `organizerId`, no `fulfilmentBlockedAt`, no reservation or quota
+ * counters, no payment instruction, no `paymentUrl`, and — the reason this type exists at
+ * all rather than reusing `OrderPayload` — no `tickets[]`, no per-ticket `ticketCode` and
+ * therefore nothing scannable. A list response is the one most likely to be cached or
+ * logged, so it carries the least (design §26.5's reasoning, applied to orders).
+ */
+export type OrderSummaryPayload = {
+    orderNumber: string;
+    status: string;
+    paymentStatus: string;
+    /** Exact stored `Decimal(14,2)` as a fixed 2-decimal string (§36.5). */
+    total: string;
+    createdAt: string;
+    eventTitle: string;
+    eventSlug: string;
+    startAt: string;
+    endAt: string | null;
+    venueName: string | null;
+    /** `"2× VIP, 1× Reguler"` — the order's own lines, oldest first. */
+    ticketSummary: string;
+    /** Tickets ordered (sum of line quantities), independent of issuance. */
+    ticketCount: number;
+    canPay: boolean;
+    canRefund: boolean;
+    fulfilment: OrderFulfilment;
+    /** The newest refund's `RefundStatus`, or `null` when none was requested. */
+    refundStatus: string | null;
+    /** The buyer's own order-detail route, so the link cannot drift from the page. */
+    orderUrl: string;
+};
+
+type OrderSummaryRow = {
+    orderNumber: string;
+    status: string;
+    paymentStatus: string;
+    total: Prisma.Decimal;
+    createdAt: Date;
+    expiresAt: Date | null;
+    paidAt: Date | null;
+    fulfilmentBlockedAt: Date | null;
+    event: {
+        title: string;
+        slug: string;
+        startAt: Date;
+        endAt: Date | null;
+        venue: { name: string } | null;
+    };
+    items: { nameSnapshot: string; quantity: number }[];
+    tickets: { status: string }[];
+    refunds: { status: string }[];
+};
+
+/** The buyer's own order-detail route. One builder, so the list cannot link nowhere. */
+export function orderDetailUrl(orderNumber: string): string {
+    return `/ticketing/orders/${orderNumber}`;
+}
+
+/**
+ * The Prisma `select` the order LIST uses.
+ *
+ * Note what is NOT selected: no payment columns at all. A list has no use for a payment
+ * instruction, and the omission is structural — an instruction that is never read cannot be
+ * leaked by a later edit to the builder. `refunds` takes only the newest row's `status`,
+ * and `tickets` only the statuses (no `ticketCode`).
+ */
+export const ORDER_SUMMARY_SELECT = {
+    orderNumber: true,
+    status: true,
+    paymentStatus: true,
+    total: true,
+    createdAt: true,
+    expiresAt: true,
+    paidAt: true,
+    fulfilmentBlockedAt: true,
+    event: {
+        select: {
+            title: true,
+            slug: true,
+            startAt: true,
+            endAt: true,
+            venue: { select: { name: true } },
+        },
+    },
+    items: {
+        select: { nameSnapshot: true, quantity: true },
+        orderBy: { createdAt: "asc" },
+    },
+    tickets: { select: { status: true } },
+    refunds: {
+        select: { status: true },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+    },
+} as const;
+
+/**
+ * Build one list row.
+ *
+ * Synchronous and dependency-free (unlike `buildOrderPayload`, which renders a QRIS image),
+ * because a list of 50 rows must not do 50 image renders.
+ */
+export function buildOrderSummary(
+    row: OrderSummaryRow,
+    now: Date = new Date()
+): OrderSummaryPayload {
+    const tickets = row.tickets;
+
+    // The SAME predicate the issuance service enforces and the detail builder derives.
+    const canIssueTickets =
+        row.status === "PAID" &&
+        row.paymentStatus === "PAID" &&
+        row.paidAt !== null &&
+        row.fulfilmentBlockedAt === null &&
+        tickets.length === 0;
+
+    return {
+        orderNumber: row.orderNumber,
+        status: row.status,
+        paymentStatus: row.paymentStatus,
+        total: moneyString(row.total),
+        createdAt: row.createdAt.toISOString(),
+        eventTitle: row.event.title,
+        eventSlug: row.event.slug,
+        startAt: row.event.startAt.toISOString(),
+        endAt: row.event.endAt?.toISOString() ?? null,
+        venueName: row.event.venue?.name ?? null,
+        ticketSummary: row.items
+            .map((item) => `${item.quantity}× ${item.nameSnapshot}`)
+            .join(", "),
+        ticketCount: row.items.reduce((total, item) => total + item.quantity, 0),
+        canPay: orderCanPay(row, now),
+        canRefund: orderCanRequestRefund({ paymentStatus: row.paymentStatus, tickets }),
+        fulfilment: orderFulfilment({
+            paymentStatus: row.paymentStatus,
+            tickets,
+            canIssueTickets,
+        }),
+        refundStatus: row.refunds[0]?.status ?? null,
+        orderUrl: orderDetailUrl(row.orderNumber),
+    };
+}
+
 export type OrderPayload = {
     orderId: string;
     orderNumber: string;
@@ -510,20 +759,14 @@ export async function buildOrderPayload(
 ): Promise<OrderPayload> {
     const latestPayment = row.payments[0] ?? null;
 
-    /**
+    /*
      * The payment window is the server's own instant (brief §26: "display the
      * server-derived expiry timestamp. Do not trust the browser timer").
      *
-     * A `null` `expiresAt` means no window was recorded, in which case nothing is
-     * presumed to have lapsed — the payment service still re-checks.
+     * PHASE 20B — the predicate moved to `orderCanPay` so the LIST and the DETAIL cannot
+     * disagree about whether a buyer can still pay; the expression is identical.
      */
-    const windowOpen =
-        row.expiresAt === null || row.expiresAt.getTime() > now.getTime();
-
-    const payable =
-        row.status === "PENDING_PAYMENT" &&
-        row.paymentStatus !== "PAID" &&
-        windowOpen;
+    const payable = orderCanPay(row, now);
 
     return {
         orderId: row.id,

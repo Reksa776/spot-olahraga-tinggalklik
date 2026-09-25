@@ -4,6 +4,21 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/dashboard/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/dashboard/ui/dialog";
+import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
+import {
+    getManualTransferDefinition,
+    isManualTransferInputValid,
+    type ManualTransferDialogKind,
+} from "./manual-transfer-dialog";
+import { useManualTransferDialog } from "./use-manual-transfer-dialog";
 
 /**
  * ==========================================
@@ -31,9 +46,20 @@ import { Button } from "@/components/dashboard/ui/button";
  *                                        is the only action that can move money)
  *              → Gagalkan               (`refund.fail`; a reason is required)
  *
- * The prompts are `window.prompt` — internal operator decisions, not buyer-facing forms, and
- * one less modal to keep accessible. The server still validates length and presence, so an
- * empty prompt is refused by the API rather than reaching the database.
+ * ── WHY THESE THREE ASK IN A DIALOG (Phase 20B) ───────────────────────────────────
+ * `Tolak`, `Catat transfer` and `Gagalkan` used to chain `window.prompt` calls. They now
+ * open the dashboard's own shadcn `Dialog` — the same confirmation surface every other
+ * dashboard mutation uses, and the one its header declares to be the ONLY such surface. What
+ * did not change: the same fields (a required transfer reference or reason, an optional
+ * evidence note), the same 3-character minimum before the request is made, the same trimmed
+ * body (`note` rides along only when it is 3+ characters), the same endpoints, the same
+ * in-flight label, and the same cancellation: a cancelled dialog sends nothing, exactly as a
+ * cancelled prompt did.
+ *
+ * The validation and the body live in `./manual-transfer-dialog` (pure, tested without a
+ * DOM); the request lives in the hook; this file only decides WHICH dialog an action opens
+ * and renders the copy. The server still validates length and presence, so a client that
+ * ignores the rules is refused by the API rather than reaching the database.
  *
  * This component deliberately does not show a "mark as refunded" shortcut: a refund can only
  * become REFUNDED with evidence, and there is no UI path around that.
@@ -47,6 +73,15 @@ type RefundStatus =
     | "REFUNDED"
     | "FAILED";
 
+type Action = "approve" | "reject" | "execute" | "settle" | "fail";
+
+/** The actions that ask the operator something before they can proceed. */
+const DIALOG_FOR: Partial<Record<Action, ManualTransferDialogKind>> = {
+    reject: "reject",
+    settle: "settle",
+    fail: "fail",
+};
+
 export function RefundDecisionActions({
     refundId,
     status,
@@ -56,27 +91,25 @@ export function RefundDecisionActions({
 }) {
     const router = useRouter();
     const [pending, startTransition] = useTransition();
-    const [busy, setBusy] = useState<
-        "approve" | "reject" | "execute" | "settle" | "fail" | null
-    >(null);
+    const [busy, setBusy] = useState<Action | null>(null);
     const [error, setError] = useState<string | null>(null);
 
-    async function call(
-        action: "approve" | "reject" | "execute" | "settle" | "fail",
-        body?: Record<string, unknown>
-    ) {
+    // One URL builder for the whole component: the dialog hook posts its `start` effect to
+    // `/api/ticketing/refunds/<id>/<action>`, and `call` posts the no-input actions to the
+    // same place.
+    const actionUrl = (action: string) => `/api/ticketing/refunds/${refundId}/${action}`;
+    const dialog = useManualTransferDialog(actionUrl);
+
+    async function call(action: Action, body?: Record<string, unknown>) {
         setBusy(action);
         setError(null);
 
         try {
-            const response = await fetch(
-                `/api/ticketing/refunds/${refundId}/${action}`,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(body ?? {}),
-                }
-            );
+            const response = await fetch(actionUrl(action), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body ?? {}),
+            });
 
             const payload = await response.json().catch(() => null);
 
@@ -93,65 +126,15 @@ export function RefundDecisionActions({
         }
     }
 
-    function onReject() {
-        const reason = window.prompt(
-            "Alasan penolakan refund (wajib, minimal 3 karakter):"
-        );
+    function onAction(action: Action) {
+        const kind = DIALOG_FOR[action];
 
-        if (reason === null) {
+        if (kind) {
+            dialog.open(kind);
             return;
         }
 
-        if (reason.trim().length < 3) {
-            setError("Alasan penolakan minimal 3 karakter.");
-            return;
-        }
-
-        void call("reject", { reason: reason.trim() });
-    }
-
-    function onSettle() {
-        const transferRef = window.prompt(
-            "Nomor referensi transfer bank (wajib, minimal 3 karakter):"
-        );
-
-        if (transferRef === null) {
-            return;
-        }
-
-        if (transferRef.trim().length < 3) {
-            setError("Nomor referensi transfer minimal 3 karakter.");
-            return;
-        }
-
-        const note = window.prompt(
-            "Catatan bukti transfer (opsional — bank pengirim, tanggal, nama penerima):"
-        );
-
-        // A cancelled/blank note is simply omitted; the reference is the required evidence.
-        const trimmedNote = note?.trim() ?? "";
-
-        void call("settle", {
-            transferRef: transferRef.trim(),
-            ...(trimmedNote.length >= 3 ? { note: trimmedNote } : {}),
-        });
-    }
-
-    function onFail() {
-        const reason = window.prompt(
-            "Alasan kegagalan transfer (wajib, minimal 3 karakter):"
-        );
-
-        if (reason === null) {
-            return;
-        }
-
-        if (reason.trim().length < 3) {
-            setError("Alasan kegagalan minimal 3 karakter.");
-            return;
-        }
-
-        void call("fail", { reason: reason.trim() });
+        void call(action);
     }
 
     if (status !== "PENDING" && status !== "APPROVED" && status !== "PROCESSING") {
@@ -159,6 +142,16 @@ export function RefundDecisionActions({
     }
 
     const disabled = busy !== null || pending;
+    const definition = dialog.state.openKind
+        ? getManualTransferDefinition(dialog.state.openKind)
+        : null;
+    const dialogBusy = dialog.isBusy;
+    const canSubmit =
+        definition !== null && isManualTransferInputValid(definition, dialog.values);
+    // An invalid value is only called out once the operator has typed it or pressed the
+    // confirm button — an untouched, empty dialog is not scolding anyone.
+    const showFieldError =
+        definition !== null && dialog.state.showErrors && !canSubmit;
 
     return (
         <div className="flex flex-col items-end gap-1">
@@ -178,9 +171,11 @@ export function RefundDecisionActions({
                             size="sm"
                             variant="outline"
                             disabled={disabled}
-                            onClick={onReject}
+                            onClick={() => onAction("reject")}
                         >
-                            {busy === "reject" ? "Menolak…" : "Tolak"}
+                            {dialog.state.openKind === "reject" && dialogBusy
+                                ? "Menolak…"
+                                : "Tolak"}
                         </Button>
                     </>
                 ) : null}
@@ -202,18 +197,22 @@ export function RefundDecisionActions({
                             type="button"
                             size="sm"
                             disabled={disabled}
-                            onClick={onSettle}
+                            onClick={() => onAction("settle")}
                         >
-                            {busy === "settle" ? "Menyimpan…" : "Catat transfer"}
+                            {dialog.state.openKind === "settle" && dialogBusy
+                                ? "Menyimpan…"
+                                : "Catat transfer"}
                         </Button>
                         <Button
                             type="button"
                             size="sm"
                             variant="outline"
                             disabled={disabled}
-                            onClick={onFail}
+                            onClick={() => onAction("fail")}
                         >
-                            {busy === "fail" ? "Menggagalkan…" : "Gagalkan"}
+                            {dialog.state.openKind === "fail" && dialogBusy
+                                ? "Menggagalkan…"
+                                : "Gagalkan"}
                         </Button>
                     </>
                 ) : null}
@@ -223,6 +222,135 @@ export function RefundDecisionActions({
                 <span className="max-w-56 text-right text-xs text-destructive">
                     {error}
                 </span>
+            ) : null}
+
+            {definition ? (
+                <Dialog
+                    open
+                    onOpenChange={(next) => {
+                        if (!next && !dialogBusy) {
+                            dialog.close();
+                        }
+                    }}
+                >
+                    <DialogContent
+                        onInteractOutside={(event) => {
+                            if (dialogBusy) {
+                                event.preventDefault();
+                            }
+                        }}
+                    >
+                        <DialogHeader>
+                            <DialogTitle>{definition.title}</DialogTitle>
+                            <DialogDescription>
+                                {definition.description}
+                            </DialogDescription>
+                        </DialogHeader>
+
+                        {definition.fields.includes("reference") ? (
+                            <Field
+                                label={definition.labels.reference}
+                                htmlFor={`refund-reference-${refundId}`}
+                                hint={definition.hints.reference}
+                                required
+                                error={
+                                    showFieldError
+                                        ? definition.errors.reference
+                                        : undefined
+                                }
+                            >
+                                <Input
+                                    id={`refund-reference-${refundId}`}
+                                    value={dialog.values.reference ?? ""}
+                                    placeholder={definition.placeholders.reference}
+                                    maxLength={definition.maxLengths.reference}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("reference", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {definition.fields.includes("note") ? (
+                            <Field
+                                label={definition.labels.note}
+                                htmlFor={`refund-note-${refundId}`}
+                                hint={definition.hints.note}
+                                error={
+                                    showFieldError
+                                        ? definition.errors.note
+                                        : undefined
+                                }
+                            >
+                                <Textarea
+                                    id={`refund-note-${refundId}`}
+                                    rows={3}
+                                    value={dialog.values.note ?? ""}
+                                    placeholder={definition.placeholders.note}
+                                    maxLength={definition.maxLengths.note}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("note", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {definition.fields.includes("reason") ? (
+                            <Field
+                                label={definition.labels.reason}
+                                htmlFor={`refund-reason-${refundId}`}
+                                hint={definition.hints.reason}
+                                required
+                                error={
+                                    showFieldError
+                                        ? definition.errors.reason
+                                        : undefined
+                                }
+                            >
+                                <Textarea
+                                    id={`refund-reason-${refundId}`}
+                                    rows={3}
+                                    value={dialog.values.reason ?? ""}
+                                    placeholder={definition.placeholders.reason}
+                                    maxLength={definition.maxLengths.reason}
+                                    disabled={dialogBusy}
+                                    onChange={(event) =>
+                                        dialog.change("reason", event.target.value)
+                                    }
+                                />
+                            </Field>
+                        ) : null}
+
+                        {dialog.state.error ? (
+                            <p className="text-sm font-medium text-destructive">
+                                {dialog.state.error}
+                            </p>
+                        ) : null}
+
+                        <DialogFooter>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                disabled={dialogBusy}
+                                onClick={dialog.close}
+                            >
+                                Batal
+                            </Button>
+                            <Button
+                                type="button"
+                                variant={definition.destructive ? "destructive" : "default"}
+                                disabled={dialogBusy || !canSubmit}
+                                onClick={dialog.submit}
+                            >
+                                {dialogBusy
+                                    ? "Menyimpan…"
+                                    : definition.confirmLabel}
+                            </Button>
+                        </DialogFooter>
+                    </DialogContent>
+                </Dialog>
             ) : null}
         </div>
     );

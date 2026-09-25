@@ -15,7 +15,20 @@ import {
     readRefundPayload,
     releaseRefundClaims,
 } from "./settlement";
-import { buildRefundPayload, REFUND_SELECT, type RefundPayload } from "./payload";
+import {
+    buildRefundPayload,
+    refundEvidenceUrl,
+    REFUND_SELECT,
+    type RefundPayload,
+} from "./payload";
+import {
+    authorizeRefundEvidenceAttachment,
+    deleteRefundEvidence,
+    readStoredRefundEvidence,
+    storeRefundEvidence,
+    type RefundEvidenceFile,
+    type StoredRefundEvidence,
+} from "./evidence";
 import type {
     RefundFailInput,
     RefundListQuery,
@@ -75,6 +88,17 @@ export type RefundRequestInput = {
     ticketIds?: string[];
     reason?: string;
 };
+
+/**
+ * What the attach route returns: the ordinary refund payload (identical to every other
+ * refund response) plus the stored-file metadata. The key is included because the serve
+ * route needs it; it is a server-generated basename, never a path the client can influence.
+ */
+export type RefundEvidencePayload = RefundPayload & {
+    evidence: StoredRefundEvidence;
+};
+
+export type { RefundEvidenceFile };
 
 function isUniqueViolation(error: unknown): boolean {
     return (
@@ -774,6 +798,185 @@ export async function failRefund(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Transfer EVIDENCE (the FILE) — additive, Phase MIGRATION_CUSTOMER_REFUND_EVIDENCE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `POST /api/organizer/refunds/[refundId]/evidence` — attach the transfer-evidence FILE.
+ *
+ * This moves NO money and changes NO status. `settleRefund` remains the only path to
+ * `REFUNDED`; this one only pins a real file (a bank receipt / transfer screenshot / PDF) to
+ * the refund row so the textual `transferRef` has something behind it and so the OWNING
+ * customer can fetch their own evidence afterwards.
+ *
+ * The gates are the settle rail's gates, unchanged: the caller's ACTIVE membership in the
+ * refund's OWN organizer with `REFUND_EXECUTE`, plus separation of duties (a requester never
+ * attaches the evidence for their own request). The bytes are sniffed and named by
+ * `storeRefundEvidence` — server-generated key, 5MB cap, magic-byte container check.
+ *
+ * The DB link is CASed on the CURRENT key so two concurrent uploads cannot both believe they
+ * replaced the evidence; the loser is rolled back and the previous file stays. A superseded
+ * file is deleted only AFTER the new row is committed, exactly like `recordSettlementProof`.
+ */
+export async function attachRefundEvidence(
+    refundId: number,
+    file: File,
+    actor: AuthzScope,
+    request?: Request
+): Promise<RefundEvidencePayload> {
+    const refund = await prisma.refund.findUnique({
+        where: { id: refundId },
+        select: {
+            id: true,
+            refundNumber: true,
+            organizerId: true,
+            requestedByUserId: true,
+            status: true,
+            evidenceFileKey: true,
+        },
+    });
+
+    if (!refund) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, {
+            message: "Refund tidak ditemukan.",
+        });
+    }
+
+    // Tenant scope + REFUND_EXECUTE + separation of duties, in one place (see evidence.ts).
+    await authorizeRefundEvidenceAttachment(refund, actor);
+
+    const stored = await storeRefundEvidence(file);
+
+    try {
+        const cas = await prisma.refund.updateMany({
+            where: { id: refundId, evidenceFileKey: refund.evidenceFileKey },
+            data: {
+                evidenceFileKey: stored.key,
+                evidenceFileName: stored.fileName,
+                evidenceFileSizeB: stored.size,
+                evidenceMimeType: stored.contentType,
+                evidenceUploadedByUserId: actor.userId,
+                evidenceUploadedAt: new Date(),
+            },
+        });
+
+        if (cas.count !== 1) {
+            throw new AppError(ERROR_CODES.CONFLICT, {
+                message:
+                    "Bukti refund berubah saat diupload; coba lagi.",
+                details: { reason: "EVIDENCE_CHANGED" },
+            });
+        }
+    } catch (error) {
+        // The DB link failed; do not leave an unreferenced file behind.
+        await deleteRefundEvidence(stored.key);
+        throw error;
+    }
+
+    // The previous evidence is superseded only after the new one is committed.
+    await deleteRefundEvidence(refund.evidenceFileKey);
+
+    await writeTicketingAudit({
+        action: "refund.evidence_upload",
+        actor,
+        actorOrganizerId: refund.organizerId,
+        organizerId: refund.organizerId,
+        entityType: "EventOrder",
+        entityRef: refund.refundNumber ?? String(refundId),
+        description: "Bukti transfer refund diupload.",
+        beforeState: {
+            status: refund.status,
+            hasEvidence: refund.evidenceFileKey !== null,
+        },
+        afterState: {
+            status: refund.status,
+            evidenceSize: stored.size,
+            replaced: refund.evidenceFileKey !== null,
+        },
+        reason: "REFUND_EVIDENCE_UPLOADED",
+        request,
+    });
+
+    return { ...(await readRefundPayload(refundId)), evidence: stored };
+}
+
+/**
+ * `GET /api/organizer/refunds/[refundId]/evidence/[fileName]` — serve the evidence to staff.
+ *
+ * Every request re-checks the refund's OWN organizer and the caller's `REFUND_EXECUTE`
+ * (identical to the settle rail), and the requested name must be EXACTLY the key the row
+ * names, so a caller cannot use this route to read any other file in the storage tree.
+ */
+export async function readRefundEvidenceForOrganizer(
+    refundId: number,
+    fileName: string
+): Promise<RefundEvidenceFile | null> {
+    const refund = await prisma.refund.findUnique({
+        where: { id: refundId },
+        select: { organizerId: true, evidenceFileKey: true },
+    });
+
+    if (!refund || !refund.organizerId) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, {
+            message: "Refund tidak ditemukan.",
+        });
+    }
+
+    await requireOrganizerAccess(refund.organizerId, PERMISSIONS.REFUND_EXECUTE);
+
+    if (refund.evidenceFileKey !== fileName) {
+        return null;
+    }
+
+    return readStoredRefundEvidence(fileName);
+}
+
+/**
+ * `GET /api/ticketing/refunds/[refundId]/evidence/[fileName]` — serve the evidence to the
+ * OWNING CUSTOMER of the refunded order.
+ *
+ * This is the own-scope twin, and it is deliberately the buyer's own id that is checked
+ * (never an organizer id): the refund must belong to an order whose `userId` is the actor,
+ * and `ORDER_READ_OWN` — the same capability the buyer's order detail uses — is re-checked
+ * against it. A refund for somebody else's order fails as a plain 404, so this route cannot
+ * be used to discover which refunds or orders exist. No tenant is read at all here: a
+ * membership, including MANAGER and the referral PIC, confers nothing on this route.
+ */
+export async function readRefundEvidenceForBuyer(
+    refundId: number,
+    fileName: string,
+    actor: AuthzScope
+): Promise<RefundEvidenceFile | null> {
+    const refund = await prisma.refund.findUnique({
+        where: { id: refundId },
+        select: {
+            evidenceFileKey: true,
+            eventOrder: { select: { userId: true } },
+        },
+    });
+
+    if (!refund || !refund.eventOrder) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, {
+            message: "Refund tidak ditemukan.",
+        });
+    }
+
+    if (refund.eventOrder.userId !== actor.userId) {
+        throw new AppError(ERROR_CODES.NOT_FOUND, {
+            message: "Refund tidak ditemukan.",
+        });
+    }
+
+    await requireOwnResource(PERMISSIONS.ORDER_READ_OWN, actor.userId);
+
+    if (refund.evidenceFileKey !== fileName) {
+        return null;
+    }
+
+    return readStoredRefundEvidence(fileName);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Read side
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -823,4 +1026,70 @@ export async function listRefunds(
     ]);
 
     return { items: rows.map(buildRefundPayload), total };
+}
+
+/**
+ * A refund as the buyer's ORDER DETAIL panel needs it: the ordinary buyer payload, plus the
+ * ONE value a rendered page can use and a JSON list must not carry — the href of the
+ * EXISTING buyer evidence route, which is keyed by the server-generated basename.
+ *
+ * It is a separate type from `RefundPayload` on purpose. `GET /api/ticketing/refunds`
+ * returns `RefundPayload`, and that object must never grow an evidence key; keeping the
+ * href on a distinct type consumed only by a server component makes that structural rather
+ * than a rule someone has to remember.
+ */
+export type BuyerRefundWithEvidence = RefundPayload & {
+    /**
+     * The buyer evidence-serve href for this refund, or `null` when none is attached.
+     * Built server-side from the row; never accepted from a client.
+     */
+    evidenceUrl: string | null;
+};
+
+/** How many refunds one order's panel reads. An order has at most one live refund at a
+ * time (the one-PROCESSING-per-order claim), so this is a history bound, not a paging API. */
+const ORDER_REFUND_LIMIT = 20;
+
+/**
+ * The refunds on ONE of the caller's own orders, newest first — the read behind the
+ * customer order detail's refund section.
+ *
+ * This is NOT `listRefunds` with a filter: the ownership predicate here is the ORDER's own
+ * `userId`, i.e. the strongest available form of "is this the caller's order?".
+ * `listRefunds` scopes by `requestedByUserId`, which is correct for the refund list ("the
+ * requests I made") but is not the question this surface asks ("the refunds on this order
+ * I am looking at"). Both are own-scope; neither can be widened by a URL parameter.
+ *
+ * A foreign order, an unknown order and an order with no refunds all answer `[]` — the
+ * caller learns nothing about whether the order exists, which is the same
+ * indistinguishability contract `getOwnOrder` and `getOwnTicket` keep.
+ */
+export async function listOwnRefundsForOrder(
+    orderNumber: string,
+    actor: AuthzScope
+): Promise<BuyerRefundWithEvidence[]> {
+    if (!actor?.userId) {
+        throw AppError.validation("Pemanggil tidak terautentikasi.");
+    }
+
+    await requireOwnResource(PERMISSIONS.ORDER_READ_OWN, actor.userId);
+
+    const rows = await prisma.refund.findMany({
+        where: {
+            // Ownership is IN the query: the refund must belong to an order owned by the
+            // caller. A refund with no order (the legacy retail orphans) cannot match a
+            // required relation filter, so it is excluded too.
+            eventOrder: { orderNumber, userId: actor.userId },
+        },
+        select: REFUND_SELECT,
+        orderBy: { createdAt: "desc" },
+        take: ORDER_REFUND_LIMIT,
+    });
+
+    return rows.map((row) => ({
+        ...buildRefundPayload(row),
+        evidenceUrl: row.evidenceFileKey
+            ? refundEvidenceUrl(row.id, row.evidenceFileKey)
+            : null,
+    }));
 }

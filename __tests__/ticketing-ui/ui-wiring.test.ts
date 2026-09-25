@@ -59,6 +59,7 @@ const TICKETING_PAGES = [
     "app/e/[slug]/page.tsx",
     "app/ticketing/tickets/page.tsx",
     "app/ticketing/tickets/[ticketCode]/page.tsx",
+    "app/ticketing/orders/page.tsx",
     "app/ticketing/orders/[orderNumber]/page.tsx",
 ];
 

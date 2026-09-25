@@ -15,10 +15,15 @@ import SiteShell from "@/components/ticketing/SiteShell";
 import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
 import { resolvePageFailure } from "@/lib/errors/classify";
-import type { OrderPayload } from "@/lib/ticketing/order-payload";
+import { orderFulfilment, type OrderPayload } from "@/lib/ticketing/order-payload";
 import { getOwnOrder } from "@/lib/ticketing/orders";
 import {
+    listOwnRefundsForOrder,
+    type BuyerRefundWithEvidence,
+} from "@/lib/ticketing/refunds/service";
+import {
     formatEventDateLong,
+    formatEventDateShort,
     formatEventTime,
     formatIdr,
     pluralTickets,
@@ -201,6 +206,34 @@ export default async function OrderPage({ params }: Props) {
 
         // Unexpected: an application bug belongs in the log, not dressed up as a 404.
         throw error;
+    }
+
+    /*
+     * ── THE ORDER'S REFUNDS (Phase 20B, additive) ─────────────────────────────────
+     *
+     * Read AFTER the order itself, because the order read is what proves the caller owns
+     * this order; `listOwnRefundsForOrder` re-applies the same ownership predicate against
+     * the order's own `userId` (see its header), so this is a second gate, not a second
+     * trust decision.
+     *
+     * A failure here does NOT fail the page. Everything else the buyer came for — the
+     * tickets, the payment state, the total — is already loaded, and turning a refund-panel
+     * outage into a 404 or a 500 would be the same defect the error-handling phase removed.
+     * It is surfaced honestly instead: `refundsUnavailable` renders the note, and the panel
+     * itself is simply absent. What must NOT happen is a silent empty state claiming the
+     * buyer has no refunds when the question could not be answered.
+     */
+    let orderRefunds: BuyerRefundWithEvidence[] = [];
+    let refundsUnavailable = false;
+
+    try {
+        orderRefunds = await listOwnRefundsForOrder(orderNumber, scope);
+    } catch {
+        // Deliberately broad, and deliberately NOT `.catch(() => [])`. This is a
+        // supplementary read, so a failure must not fail the page — but it must not be
+        // dressed up as "you have no refunds" either. The flag says the question could not
+        // be answered, and the panel renders that instead of a false empty state.
+        refundsUnavailable = true;
     }
 
     const orderStatus = ORDER_STATUS[order.status] ?? {
@@ -535,6 +568,38 @@ export default async function OrderPage({ params }: Props) {
                             </section>
                         ) : null}
 
+                        {/* ── Refund status + evidence (Phase 20B) ─────────── */}
+                        {refundsUnavailable ? (
+                            <p className="mt-6 border-t border-ink-100 pt-5 text-xs leading-relaxed text-ink-500">
+                                Status pengembalian dana pesanan ini tidak
+                                dapat dimuat saat ini. Muat ulang halaman untuk
+                                mencoba lagi.
+                            </p>
+                        ) : null}
+
+                        {orderRefunds.length > 0 ? (
+                            <section className="mt-7 border-t border-ink-100 pt-6">
+                                <h2 className="text-xs font-bold tracking-wider text-ink-400 uppercase">
+                                    Pengembalian dana
+                                </h2>
+
+                                <ul className="mt-3 space-y-3">
+                                    {orderRefunds.map((refund) => (
+                                        <li key={refund.refundId}>
+                                            <RefundCard refund={refund} />
+                                        </li>
+                                    ))}
+                                </ul>
+
+                                <Link
+                                    href="/ticketing/refunds"
+                                    className="mt-3 inline-block text-xs font-semibold text-brand-700 hover:underline"
+                                >
+                                    Lihat semua pengajuan refund →
+                                </Link>
+                            </section>
+                        ) : null}
+
                         {/* ── Terminal states ───────────────────────────────── */}
                         {order.status === "CANCELLED" ? (
                             <p className="mt-6 border-t border-ink-100 pt-5 text-sm leading-relaxed text-ink-600">
@@ -579,31 +644,154 @@ function fulfilmentStatus(order: OrderPayload): {
     label: string;
     className: string;
 } {
-    if (order.tickets.length > 0) {
-        return {
-            label: `Terbit (${order.tickets.length})`,
-            className: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-        };
+    /*
+     * The STATE is decided by `orderFulfilment` — the same pure predicate the order LIST
+     * uses — and only the copy lives here. Before this, the list and the detail each carried
+     * their own copy of the four-way branch, which is how two surfaces start disagreeing
+     * about whether a paid order's tickets exist. The rendered labels are byte-identical to
+     * the previous implementation, `Terbit (n)` included.
+     */
+    switch (orderFulfilment(order)) {
+        case "ISSUED":
+            return {
+                label: `Terbit (${order.tickets.length})`,
+                className: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+            };
+        case "READY":
+            return {
+                label: "Siap diterbitkan",
+                className: "bg-sky-50 text-sky-700 ring-sky-200",
+            };
+        case "HELD":
+            return {
+                label: "Ditahan operator",
+                className: "bg-rose-50 text-rose-700 ring-rose-200",
+            };
+        default:
+            return {
+                label: "Menunggu pembayaran",
+                className: "bg-ink-100 text-ink-600 ring-ink-200",
+            };
     }
+}
 
-    if (order.paymentStatus === "PAID" && order.canIssueTickets) {
-        return {
-            label: "Siap diterbitkan",
-            className: "bg-sky-50 text-sky-700 ring-sky-200",
-        };
-    }
+/** Buyer-facing label + colour for a `RefundStatus`, as on `/ticketing/refunds`. */
+const REFUND_STATUS: Record<string, { label: string; className: string }> = {
+    PENDING: {
+        label: "Menunggu tinjauan",
+        className: "bg-amber-50 text-amber-700 ring-amber-200",
+    },
+    APPROVED: {
+        label: "Disetujui",
+        className: "bg-sky-50 text-sky-700 ring-sky-200",
+    },
+    PROCESSING: {
+        label: "Sedang diproses",
+        className: "bg-sky-50 text-sky-700 ring-sky-200",
+    },
+    REFUNDED: {
+        label: "Dana dikembalikan",
+        className: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    },
+    REJECTED: {
+        label: "Ditolak",
+        className: "bg-ink-100 text-ink-600 ring-ink-200",
+    },
+    FAILED: {
+        label: "Gagal",
+        className: "bg-rose-50 text-rose-700 ring-rose-200",
+    },
+};
 
-    if (order.paymentStatus === "PAID") {
-        return {
-            label: "Ditahan operator",
-            className: "bg-rose-50 text-rose-700 ring-rose-200",
-        };
-    }
-
-    return {
-        label: "Menunggu pembayaran",
+/**
+ * One refund on this order, with its evidence link when there is evidence.
+ *
+ * ── HOW THE BUYER REACHES THE EVIDENCE ──────────────────────────────────────────
+ * `evidenceUrl` is built by the SERVICE from the row and points at the route that already
+ * exists — `/api/ticketing/refunds/[refundId]/evidence/[fileName]` — which re-checks this
+ * order's owner and this refund's own key on every request. No new file route, no organizer
+ * route, and no upload or replacement affordance is reachable from here: a buyer may READ,
+ * which is what the link does and all it does.
+ *
+ * The storage key is therefore never a FIELD the buyer is handed (the API payload carries
+ * only `hasEvidence: true|false`); it appears solely as the path of a URL the server built,
+ * because that is what the existing serve route is keyed by. The link is a plain anchor, not
+ * a fetch, so the bytes are delivered by the route's own authenticated, own-scoped handler.
+ */
+function RefundCard({ refund }: { refund: BuyerRefundWithEvidence }) {
+    const entry = REFUND_STATUS[refund.status] ?? {
+        label: refund.status,
         className: "bg-ink-100 text-ink-600 ring-ink-200",
     };
+
+    const amount =
+        refund.status === "REFUNDED" ? refund.confirmedAmount : refund.requestedAmount;
+
+    return (
+        <div className="rounded-2xl bg-ink-50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs font-semibold text-ink-900">
+                        {refund.refundNumber ?? `#${refund.refundId}`}
+                    </span>
+                    <span
+                        className={`rounded-full px-2.5 py-0.5 text-[0.7rem] font-bold ring-1 ring-inset ${entry.className}`}
+                    >
+                        {entry.label}
+                    </span>
+                </div>
+
+                <span className="text-sm font-bold text-ink-900">
+                    {formatIdr(Number(amount))}
+                </span>
+            </div>
+
+            <p className="mt-1.5 text-xs text-ink-500">
+                {pluralTickets(refund.items.length)} · diajukan{" "}
+                {formatEventDateShort(refund.createdAt)} ·{" "}
+                {formatEventTime(refund.createdAt)} WIB
+            </p>
+
+            {refund.reason ? (
+                <p className="mt-1.5 text-xs leading-relaxed text-ink-600">
+                    Alasan: {refund.reason}
+                </p>
+            ) : null}
+
+            {refund.failureReason ? (
+                <p className="mt-1.5 text-xs leading-relaxed text-rose-700">
+                    {refund.failureReason}
+                </p>
+            ) : null}
+
+            {refund.providerRef ? (
+                <p className="mt-1.5 text-xs text-ink-500">
+                    Referensi transfer:{" "}
+                    <span className="font-mono">{refund.providerRef}</span>
+                </p>
+            ) : null}
+
+            {/*
+             * The evidence link, rendered only when the server says a file is attached — and
+             * with the href the SERVER built. If the flag is true but no URL could be built
+             * (which the service makes impossible), nothing is shown rather than a dead link.
+             */}
+            {refund.hasEvidence && refund.evidenceUrl ? (
+                <a
+                    href={refund.evidenceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-block text-xs font-bold text-brand-700 hover:underline"
+                >
+                    Lihat bukti transfer →
+                </a>
+            ) : (
+                <p className="mt-2 text-xs text-ink-400">
+                    Bukti transfer belum tersedia.
+                </p>
+            )}
+        </div>
+    );
 }
 
 function StatusCell({

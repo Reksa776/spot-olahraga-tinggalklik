@@ -90,3 +90,48 @@ export const idempotencyKeySchema = z.string().trim().min(1).max(200);
 
 /** Query params for the customer's own order detail (`GET /api/orders/{orderNumber}`). */
 export const orderNumberParamSchema = z.string().trim().min(1).max(64);
+
+/**
+ * `GET /api/ticketing/orders` — the buyer's own order list (design §26.1).
+ *
+ * §26.1 declares exactly these filters, and the schema enforces §26.1's own ceiling:
+ * `limit` (≤ 50). There is deliberately NO `userId`, `organizerId`, `customerId` or
+ * `buyerEmail`: §26.1 states that the ownership value is "injected server-side" and that "a
+ * client-supplied `userId` is ignored", and the cleanest way to ignore it is for the field
+ * not to exist. Zod strips unknown keys by default, so a tampered `?userId=` never reaches
+ * the service.
+ *
+ * `dateFrom`/`dateTo` accept any value `Date.parse` understands (ISO here) rather than a
+ * single rigid format: `Date.parse` is what the service ultimately uses, so validating with
+ * anything else would only move the disagreement. A malformed value is a 400 at the
+ * boundary, never a silent `Invalid Date` in the query.
+ */
+const dateQuerySchema = z
+    .string()
+    .trim()
+    .min(1)
+    .max(40)
+    .refine(
+        (value) => !Number.isNaN(Date.parse(value)),
+        "Tanggal tidak valid."
+    );
+
+export const orderListQuerySchema = z.object({
+    status: z
+        .enum([
+            "PENDING_PAYMENT",
+            "PAID",
+            "CANCELLED",
+            "EXPIRED",
+            "REFUNDED",
+            "PARTIALLY_REFUNDED",
+        ])
+        .optional(),
+    dateFrom: dateQuerySchema.optional(),
+    dateTo: dateQuerySchema.optional(),
+    eventId: z.string().trim().min(1).max(64).optional(),
+    page: z.coerce.number().int().positive().max(1000).optional(),
+    limit: z.coerce.number().int().positive().max(50).optional(),
+});
+
+export type OrderListQuery = z.infer<typeof orderListQuerySchema>;

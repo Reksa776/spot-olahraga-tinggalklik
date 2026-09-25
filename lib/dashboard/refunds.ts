@@ -39,6 +39,14 @@ export const DASHBOARD_REFUND_SELECT = {
      */
     providerRef: true,
     evidenceNote: true,
+    /**
+     * PHASE 20B (additive): the server-generated basename of the attached transfer-evidence
+     * FILE, read only so the board can build the staff serve href (`refundStaffEvidenceUrl`).
+     * It is a dashboard-internal value — `lib/dashboard/**` is a server read model and this
+     * route is never serialised — and the buyer payload answers the same question with a
+     * boolean instead (see `lib/ticketing/refunds/payload.ts`).
+     */
+    evidenceFileKey: true,
     createdAt: true,
     approvedAt: true,
     processedAt: true,

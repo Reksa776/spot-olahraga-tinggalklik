@@ -151,6 +151,7 @@ describe("the error component set", () => {
      */
     it("session expiration is a destination-preserving redirect, not a dead end", () => {
         for (const file of [
+            "app/ticketing/orders/page.tsx",
             "app/ticketing/orders/[orderNumber]/page.tsx",
             "app/ticketing/tickets/page.tsx",
             "app/ticketing/tickets/[ticketCode]/page.tsx",
@@ -232,6 +233,7 @@ describe("buyer pages classify failures instead of swallowing them", () => {
     });
 
     it.each([
+        "app/ticketing/orders/page.tsx",
         "app/ticketing/tickets/page.tsx",
         "app/ticketing/refunds/page.tsx",
     ])("%s distinguishes a refusal from a failure", (file) => {
@@ -258,6 +260,7 @@ describe("buyer pages classify failures instead of swallowing them", () => {
 
 describe("login returns the buyer to the page they were on", () => {
     const GATED_PAGES = [
+        "app/ticketing/orders/page.tsx",
         "app/ticketing/orders/[orderNumber]/page.tsx",
         "app/ticketing/tickets/page.tsx",
         "app/ticketing/tickets/[ticketCode]/page.tsx",

@@ -1,6 +1,7 @@
 import type { RefundStatus } from "@prisma/client";
 
 import { RefundDecisionActions } from "@/components/dashboard/RefundDecisionActions";
+import { RefundEvidenceActions } from "@/components/dashboard/RefundEvidenceActions";
 import {
     DataTable,
     EmptyBlock,
@@ -12,6 +13,7 @@ import {
 } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
 import { listDashboardRefunds } from "@/lib/dashboard/refunds";
+import { refundStaffEvidenceUrl } from "@/lib/ticketing/refunds/payload";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
@@ -224,6 +226,25 @@ export default async function DashboardRefundsPage({
                                         —
                                     </span>
                                 ) : null}
+
+                                {/*
+                                 * The transfer-evidence FILE, attached through the existing
+                                 * organizer route. The href is built SERVER-side from the row
+                                 * (`refundStaffEvidenceUrl`), never assembled by the client,
+                                 * and the control only offers attach while the refund is open.
+                                 */}
+                                <RefundEvidenceActions
+                                    refundId={refund.id}
+                                    status={refund.status}
+                                    evidenceUrl={
+                                        refund.evidenceFileKey
+                                            ? refundStaffEvidenceUrl(
+                                                  refund.id,
+                                                  refund.evidenceFileKey
+                                              )
+                                            : null
+                                    }
+                                />
                             </div>,
                             <div className="flex flex-col" key="processing">
                                 {refund.processedAt ? (

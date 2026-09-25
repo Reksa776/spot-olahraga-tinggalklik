@@ -93,6 +93,20 @@ export const refundExecuteSchema = z
 export const refundIdParamSchema = z.coerce.number().int().positive();
 
 /**
+ * The `[fileName]` path segment of the evidence serve routes. The stored name is generated
+ * server-side by `storeRefundEvidence` as `<millis>-<32 hex><.jpg|.png|.webp|.pdf>`, so the
+ * schema accepts EXACTLY that shape and nothing else: no separators, no `..`, no other
+ * extension. A hostile segment therefore fails at the boundary (400) before the basename
+ * guard in `readStoredRefundEvidence` is ever reached — the guard stays as defence in depth.
+ */
+export const refundEvidenceFileNameSchema = z
+    .string()
+    .trim()
+    .min(1)
+    .max(80)
+    .regex(/^\d{10,20}-[0-9a-f]{32}\.(jpg|png|webp|pdf)$/);
+
+/**
  * `GET /api/ticketing/refunds` — list. Without `organizerId` a caller sees their OWN
  * refunds; with it, the caller must hold `order.read.tenant` for that organizer.
  */

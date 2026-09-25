@@ -65,6 +65,24 @@ export default async function SiteHeader() {
                 <div className="ml-auto flex items-center gap-2 md:ml-0">
                     {signedIn ? (
                         <>
+                            {/*
+                             * PHASE 20B — "Pesanan saya" (the buyer's order history).
+                             *
+                             * Deliberately NOT added to `NAV` above: that list is rendered for
+                             * every visitor and `/ticketing/orders` requires a session, so a
+                             * signed-out shopper would be sent a link that only bounces to
+                             * /login. It is the storefront's job to invite; a private list
+                             * belongs in the signed-in actions, exactly like the wallet beside
+                             * it. Rendered as a quiet nav link rather than a second bordered
+                             * button so the header keeps ONE primary action per state.
+                             */}
+                            <Link
+                                href="/ticketing/orders"
+                                className="hidden rounded-lg px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
+                            >
+                                Pesanan saya
+                            </Link>
+
                             <Link
                                 href="/ticketing/tickets"
                                 className="hidden rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-800 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
@@ -109,7 +127,10 @@ function MobileMenu({ signedIn }: { signedIn: boolean }) {
         ...NAV,
         { href: "/events", label: "Semua event" },
         ...(signedIn
-            ? [{ href: "/ticketing/tickets", label: "Tiket saya" }]
+            ? [
+                  { href: "/ticketing/orders", label: "Pesanan saya" },
+                  { href: "/ticketing/tickets", label: "Tiket saya" },
+              ]
             : [{ href: "/login", label: "Masuk" }]),
         { href: "/dashboard/events", label: "Buat event" },
     ];

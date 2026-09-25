@@ -25,7 +25,10 @@
  *
  * PHASE 33 added one: the ADMIN-only `/dashboard/users` management surface.
  *
- * The total is 38 pages.
+ * PHASE 20B added one: the customer's own `/ticketing/orders` list ("Pesanan saya"), the
+ * index over the order-detail page that already existed.
+ *
+ * The total is 39 pages.
  *
  * `referencedBy` is produced mechanically — matching each route as a complete URL token — and the
  * test re-derives each route from its own file path, so a row cannot drift from the tree.
@@ -256,10 +259,17 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         referencedBy: "components/ticketing/SiteFooter.tsx",
     },
     {
+        route: "/ticketing/orders",
+        file: "app/ticketing/orders/page.tsx",
+        status: "KEEP",
+        referencedBy:
+            "components/ticketing/SiteHeader.tsx (the signed-in \"Pesanan saya\" link, desktop and mobile)",
+    },
+    {
         route: "/ticketing/orders/[orderNumber]",
         file: "app/ticketing/orders/[orderNumber]/page.tsx",
         status: "KEEP",
-        referencedBy: "components/events/TicketPurchaseForm.tsx, components/tickets/IssueTicketsButton.tsx",
+        referencedBy: "components/events/TicketPurchaseForm.tsx, components/tickets/IssueTicketsButton.tsx, app/ticketing/orders/page.tsx",
     },
     {
         route: "/ticketing/refunds",

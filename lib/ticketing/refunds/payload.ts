@@ -46,7 +46,54 @@ export type RefundPayload = {
     completedAt: string | null;
     failedAt: string | null;
     items: RefundPayloadItem[];
+    /**
+     * Whether a transfer-evidence file is attached to this refund.
+     *
+     * PHASE 20B — ADDITIVE, and deliberately a BOOLEAN. The evidence exists so a buyer can
+     * see what was transferred, so a buyer payload must be able to say that it is there. It
+     * must NOT be able to say WHERE it is: the storage key is the server-generated basename
+     * the serving route compares against, and no JSON response carries it (see the note on
+     * `refundEvidenceUrl` below).
+     */
+    hasEvidence: boolean;
 };
+
+/**
+ * The buyer's evidence-serve route, built from values the SERVER already holds.
+ *
+ * This is the ONLY place the buyer-facing evidence URL is assembled, and it points at the
+ * route that already exists (`app/api/ticketing/refunds/[refundId]/evidence/[fileName]`) —
+ * no second delivery mechanism is introduced. Because that route is keyed by the stored
+ * basename, the href necessarily contains it; that is why this builder is used by
+ * server-rendered pages only and why the value is never placed on `RefundPayload`, which is
+ * what `GET /api/ticketing/refunds` returns as JSON.
+ *
+ * `encodeURIComponent` is belt-and-braces: the writer only ever emits
+ * `<millis>-<32 hex><.ext>`, so encoding is a no-op today and the URL stays correct if that
+ * ever changes.
+ */
+export function refundEvidenceUrl(refundId: number, fileName: string): string {
+    return `/api/ticketing/refunds/${refundId}/evidence/${encodeURIComponent(fileName)}`;
+}
+
+/**
+ * The STAFF evidence-serve route, built from the same server-held values.
+ *
+ * The operator twin of `refundEvidenceUrl`, and the only place the staff URL shape is
+ * written down: it points at the route that already exists
+ * (`app/api/organizer/refunds/[refundId]/evidence/[fileName]`), which re-checks the
+ * refund's own tenant + `REFUND_EXECUTE` on every request. The dashboard's refunds board
+ * renders it so an operator can review the receipt behind a recorded transfer reference;
+ * the buyer never sees this value (the buyer payload carries only `hasEvidence`). No
+ * second storage or delivery mechanism is introduced.
+ *
+ * `encodeURIComponent` is belt-and-braces: the writer only ever emits
+ * `<millis>-<32 hex><.ext>`, so encoding is a no-op today and the URL stays correct if that
+ * ever changes.
+ */
+export function refundStaffEvidenceUrl(refundId: number, fileName: string): string {
+    return `/api/organizer/refunds/${refundId}/evidence/${encodeURIComponent(fileName)}`;
+}
 
 /**
  * The row shape the builder consumes, and (next to it) the Prisma `select` that produces
@@ -56,6 +103,12 @@ export type RefundRow = {
     id: number;
     refundNumber: string | null;
     status: string;
+    /**
+     * The server-generated storage key, read ONLY so the payload can answer `hasEvidence`.
+     * It is never projected into `RefundPayload` — the builder below turns it into a boolean
+     * and drops it.
+     */
+    evidenceFileKey: string | null;
     requestedAmount: Prisma.Decimal;
     confirmedAmount: Prisma.Decimal;
     reason: string | null;
@@ -77,6 +130,7 @@ export const REFUND_SELECT = {
     id: true,
     refundNumber: true,
     status: true,
+    evidenceFileKey: true,
     requestedAmount: true,
     confirmedAmount: true,
     reason: true,
@@ -120,5 +174,7 @@ export function buildRefundPayload(row: RefundRow): RefundPayload {
             ticketCode: item.ticket.ticketCode,
             amount: moneyString(item.amount),
         })),
+        // A boolean, never the key. See the note on `refundEvidenceUrl`.
+        hasEvidence: row.evidenceFileKey !== null,
     };
 }

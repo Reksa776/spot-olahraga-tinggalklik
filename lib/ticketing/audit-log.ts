@@ -151,6 +151,8 @@ export type TicketingAuditAction =
     | "refund.process"
     | "refund.settle"
     | "refund.fail"
+    /** The transfer-evidence FILE attached to a refund; no money moves and no status changes. */
+    | "refund.evidence_upload"
     // ── PHASE 8: ticket fulfilment ───────────────────────────────────────────────
     // One action, not four. Issuance is the only ticket transition Phase 8 performs:
     // the status stays `ISSUED` afterwards and reissue/void belong to later phases

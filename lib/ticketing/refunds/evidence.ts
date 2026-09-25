@@ -2,8 +2,11 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 
-import { AppError } from "@/lib/api/errors";
+import { AppError, ERROR_CODES } from "@/lib/api/errors";
+import { requireOrganizerAccess } from "@/lib/authz/guards";
+import { PERMISSIONS } from "@/lib/authz/permissions";
 import { detectImageFormat } from "@/lib/images/format";
+import type { AuthzScope } from "@/lib/authz";
 
 /**
  * ==========================================
@@ -145,25 +148,18 @@ export async function deleteRefundEvidence(key: string | null): Promise<void> {
  * has only the metadata columns the additive migration added.
  */
 
-import { requireAuth, type AuthzScope } from "@/lib/authz"; /* eslint-disable-line @typescript-eslint/no-unused-vars */
-import { requireOrganizerAccess } from "@/lib/authz/organizer"; /* eslint-disable-line @typescript-eslint/no-unused-vars */
-import { PERMISSIONS } from "@/lib/authz/permissions"; /* eslint-disable-line @typescript-eslint/no-unused-vars */
-import { AppError, ERROR_CODES } from "@/lib/api/errors"; /* eslint-disable-line @typescript-eslint/no-unused-vars */
-
 /**
  * Server-side enforcer for "PIC/customer may never attach evidence", used by the
  * evidence POST route. Delegates the actual permission+tenant+SoD to:
  *
- *   * `requireAuth`          — identity (any authenticated session can reach here;
- *                              the ORGANIZER-scoped guard does the real gating);
  *   * `requireOrganizerAccess` — the refund's OWN tenant + `REFUND_EXECUTE`, i.e. the
- *                              same authorization settleRefund requires to move money.
+ *     same authorization settleRefund requires to move money.
  *
  * The function is intentionally THIN — it re-reads the refund row from the service's
- * canonical read model (`readRefundForEvidence`, itself own-scope + tenant-scoped in
- * `lib/ticketing/refunds/payload.ts`) and returns the organizerId + requestedByUserId
- * the route then pins against. SoD is decided HERE (never in the component), exactly
- * as settleRefund does.
+ * canonical read model (the `refund.findUnique` select `attachRefundEvidence` uses,
+ * itself tenant-scoped) and returns the organizerId + requestedByUserId the route
+ * then pins against. SoD is decided HERE (never in the component), exactly as
+ * settleRefund does.
  */
 export async function authorizeRefundEvidenceAttachment<T extends { organizerId: string | null; requestedByUserId: string | null }>(
     refund: T,
@@ -189,4 +185,59 @@ export async function authorizeRefundEvidenceAttachment<T extends { organizerId:
         organizerId: refund.organizerId,
         requestedByUserId: refund.requestedByUserId ?? "",
     };
+}
+
+/**
+ * The stored evidence as bytes, ready to serve — the serve-twin of `readStoredProof`
+ * (`lib/ticketing/settlement/proof.ts`), which `readSettlementProof` delegates to. The
+ * shape is byte-identical: the caller supplies the server-generated key it ALREADY
+ * read out of the refund row, and this function only turns that key into bytes.
+ */
+export type RefundEvidenceFile = {
+    buffer: Buffer;
+    contentType: string;
+    size: number;
+};
+
+/**
+ * Read a stored refund-evidence file by its server-generated basename, or `null` when
+ * missing. Authorization is the CALLER's job — this function only does the path-safe
+ * read, exactly like `readStoredProof`.
+ *
+ * Never trust a caller-supplied path: reduce it to a basename first. A key that is
+ * not already a bare basename (`../x`, `a/b`, absolute, empty) is refused, so the
+ * resolved path can only ever be `refundEvidenceDir()/<generated-name>` and can never
+ * broaden the storage root. The returned content type is derived from the stored
+ * file's OWN extension — the same table the writer sniffed the bytes against — and is
+ * never taken from the request.
+ */
+export async function readStoredRefundEvidence(
+    key: string
+): Promise<RefundEvidenceFile | null> {
+    if (!key) {
+        return null;
+    }
+
+    const safeName = path.basename(key);
+
+    if (safeName !== key) {
+        return null;
+    }
+
+    try {
+        const buffer = await fs.readFile(path.join(refundEvidenceDir(), safeName));
+        const ext = path.extname(safeName).toLowerCase();
+        const contentType = MIME_BY_EXTENSION[ext];
+
+        // A key with no known extension was never produced by the writer, so it is
+        // never served — no octet-stream fallback, because this is a financial document
+        // and the point of the table is that the stored type is the sniffed one.
+        if (!contentType) {
+            return null;
+        }
+
+        return { buffer, contentType, size: buffer.length };
+    } catch {
+        return null;
+    }
 }

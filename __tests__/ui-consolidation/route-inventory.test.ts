@@ -70,10 +70,11 @@ describe("P10-1. the inventory covers the whole application", () => {
         expect(INVENTORY_ROUTES).toEqual(PAGES_ON_DISK);
     });
 
-    it("is 38 pages, and says so", () => {
+    it("is 39 pages, and says so", () => {
         // 33 before PHASE 32 (+4: the three application-control pages and /maintenance);
-        // PHASE 33 added the ADMIN-only /dashboard/users surface.
-        expect(ROUTE_INVENTORY.length).toBe(38);
+        // PHASE 33 added the ADMIN-only /dashboard/users surface; PHASE 20B added the
+        // customer's own /ticketing/orders list.
+        expect(ROUTE_INVENTORY.length).toBe(39);
     });
 
     it("lists each route exactly once", () => {

@@ -440,3 +440,114 @@ describe("the lifecycle and the route surface", () => {
         expect(validation).not.toMatch(/\.catchall\(/);
     });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE MIGRATION_CUSTOMER_REFUND_EVIDENCE: the evidence FILE rails
+// ─────────────────────────────────────────────────────────────────────────────
+
+const EVIDENCE = `${REFUND_DIR}/evidence.ts`;
+const ORGANIZER_EVIDENCE_POST = "app/api/organizer/refunds/[refundId]/evidence/route.ts";
+const ORGANIZER_EVIDENCE_GET = "app/api/organizer/refunds/[refundId]/evidence/[fileName]/route.ts";
+const BUYER_EVIDENCE_GET = "app/api/ticketing/refunds/[refundId]/evidence/[fileName]/route.ts";
+
+describe("the evidence file rail is additive: it never settles, it never trusts the client", () => {
+    test("the storage engine is the only writer and the only reader of the tree", () => {
+        const evidence = code(read(EVIDENCE));
+
+        // Magic bytes, not the declared MIME; server-generated name; 5MB on the REAL bytes.
+        expect(evidence).toMatch(/detectImageFormat\(buffer\)/);
+        expect(evidence).toMatch(/%PDF-/);
+        expect(evidence).toMatch(/crypto\.randomBytes/);
+        expect(evidence).toMatch(/buffer\.length > MAX_REFUND_EVIDENCE_BYTES/);
+        expect(evidence).toMatch(/MAX_REFUND_EVIDENCE_BYTES = 5 \* 1024 \* 1024/);
+        expect(evidence).toMatch(/\.tmp[\s\S]*?fs\.rename/);
+        // The reader is basename-guarded, exactly like readStoredProof.
+        expect(evidence).toMatch(/path\.basename\(key\)/);
+        expect(evidence).toMatch(/safeName !== key/);
+        // It never takes a filesystem path from a caller.
+        expect(evidence).not.toMatch(/readFile\([^)]*fileName/);
+
+        // No other refund module touches fs — the tree has one owner.
+        const others = REFUND_FILES.filter((file) => file !== EVIDENCE && /fs\/promises|node:fs/.test(code(read(file))));
+        expect(others).toEqual([]);
+    });
+
+    test("the attach rail runs the settle gates, CASes the key and rolls the loser back", () => {
+        const service = code(read(SERVICE));
+        const attach = service
+            .split("export async function attachRefundEvidence")[1]
+            .split("export async function readRefundEvidenceForOrganizer")[0];
+
+        // The SAME gates as settleRefund, and no status write of any kind: attaching a file
+        // must never become a second way to settle a refund.
+        expect(attach).toMatch(/authorizeRefundEvidenceAttachment\(refund, actor\)/);
+        expect(attach).toMatch(/storeRefundEvidence\(file\)/);
+        expect(attach).toMatch(/where: \{ id: refundId, evidenceFileKey: refund\.evidenceFileKey \}/);
+        expect(attach).toMatch(/cas\.count !== 1/);
+        expect(attach).toMatch(/await deleteRefundEvidence\(stored\.key\)/);
+        expect(attach).toMatch(/await deleteRefundEvidence\(refund\.evidenceFileKey\)/);
+        expect(attach).toMatch(/action: "refund\.evidence_upload"/);
+        expect(attach).not.toMatch(/status: "REFUNDED"|processConfirmedRefund|confirmedAmount/);
+
+        const evidence = code(read(EVIDENCE));
+        const gate = evidence
+            .split("export async function authorizeRefundEvidenceAttachment")[1]
+            .split("export async function readStoredRefundEvidence")[0];
+        expect(gate).toMatch(/requireOrganizerAccess\(refund\.organizerId, PERMISSIONS\.REFUND_EXECUTE\)/);
+        expect(gate).toMatch(/scope\.userId === refund\.requestedByUserId/);
+    });
+
+    test("the organizer serve route is tenant-gated and the buyer route is own-gated", () => {
+        const service = code(read(SERVICE));
+        const staff = service
+            .split("export async function readRefundEvidenceForOrganizer")[1]
+            .split("export async function readRefundEvidenceForBuyer")[0];
+        const buyer = service
+            .split("export async function readRefundEvidenceForBuyer")[1]
+            .split("export async function listRefunds")[0];
+
+        // Staff: the refund's OWN tenant, the settle permission, and the row's exact key.
+        expect(staff).toMatch(/requireOrganizerAccess\(refund\.organizerId, PERMISSIONS\.REFUND_EXECUTE\)/);
+        expect(staff).toMatch(/refund\.evidenceFileKey !== fileName/);
+
+        // Buyer: the ORDER's own user, ORDER_READ_OWN, and no tenant branch at all.
+        expect(buyer).toMatch(/refund\.eventOrder\.userId !== actor\.userId/);
+        expect(buyer).toMatch(/requireOwnResource\(PERMISSIONS\.ORDER_READ_OWN, actor\.userId\)/);
+        expect(buyer).toMatch(/refund\.evidenceFileKey !== fileName/);
+        expect(buyer).not.toMatch(/requireOrganizerAccess/);
+
+        for (const route of [ORGANIZER_EVIDENCE_POST, ORGANIZER_EVIDENCE_GET, BUYER_EVIDENCE_GET]) {
+            const source = code(read(route));
+            // A route never reaches the storage tree: bytes come from the service.
+            expect(source).not.toMatch(/readStoredRefundEvidence|storeRefundEvidence|fs\/promises/);
+        }
+
+        // The two SERVE routes are the ones that name a file, and each validates it with
+        // the writer's own shape before it ever reaches the service.
+        for (const route of [ORGANIZER_EVIDENCE_GET, BUYER_EVIDENCE_GET]) {
+            const source = code(read(route));
+            expect(source).toMatch(/parseOrThrow\(refundEvidenceFileNameSchema, fileName\)/);
+            expect(source).toMatch(/X-Content-Type-Options": "nosniff"/);
+            expect(source).toMatch(/Content-Disposition": "inline"/);
+        }
+    });
+
+    test("the POST rail is CSRF-checked and the file name is validated at the boundary", () => {
+        const post = code(read(ORGANIZER_EVIDENCE_POST));
+        expect(post).toMatch(/requireSameOrigin\(request\)/);
+        expect(post).toMatch(/requireAuth\(\)/);
+        expect(post).toMatch(/parseOrThrow\(refundIdParamSchema, refundId\)/);
+        expect(post).toMatch(/formData\.get\("file"\)/);
+        expect(post).toMatch(/attachRefundEvidence\(parsedId, file, scope, request\)/);
+        // The bytes the operator attached must be a real file, not a string field.
+        expect(post).not.toMatch(/formData\.get\("evidenceNote"\)|formData\.get\("providerRef"\)/);
+
+        const validation = code(read(VALIDATION));
+        const name = validation
+            .split("export const refundEvidenceFileNameSchema")[1]
+            .split("export const refundListQuerySchema")[0];
+        // Only the writer's own shape: separators and `..` cannot match.
+        expect(name).toMatch(/\\d\{10,20\}-\[0-9a-f\]\{32\}/);
+        expect(name).not.toMatch(/startsWith|endsWith|includes/);
+    });
+});
