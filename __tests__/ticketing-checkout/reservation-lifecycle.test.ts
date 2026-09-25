@@ -549,6 +549,27 @@ describe("checkout request schema (design §25.5)", () => {
         expect(
             checkoutRequestSchema.safeParse({ ...valid, shareToken: "" }).success
         ).toBe(false);
+
+        // E — whitespace-only trims to "" and is refused exactly like the empty string.
+        expect(
+            checkoutRequestSchema.safeParse({ ...valid, shareToken: "   " }).success
+        ).toBe(false);
+
+        // F — longer than the 128-character bound is refused, not truncated.
+        expect(
+            checkoutRequestSchema.safeParse({
+                ...valid,
+                shareToken: "a".repeat(129),
+            }).success
+        ).toBe(false);
+
+        // …and the bound is inclusive: exactly 128 characters is still a token.
+        expect(
+            checkoutRequestSchema.safeParse({
+                ...valid,
+                shareToken: "a".repeat(128),
+            }).success
+        ).toBe(true);
     });
 
     test("the exact no-PIC body the browser builds parses (Phase 22A/22B regression)", () => {
@@ -577,6 +598,33 @@ describe("checkout request schema (design §25.5)", () => {
         expect(parsed.shareToken).toBeNull();
         expect(parsed.eventId).toBe(body.eventId);
         expect(parsed.items).toEqual(body.items);
+    });
+
+    test("the exact production no-PIC payload passes (7 tickets, shareToken null)", () => {
+        // The body captured from the production 400, verbatim: a normal purchase from a
+        // URL with no `?pic=`, 7 tickets, and the buyer's contact details. `shareToken:
+        // null` is the representation the form sends; before `shareToken` accepted `null`
+        // this request was refused with HTTP 400 "Data yang dikirim tidak valid."
+        const productionBody = {
+            buyerEmail: "pisangkeju@gmail.com",
+            buyerName: "pisangkeju",
+            buyerPhone: "08617823123",
+            eventId: "cmugrz7ag0007vmupbvqrmfy7",
+            items: [{ quantity: 7, ticketTypeId: "cmugrzk730009vmupzneujl1b" }],
+            shareToken: null,
+        };
+
+        const parsed = checkoutRequestSchema.parse(productionBody);
+
+        expect(parsed.shareToken).toBeNull();
+        expect(parsed.eventId).toBe("cmugrz7ag0007vmupbvqrmfy7");
+        // The WhatsApp value travels under the backend's own field name, unchanged.
+        expect(parsed.buyerPhone).toBe("08617823123");
+        // The quantity is a real JSON number, not a coerced string (brief §8).
+        expect(parsed.items).toEqual([
+            { quantity: 7, ticketTypeId: "cmugrzk730009vmupzneujl1b" },
+        ]);
+        expect(typeof parsed.items[0].quantity).toBe("number");
     });
 });
 

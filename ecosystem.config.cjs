@@ -36,9 +36,15 @@
  * so relying on it would have been a silent failure. The legacy `server.js` in this
  * repository reads exactly that variable and would bind to the hostname.)
  *
- * ── WHY PORT IS SET HERE ───────────────────────────────────────────────────────────
+ * ── WHY PORT IS SET HERE, AND WHY 3003 ────────────────────────────────────────────
  * `next start -p` reads `PORT` from the environment, so this is the single place the port
  * is decided. Keep it in step with the nginx `proxy_pass` upstream.
+ *
+ * 3003 is deliberate: on the production host :3000 is occupied by a DIFFERENT
+ * application, so TinggalKlik must not bind it. Pinning the port here means
+ * `pm2 reload tinggalklik` can never make `next start` fall back to its default 3000 —
+ * which is exactly what happened while the process was started via `npm start` with no
+ * `PORT` in the PM2 env. Do NOT "simplify" this back to the Next.js default.
  *
  * ── WHAT IS DELIBERATELY NOT HERE ──────────────────────────────────────────────────
  *   * NO `env_file`. Secrets belong in the host environment (or a file the host loads),
@@ -64,7 +70,8 @@ module.exports = {
             exec_mode: "fork",
             env: {
                 NODE_ENV: "production",
-                PORT: "3000",
+                // :3000 belongs to another application on this host — TinggalKlik is :3003.
+                PORT: "3003",
             },
             autorestart: true,
             // Give in-flight requests (a payment callback, a checkout) time to finish before
