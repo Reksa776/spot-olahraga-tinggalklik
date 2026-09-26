@@ -44,23 +44,47 @@ import Link from "next/link";
  * impossible. The server surfaces fetch once and hand the value down, so every surface
  * renders the same source of truth without a second configuration.
  */
+/** The built-in wordmark, used only when no configured name is supplied. */
+const DEFAULT_APP_NAME = "TinggalKlik.Co";
+
 export default function Brand({
     tone = "ink",
     logoSrc = null,
+    name = DEFAULT_APP_NAME,
 }: {
     tone?: "ink" | "light";
     /** Persistent logo URL, or `null`/omitted to use the built-in mark. */
     logoSrc?: string | null;
+    /**
+     * The configured application name (`PlatformSetting.platformName`, resolved by
+     * `getApplicationBranding()`), or omitted to use the built-in default.
+     *
+     * It exists so the wordmark is DATABASE-DRIVEN where a caller has the setting, instead of
+     * being a literal repeated next to a logo that was already configurable. The default keeps
+     * every existing consumer — and the source-of-truth contract asserted by
+     * `__tests__/admin-manager/branding-and-wiring.test.ts` — byte-for-byte unchanged.
+     */
+    name?: string;
 }) {
     const text = tone === "light" ? "text-white" : "text-ink-900";
     const accent = tone === "light" ? "text-brand-400" : "text-brand-600";
     const chip =
         tone === "light" ? "bg-white/10 text-white" : "bg-ink-900 text-white";
 
+    /*
+     * The name is split at its LAST dot so `.Co` (or any dotted TLD-shaped suffix) keeps the
+     * accent colour the built-in wordmark has always had. A name without a dot renders whole:
+     * one extra span on a configured value is not worth a second code path.
+     */
+    const resolvedName = name.trim() || DEFAULT_APP_NAME;
+    const dotIndex = resolvedName.lastIndexOf(".");
+    const wordmark = dotIndex > 0 ? resolvedName.slice(0, dotIndex) : resolvedName;
+    const wordmarkSuffix = dotIndex > 0 ? resolvedName.slice(dotIndex) : "";
+
     return (
         <Link
             href="/"
-            className="flex shrink-0 items-center gap-2.5 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+            className="flex min-w-0 items-center gap-2.5 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
             {logoSrc ? (
                 /*
@@ -88,9 +112,17 @@ export default function Brand({
                     TK
                 </span>
             )}
-            <span className={`text-lg font-extrabold tracking-tight ${text}`}>
-                TinggalKlik
-                <span className={accent}>.Co</span>
+            {/*
+             * `truncate` is the layout-safety half of a configured name: an operator can set
+             * an arbitrarily long one, and a lockup that pushed past its container would be an
+             * overflow on every surface that renders it. The logo beside it stays `shrink-0`
+             * so only the text ever gives way.
+             */}
+            <span className={`truncate text-lg font-extrabold tracking-tight ${text}`}>
+                {wordmark}
+                {wordmarkSuffix ? (
+                    <span className={accent}>{wordmarkSuffix}</span>
+                ) : null}
             </span>
         </Link>
     );

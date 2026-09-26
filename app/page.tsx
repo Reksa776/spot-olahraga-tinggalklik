@@ -5,6 +5,7 @@ import SearchBar from "@/components/ticketing/SearchBar";
 import SectionHeader from "@/components/ticketing/SectionHeader";
 import SportGrid from "@/components/ticketing/SportGrid";
 import SiteShell from "@/components/ticketing/SiteShell";
+import Reveal from "@/components/ui/Reveal";
 import { parseOrThrow } from "@/lib/api/validation";
 import { getServerOrigin } from "@/lib/app-origin.server";
 import {
@@ -89,7 +90,11 @@ export default async function DiscoveryHomePage() {
 
             <div className="mx-auto max-w-7xl space-y-14 px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
                 {totalEvents === 0 ? (
-                    <section className="rounded-xl border border-ink-100 bg-white px-6 py-16 text-center">
+                    <Reveal
+                        as="section"
+                        scroll
+                        className="rounded-xl border border-ink-100 bg-white px-6 py-16 text-center"
+                    >
                         <h2 className="text-xl font-extrabold text-ink-900">
                             Belum ada event yang tayang
                         </h2>
@@ -103,9 +108,9 @@ export default async function DiscoveryHomePage() {
                         >
                             Publikasikan event
                         </Link>
-                    </section>
+                    </Reveal>
                 ) : (
-                    <section aria-labelledby="terdekat">
+                    <Reveal as="section" scroll variant="scale" aria-labelledby="terdekat">
                         <SectionHeader
                             id="terdekat"
                             title="Event terdekat"
@@ -113,10 +118,10 @@ export default async function DiscoveryHomePage() {
                             href="/events"
                         />
                         <EventRow events={upcoming} />
-                    </section>
+                    </Reveal>
                 )}
 
-                <section aria-labelledby="cabang-olahraga-heading">
+                <Reveal as="section" scroll aria-labelledby="cabang-olahraga-heading">
                     <SectionHeader
                         id="cabang-olahraga-heading"
                         title="Cabang olahraga"
@@ -129,10 +134,10 @@ export default async function DiscoveryHomePage() {
                         sports={sports.items}
                         counts={sportCounts}
                     />
-                </section>
+                </Reveal>
 
                 {free.items.length > 0 ? (
-                    <section aria-labelledby="gratis">
+                    <Reveal as="section" scroll aria-labelledby="gratis">
                         <SectionHeader
                             id="gratis"
                             title="Ada tiket gratis"
@@ -140,11 +145,11 @@ export default async function DiscoveryHomePage() {
                             href="/events?priceMax=0"
                         />
                         <EventRow events={free.items} />
-                    </section>
+                    </Reveal>
                 ) : null}
 
                 {newest.items.length > 0 ? (
-                    <section aria-labelledby="baru">
+                    <Reveal as="section" scroll aria-labelledby="baru">
                         <SectionHeader
                             id="baru"
                             title="Baru ditambahkan"
@@ -152,7 +157,7 @@ export default async function DiscoveryHomePage() {
                             href="/events?sort=newest"
                         />
                         <EventRow events={newest.items} />
-                    </section>
+                    </Reveal>
                 ) : null}
 
                 
@@ -183,28 +188,43 @@ function Hero({
         <section className="relative overflow-hidden bg-ink-950 text-white hero-wash">
             <div className="mx-auto max-w-7xl px-4 pt-14 pb-16 sm:px-6 lg:px-8 lg:pt-20 lg:pb-24">
                 <div className="max-w-3xl">
-                    <p className="text-sm font-semibold text-brand-300">
+                    <Reveal as="p" className="text-sm font-semibold text-brand-300">
                         Event &amp; olahraga
-                    </p>
+                    </Reveal>
 
-                    <h1 className="mt-3 text-3xl leading-[1.1] font-black tracking-tight sm:text-4xl lg:text-5xl">
+                    <Reveal
+                        as="h1"
+                        delay={80}
+                        className="mt-3 text-3xl leading-[1.1] font-black tracking-tight sm:text-4xl lg:text-5xl"
+                    >
                         Temukan Event &amp; Pertandingan Favoritmu
-                    </h1>
+                    </Reveal>
 
-                    <p className="mt-4 max-w-xl text-sm leading-relaxed text-ink-200 sm:text-base">
+                    <Reveal
+                        as="p"
+                        delay={160}
+                        className="mt-4 max-w-xl text-sm leading-relaxed text-ink-200 sm:text-base"
+                    >
                         Dari liga basket komunitas sampai lomba lari akhir pekan.
                         Cari, pilih tiket, dan simpan e-tiket di satu tempat.
-                    </p>
+                    </Reveal>
 
-                    <div className="mt-8 max-w-2xl">
+                    <Reveal
+                        variant="scale"
+                        delay={240}
+                        className="mt-8 max-w-2xl"
+                    >
                         <SearchBar
                             size="lg"
                             placeholder="Cari event, pertandingan, atau olahraga…"
                         />
-                    </div>
+                    </Reveal>
 
                     {shortcuts.length > 0 ? (
-                        <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2">
+                        <Reveal
+                            delay={300}
+                            className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2"
+                        >
                             <span className="text-sm font-semibold text-ink-300">
                                 Cabang:
                             </span>
@@ -219,14 +239,18 @@ function Hero({
                                     {sport.name}
                                 </Link>
                             ))}
-                        </div>
+                        </Reveal>
                     ) : null}
 
-                    <p className="mt-8 text-sm font-medium text-ink-300">
+                    <Reveal
+                        as="p"
+                        delay={300}
+                        className="mt-8 text-sm font-medium text-ink-300"
+                    >
                         {totalEvents > 0
                             ? `${totalEvents} event akan datang`
                             : "Event baru akan segera tayang"}
-                    </p>
+                    </Reveal>
                 </div>
             </div>
         </section>

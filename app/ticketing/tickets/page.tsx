@@ -7,6 +7,7 @@ import ServiceUnavailableState from "@/components/errors/ServiceUnavailableState
 import EmptyState from "@/components/ticketing/EmptyState";
 import SiteShell from "@/components/ticketing/SiteShell";
 import TicketCard from "@/components/ticketing/TicketCard";
+import Reveal, { revealDelay } from "@/components/ui/Reveal";
 import { loginUrlFor } from "@/lib/auth/redirect";
 import { getAuthzScope } from "@/lib/authz";
 import { resolvePageFailure } from "@/lib/errors/classify";
@@ -127,7 +128,7 @@ export default async function TicketWalletPage({
     return (
         <SiteShell>
             <div className="border-b border-ink-100 bg-ink-50/50">
-                <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+                <Reveal className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
                     <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
                         Tiket saya
                     </h1>
@@ -137,33 +138,44 @@ export default async function TicketWalletPage({
                     </p>
 
                     <WalletTabs view={view} />
-                </div>
+                </Reveal>
             </div>
 
             <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
                 {visible.length === 0 ? (
-                    <EmptyState
-                        kind="ticket"
-                        title={emptyTitle(view)}
-                        description={emptyDescription(view)}
-                        action={{ href: "/events", label: "Cari event" }}
-                        secondaryAction={{ href: "/", label: "Kembali ke beranda" }}
-                    />
+                    // One clean entrance for the whole empty state — never per text node.
+                    <Reveal delay={120}>
+                        <EmptyState
+                            kind="ticket"
+                            title={emptyTitle(view)}
+                            description={emptyDescription(view)}
+                            action={{ href: "/events", label: "Cari event" }}
+                            secondaryAction={{ href: "/", label: "Kembali ke beranda" }}
+                        />
+                    </Reveal>
                 ) : (
                     <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                        {visible.map((ticket) => (
-                            <li key={ticket.ticketCode}>
+                        {visible.map((ticket, index) => (
+                            <Reveal
+                                as="li"
+                                key={ticket.ticketCode}
+                                delay={revealDelay(index, 120)}
+                            >
                                 <TicketCard item={ticket} />
-                            </li>
+                            </Reveal>
                         ))}
                     </ul>
                 )}
 
                 {wallet && wallet.pagination.total > items.length ? (
-                    <p className="mt-6 text-center text-xs text-ink-500">
+                    <Reveal
+                        as="p"
+                        delay={120}
+                        className="mt-6 text-center text-xs text-ink-500"
+                    >
                         Menampilkan {items.length} dari {wallet.pagination.total}{" "}
                         tiket. Buka salah satu pesanan untuk melihat sisanya.
-                    </p>
+                    </Reveal>
                 ) : null}
             </div>
         </SiteShell>

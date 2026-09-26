@@ -7,13 +7,15 @@ import { getSession, signIn } from "next-auth/react";
 import toast from "react-hot-toast";
 
 import AuthError from "@/components/auth/AuthError";
-import AuthShell from "@/components/auth/AuthShell";
+import LoginShell from "@/components/auth/LoginShell";
 import GoogleMark from "@/components/auth/GoogleMark";
 import PasswordField from "@/components/auth/PasswordField";
 import RoleSelector from "@/components/auth/RoleSelector";
 import Brand from "@/components/Brand";
 import { classifySignInFailure } from "@/lib/auth/sign-in-failure";
 import { postLoginDestination } from "@/lib/auth/redirect";
+// Type-only: erased at build time, so this client component pulls in no server code.
+import type { ApplicationBranding } from "@/lib/app-settings";
 import {
     DEFAULT_LOGIN_ROLE_INTENT,
     LOGIN_ROLE_INTENT_META,
@@ -102,7 +104,16 @@ function readCallbackUrl(): string | null {
     return new URLSearchParams(window.location.search).get("callbackUrl");
 }
 
-export default function LoginForm() {
+export default function LoginForm({
+    branding,
+}: {
+    /**
+     * The DB-resolved application branding, read SERVER-SIDE by `app/login/page.tsx` and
+     * handed down. Passing it in (rather than fetching on the client) is what keeps the
+     * configured logo in the first painted frame instead of appearing after a client fetch.
+     */
+    branding: ApplicationBranding;
+}) {
     const router = useRouter();
 
     const [identifier, setIdentifier] = useState("");
@@ -296,7 +307,8 @@ export default function LoginForm() {
     }
 
     return (
-        <AuthShell
+        <LoginShell
+            branding={branding}
             footer={
                 <>
                     Belum punya akun?{" "}
@@ -309,12 +321,21 @@ export default function LoginForm() {
                 </>
             }
         >
-            <header className="mb-7 text-center">
-                <div className="mb-5 flex justify-center">
-                    <Brand />
+            <header className="mb-8 text-center lg:text-left">
+                {/*
+                 * Mobile only: on `lg` and up the brand panel beside the form already renders
+                 * the lockup, so showing it here too would be a second mark on one screen.
+                 * `LoginShell` owns the desktop panel; the shared `<Brand />` is still the only
+                 * thing that draws the mark (asserted by `__tests__/ui-consolidation`).
+                 */}
+                <div className="mb-6 flex justify-center lg:hidden">
+                    <Brand
+                        logoSrc={branding.logoUrl}
+                        name={branding.platformName}
+                    />
                 </div>
 
-                <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
+                <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-[1.75rem]">
                     Masuk ke akun Anda
                 </h1>
 
@@ -372,7 +393,7 @@ export default function LoginForm() {
                             autoFocus
                             // Not `aria-invalid`: the message this form shows is uniform, so
                             // pointing at a field would imply the other one was fine.
-                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
                         />
                     </div>
                 </div>
@@ -386,12 +407,50 @@ export default function LoginForm() {
                     autoComplete="current-password"
                 />
 
+                {/*
+                 * The loading state is a SPINNER, not just a dimmed label: a disabled button
+                 * with unchanged text is the classic "did my click register?" dead end. The
+                 * spinner is a single inline SVG with Tailwind's built-in `animate-spin`, so no
+                 * animation dependency is introduced (see the brief's constraint). `aria-busy`
+                 * tells assistive tech the control is working, and the label stays readable
+                 * while it runs. The sign-in itself is unchanged — this is the same `loading`
+                 * flag the handler already sets.
+                 */}
                 <button
                     type="submit"
                     disabled={loading}
-                    className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-busy={loading}
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 font-semibold text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                    {loading ? "Memproses…" : "Masuk"}
+                    {loading ? (
+                        <>
+                            <svg
+                                aria-hidden
+                                viewBox="0 0 24 24"
+                                className="h-4 w-4 animate-spin"
+                            >
+                                <circle
+                                    cx="12"
+                                    cy="12"
+                                    r="9"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    opacity="0.25"
+                                />
+                                <path
+                                    d="M21 12a9 9 0 0 0-9-9"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                />
+                            </svg>
+                            Memproses…
+                        </>
+                    ) : (
+                        "Masuk"
+                    )}
                 </button>
 
                 <div className="flex items-center pt-1">
@@ -406,7 +465,7 @@ export default function LoginForm() {
                     type="button"
                     onClick={handleGoogleLogin}
                     disabled={loading}
-                    className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white font-semibold text-ink-800 transition hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white font-semibold text-ink-800 shadow-sm transition hover:border-ink-300 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {/* Inline, so `img-src` needs no third-party origin on the sign-in page.
                         See `components/auth/GoogleMark.tsx`. */}
@@ -414,6 +473,6 @@ export default function LoginForm() {
                     Lanjutkan dengan Google
                 </button>
             </form>
-        </AuthShell>
+        </LoginShell>
     );
 }

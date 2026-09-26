@@ -9,7 +9,7 @@ import { getSession, signIn, signOut } from "next-auth/react";
 import toast from "react-hot-toast";
 
 import AuthError from "@/components/auth/AuthError";
-import AuthShell from "@/components/auth/AuthShell";
+import LoginShell from "@/components/auth/LoginShell";
 import GoogleMark from "@/components/auth/GoogleMark";
 import PasswordField from "@/components/auth/PasswordField";
 import Brand from "@/components/Brand";
@@ -18,6 +18,8 @@ import {
     registerSchema,
     type RegisterInput,
 } from "@/lib/validations/register";
+// Type-only: erased at build time, so this client component pulls in no server code.
+import type { ApplicationBranding } from "@/lib/app-settings";
 
 /**
  * ==========================================
@@ -58,7 +60,16 @@ import {
 /** Where a freshly created CUSTOMER lands. Their own surface, and gated server-side. */
 const POST_REGISTER_PATH = "/ticketing/tickets";
 
-export default function RegisterForm() {
+export default function RegisterForm({
+    branding,
+}: {
+    /**
+     * The DB-resolved application branding, read SERVER-SIDE by `app/register/page.tsx` and
+     * handed down. The sign-up screen therefore paints the SAME configured logo and name as
+     * the sign-in screen, in the first HTML frame — no client fetch, no blank-logo flash.
+     */
+    branding: ApplicationBranding;
+}) {
     const router = useRouter();
 
     const [alreadyLoggedIn, setAlreadyLoggedIn] = useState(false);
@@ -175,10 +186,14 @@ export default function RegisterForm() {
      * ========================================== */
     if (alreadyLoggedIn) {
         return (
-            <AuthShell backHref="/" backLabel="Kembali ke Beranda">
+            <LoginShell branding={branding} backHref="/" backLabel="Kembali ke Beranda">
                 <div className="text-center">
-                    <div className="mb-5 flex justify-center">
-                        <Brand />
+                    {/* Mobile only: on `lg` the brand panel beside the form renders the lockup. */}
+                    <div className="mb-6 flex justify-center lg:hidden">
+                        <Brand
+                            logoSrc={branding.logoUrl}
+                            name={branding.platformName}
+                        />
                     </div>
 
                     <h1 className="text-2xl font-extrabold tracking-tight text-ink-900">
@@ -195,20 +210,20 @@ export default function RegisterForm() {
                             type="button"
                             onClick={handleLogout}
                             disabled={loading}
-                            className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-semibold text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
                         >
                             {loading ? "Keluar…" : "Keluar dari akun ini"}
                         </button>
 
                         <Link
                             href={POST_REGISTER_PATH}
-                            className="flex h-12 w-full items-center justify-center rounded-xl border border-ink-200 bg-white font-semibold text-ink-700 transition hover:bg-ink-50"
+                            className="flex h-12 w-full items-center justify-center rounded-xl border border-ink-200 bg-white font-semibold text-ink-700 shadow-sm transition hover:border-ink-300 hover:bg-ink-50"
                         >
                             Lanjut ke tiket saya
                         </Link>
                     </div>
                 </div>
-            </AuthShell>
+            </LoginShell>
         );
     }
 
@@ -216,25 +231,30 @@ export default function RegisterForm() {
      * THE FORM
      * ========================================== */
     return (
-        <AuthShell
+        <LoginShell
+            branding={branding}
             footer={
                 <>
                     Sudah punya akun?{" "}
                     <Link
                         href="/login"
-                        className="font-bold text-brand-700 hover:underline"
+                        className="font-semibold text-brand-700 hover:underline"
                     >
                         Masuk
                     </Link>
                 </>
             }
         >
-            <header className="mb-7 text-center">
-                <div className="mb-5 flex justify-center">
-                    <Brand />
+            <header className="mb-8 text-center lg:text-left">
+                {/* Mobile only: on `lg` the brand panel beside the form renders the lockup. */}
+                <div className="mb-6 flex justify-center lg:hidden">
+                    <Brand
+                        logoSrc={branding.logoUrl}
+                        name={branding.platformName}
+                    />
                 </div>
 
-                <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-3xl">
+                <h1 className="text-2xl font-extrabold tracking-tight text-ink-900 sm:text-[1.75rem]">
                     Buat akun pembeli
                 </h1>
 
@@ -283,7 +303,7 @@ export default function RegisterForm() {
                             aria-invalid={errors.name ? true : undefined}
                             aria-describedby={errors.name ? "register-name-error" : undefined}
                             {...field("name")}
-                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
                         />
                     </div>
 
@@ -334,7 +354,7 @@ export default function RegisterForm() {
                                 errors.email ? "register-email-error" : "register-identifier-hint"
                             }
                             {...field("email")}
-                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
                         />
                     </div>
 
@@ -390,7 +410,7 @@ export default function RegisterForm() {
                             aria-invalid={errors.phone ? true : undefined}
                             aria-describedby={errors.phone ? "register-phone-error" : undefined}
                             {...field("phone")}
-                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            className="h-12 w-full rounded-xl border border-ink-200 bg-white pr-4 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
                         />
                     </div>
 
@@ -435,9 +455,40 @@ export default function RegisterForm() {
                 <button
                     type="submit"
                     disabled={loading}
-                    className="flex h-12 w-full items-center justify-center rounded-xl bg-brand-600 font-bold text-white transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-busy={loading}
+                    className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-600 font-semibold text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                    {loading ? "Memproses…" : "Buat akun"}
+                    {loading ? (
+                        <>
+                            {/* Same inline spinner as the sign-in button, so the two screens
+                                share one loading language. No animation dependency. */}
+                            <svg
+                                aria-hidden
+                                viewBox="0 0 24 24"
+                                className="h-4 w-4 animate-spin"
+                            >
+                                <circle
+                                    cx="12"
+                                    cy="12"
+                                    r="9"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    opacity="0.25"
+                                />
+                                <path
+                                    d="M21 12a9 9 0 0 0-9-9"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="3"
+                                    strokeLinecap="round"
+                                />
+                            </svg>
+                            Memproses…
+                        </>
+                    ) : (
+                        "Buat akun"
+                    )}
                 </button>
 
                 <div className="flex items-center pt-1">
@@ -452,7 +503,7 @@ export default function RegisterForm() {
                     type="button"
                     onClick={() => signIn("google", { callbackUrl: POST_REGISTER_PATH })}
                     disabled={loading}
-                    className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white font-semibold text-ink-800 transition hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="flex h-12 w-full items-center justify-center gap-3 rounded-xl border border-ink-200 bg-white font-semibold text-ink-800 shadow-sm transition hover:border-ink-300 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                     {/* Inline, so `img-src` needs no third-party origin on the sign-up page.
                         See `components/auth/GoogleMark.tsx`. */}
@@ -465,7 +516,7 @@ export default function RegisterForm() {
                     privasi TinggalKlik.Co.
                 </p>
             </form>
-        </AuthShell>
+        </LoginShell>
     );
 }
 

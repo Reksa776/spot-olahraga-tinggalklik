@@ -609,3 +609,186 @@ html.dark {
   --chart-4: #64748b;
   --chart-5: #475569;
 }
+
+/*
+ * ==============================================================================
+ * LOGIN EXPERIENCE (PHASE 41) — ADDITIVE PRESENTATION ONLY
+ * ==============================================================================
+ *
+ * Three plain classes used by exactly one surface (`components/auth/LoginShell.tsx`
+ * and `components/auth/LoginForm.tsx`). They are declared as plain CSS rather than
+ * `@theme` tokens or `@utility` definitions on purpose:
+ *
+ *   • they encode no colour of their own — the two washes below only mix the EXISTING
+ *     `brand` and `ink` hues at low alpha, so the one identity contract is untouched;
+ *   • they are deliberately NOT new Tailwind tokens, so nothing else in the application
+ *     can pick them up and drift;
+ *   • keeping them out of `@theme` means the accent/dark attribute palettes in the
+ *     dashboard block above continue to be the only thing that repaints on theme change.
+ *
+ * `login-enter` is a CSS-only entrance (opacity + 8px rise). It is intentionally tiny: the
+ * brief asks for a subtle page entrance, not a transition library, and no dependency is
+ * added. It is neutralised under `prefers-reduced-motion` so the form is usable for anyone
+ * who has asked their operating system not to animate.
+ */
+@keyframes login-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.login-enter {
+  animation: login-enter 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-enter {
+    animation: none;
+  }
+}
+
+/*
+ * The brand panel's two restrained decorations. One soft brand glow anchored top-left and a
+ * cool ink counter-glow bottom-right — not a multi-stop gradient stack, which the brief names
+ * as an "AI UI" tell. Both sit behind the copy and carry no meaning, so the markup marks
+ * them `aria-hidden`.
+ */
+.login-panel-glow {
+  background-image:
+    radial-gradient(55% 50% at 12% 10%, rgb(249 99 17 / 0.22) 0%, transparent 62%),
+    radial-gradient(50% 50% at 100% 100%, rgb(74 92 133 / 0.34) 0%, transparent 66%);
+}
+
+/*
+ * A faint measured grid, masked so it fades out before it reaches the copy. The mask, not a
+ * lower opacity, is what keeps the edge from reading as a hard seam.
+ */
+.login-panel-grid {
+  background-image:
+    linear-gradient(rgb(255 255 255 / 0.55) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.55) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(120% 100% at 0% 0%, #000 0%, transparent 72%);
+}
+
+/*
+ * ==============================================================================
+ * CUSTOMER PAGE ENTRANCE (PHASE 42) — ADDITIVE MOTION ONLY
+ * ==============================================================================
+ *
+ * ONE CSS-only entrance system for the four customer-facing pages (/, /events,
+ * /ticketing/tickets, /ticketing/orders). It is driven by two data attributes and
+ * zero JavaScript:
+ *
+ *   [data-reveal]         — a TIME-based entrance that runs on first paint. Used for
+ *                           above-the-fold blocks (hero copy, page headers, filters)
+ *                           and for the staggered card lists.
+ *   [data-reveal-scroll]  — a SCROLL-DRIVEN entrance (`animation-timeline: view()`),
+ *                           used for the landing page's sections below the fold. Where
+ *                           the browser does not support view timelines the attribute
+ *                           has no rule at all, so the content is simply visible.
+ *
+ * WHY CSS AND NOT A JAVASCRIPT OBSERVER
+ *   • No client bundle, so a server page stays a server page.
+ *   • No hydration mismatch: the attributes and any `animation-delay` are rendered
+ *     identically on the server and the client.
+ *   • Content can never be stranded hidden by a failed script — the animation is
+ *     purely declarative and the no-support path renders the element visible.
+ *
+ * WHY THE STAGGER IS A PLAIN `animation-delay`
+ *   `components/ui/Reveal.tsx` writes `animation-delay: <n>ms` inline. It is a
+ *   presentational number (never derived from data), and it is CAPPED in that module so a
+ *   hundred cards cannot queue a hundred delays.
+ *
+ * EVERYTHING ANIMATES ONLY `opacity` AND `transform` — compositor-only properties, so no
+ * layout or paint is triggered per frame, no layout shift occurs, and no viewport-height
+ * assumption is made anywhere.
+ */
+:root {
+  --tk-reveal-duration: 520ms;
+  --tk-reveal-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* The rise is deliberately small: enough to read as "settling", not enough to move the page. */
+  --tk-reveal-shift: 12px;
+}
+
+@keyframes tk-reveal-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--tk-reveal-shift), 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tk-reveal-scale {
+  from {
+    opacity: 0;
+    transform: translate3d(0, var(--tk-reveal-shift), 0) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * `both` fill: the element holds the FROM state during its delay (which is how the stagger
+ * reads) and the TO state after it ends. Because the unit is a pure CSS animation it also
+ * completes for a visitor who never runs a script, and the browser honours
+ * `prefers-reduced-motion` below regardless.
+ */
+[data-reveal] {
+  animation: tk-reveal-up var(--tk-reveal-duration) var(--tk-reveal-ease) both;
+}
+
+[data-reveal="scale"] {
+  animation-name: tk-reveal-scale;
+}
+
+/*
+ * Scroll-driven variant. The default rule keeps the element fully visible, so the
+ * `@supports` block below is the ONLY thing that can hide it — and only in a browser that
+ * can also reveal it by scrolling.
+ */
+[data-reveal-scroll] {
+  opacity: 1;
+}
+
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    [data-reveal-scroll] {
+      animation: tk-reveal-up var(--tk-reveal-duration) var(--tk-reveal-ease) both;
+      animation-timeline: view();
+      /* Completes a little after the element's top edge crosses the viewport bottom. */
+      animation-range: entry 0% entry 55%;
+    }
+
+    [data-reveal-scroll="scale"] {
+      animation-name: tk-reveal-scale;
+    }
+  }
+}
+
+/*
+ * REDUCED MOTION — the one rule the whole system depends on.
+ *
+ * Both attributes are neutralised, and `opacity`/`transform` are forced to their resting
+ * values, so content is visible immediately and remains fully usable. `!important` is used
+ * because it must beat both the `both` fill and an inline `animation-delay`; this is the
+ * documented exception where a user preference has to win over a specific rule.
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal],
+  [data-reveal-scroll] {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

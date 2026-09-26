@@ -138,12 +138,38 @@ export const getApplicationSettings = cache(
     }
 );
 
-/** Just the branding half — the public chrome and the dashboard lockup need this. */
+/**
+ * The branding half, as ONE shape every branding consumer shares.
+ *
+ * It carries BOTH the configured logo (`PlatformSetting.logoUrl`) and the configured
+ * application name (`PlatformSetting.platformName`). The name was already modelled and
+ * read by `getApplicationSettings`; this type is what stops the public lockup from
+ * hardcoding the wordmark while the database holds a different one.
+ */
+export type ApplicationBranding = {
+    /** The resolved logo URL, or `null` when none is configured (or the asset is gone). */
+    logoUrl: string | null;
+    /** The configured platform name, already resolved to the built-in default. */
+    platformName: string;
+};
+
+/**
+ * Just the branding half — the public chrome, the auth screens and the dashboard lockup
+ * need this.
+ *
+ * `platformName` is ADDITIVE: consumers that only wanted `logoUrl` keep working, and
+ * `PlatformSetting.platformName` gains the reader the lockup always should have had. The
+ * name is never fetched separately — it comes from the same request-cached
+ * `getApplicationSettings()` query the logo already does.
+ */
 export const getApplicationBranding = cache(
-    async (): Promise<{ logoUrl: string | null }> => {
+    async (): Promise<ApplicationBranding> => {
         const settings = await getApplicationSettings();
 
-        return { logoUrl: settings.logoUrl };
+        return {
+            logoUrl: settings.logoUrl,
+            platformName: settings.platformName,
+        };
     }
 );
 

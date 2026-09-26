@@ -130,8 +130,8 @@ export function PasswordField({
                     aria-describedby={describedBy}
                     className={
                         error
-                            ? "h-12 w-full rounded-xl border border-ink-300 bg-white pr-12 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-600 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
-                            : "h-12 w-full rounded-xl border border-ink-200 bg-white pr-12 pl-11 text-[15px] text-ink-900 placeholder:text-ink-400 focus:border-brand-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            ? "h-12 w-full rounded-xl border border-ink-300 bg-white pr-12 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-600 focus:ring-4 focus:ring-brand-600/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
+                            : "h-12 w-full rounded-xl border border-ink-200 bg-white pr-12 pl-11 text-[15px] text-ink-900 transition-[border-color,box-shadow] duration-150 placeholder:text-ink-400 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 focus:outline-none disabled:cursor-not-allowed disabled:bg-ink-50"
                     }
                 />
 

@@ -5,6 +5,7 @@ import CatalogFilters from "@/components/ticketing/CatalogFilters";
 import CatalogPagination from "@/components/ticketing/CatalogPagination";
 import EmptyState from "@/components/ticketing/EmptyState";
 import SiteShell from "@/components/ticketing/SiteShell";
+import Reveal, { revealDelay } from "@/components/ui/Reveal";
 import { parseOrThrow } from "@/lib/api/validation";
 import { getServerOrigin } from "@/lib/app-origin.server";
 import { listPublicEvents } from "@/lib/events/catalog";
@@ -96,7 +97,7 @@ export default async function EventsCatalogPage({
     return (
         <SiteShell>
             <div className="border-b border-ink-100 bg-ink-50/50">
-                <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
+                <Reveal className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-10">
                     <nav aria-label="Breadcrumb" className="text-xs text-ink-500">
                         <Link
                             href="/"
@@ -119,27 +120,33 @@ export default async function EventsCatalogPage({
                         Cari berdasarkan cabang olahraga, kota, tanggal, dan harga.
                         Setiap hasil bisa dibagikan lewat tautan.
                     </p>
-                </div>
+                </Reveal>
             </div>
 
             <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-                <CatalogFilters
-                    params={hrefParams}
-                    sports={sports.items}
-                    total={result.pagination.total}
-                />
+                <Reveal delay={80}>
+                    <CatalogFilters
+                        params={hrefParams}
+                        sports={sports.items}
+                        total={result.pagination.total}
+                    />
+                </Reveal>
 
                 {query.q ? (
-                    <p className="mt-6 text-sm text-ink-500">
+                    <Reveal
+                        as="p"
+                        delay={120}
+                        className="mt-6 text-sm text-ink-500"
+                    >
                         Hasil untuk{" "}
                         <span className="font-bold text-ink-900">
                             “{query.q}”
                         </span>
-                    </p>
+                    </Reveal>
                 ) : null}
 
                 {result.items.length === 0 ? (
-                    <div className="mt-6">
+                    <Reveal delay={120} className="mt-6">
                         <EmptyState
                             title={
                                 hasFilters
@@ -162,22 +169,28 @@ export default async function EventsCatalogPage({
                                     : { href: "/dashboard/events", label: "Buat event" }
                             }
                         />
-                    </div>
+                    </Reveal>
                 ) : (
                     <ul className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                        {result.items.map((event) => (
-                            <li key={event.slug}>
+                        {result.items.map((event, index) => (
+                            <Reveal
+                                as="li"
+                                key={event.slug}
+                                delay={revealDelay(index, 120)}
+                            >
                                 <EventCard event={event} />
-                            </li>
+                            </Reveal>
                         ))}
                     </ul>
                 )}
 
-                <CatalogPagination
-                    params={hrefParams}
-                    page={result.pagination.page}
-                    totalPages={result.pagination.totalPages}
-                />
+                <Reveal scroll>
+                    <CatalogPagination
+                        params={hrefParams}
+                        page={result.pagination.page}
+                        totalPages={result.pagination.totalPages}
+                    />
+                </Reveal>
             </div>
         </SiteShell>
     );

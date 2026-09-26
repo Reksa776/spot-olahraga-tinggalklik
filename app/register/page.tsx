@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
 import RegisterForm from "@/components/auth/RegisterForm";
+import { getApplicationBranding } from "@/lib/app-settings";
 import { decideSessionGate, readCallbackUrlParam } from "@/lib/auth/session-gate";
 import { getAuthzScope } from "@/lib/authz";
 
@@ -10,8 +11,13 @@ import { getAuthzScope } from "@/lib/authz";
  * /register — PUBLIC CUSTOMER REGISTRATION
  * ==========================================
  *
- * A thin wrapper, exactly like `/login`, and a SERVER component: the layout lives in
- * `AuthShell` and the brand lockup is rendered by the form, so there is one place to change.
+ * A thin wrapper, exactly like `/login`, and a SERVER component: `RegisterForm` owns the form
+ * and the `<Brand />` lockup, while `LoginShell` owns the frame, so there is one place to change.
+ *
+ * ── BRANDING IS RESOLVED HERE, SERVER-SIDE ──────────────────────────────────────
+ * `getApplicationBranding()` reads `PlatformSetting.logoUrl` / `.platformName` and the result
+ * is handed to the form as a prop, so the register screen renders the SAME configured branding
+ * as the sign-in screen, in the server HTML, with no client-side fetch.
  *
  * ── WHAT THIS PAGE CANNOT DO ────────────────────────────────────────────────────
  * It creates CUSTOMER accounts and nothing else. There is no role field, no organizer field
@@ -46,11 +52,17 @@ export default async function RegisterPage({
 }) {
     const callbackUrl = readCallbackUrlParam((await searchParams).callbackUrl);
 
-    const decision = decideSessionGate(await getAuthzScope(), callbackUrl);
+    // Overlapped with the scope read, exactly as on /login: no serial branding latency.
+    const [scope, branding] = await Promise.all([
+        getAuthzScope(),
+        getApplicationBranding(),
+    ]);
+
+    const decision = decideSessionGate(scope, callbackUrl);
 
     if (decision.action === "redirect") {
         redirect(decision.to);
     }
 
-    return <RegisterForm />;
+    return <RegisterForm branding={branding} />;
 }
