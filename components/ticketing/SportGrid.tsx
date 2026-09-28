@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import Reveal, { revealDelay } from "@/components/ui/Reveal";
 import { sportLabel, sportTint } from "@/lib/ticketing/ui/sport-tint";
 
 export type SportOption = {
@@ -71,19 +72,43 @@ export default function SportGrid({
         );
     }
 
+    /*
+     * The TILE variant is the landing page's grid, and only it is staggered. The CHIP variant above
+     * is the filter bar on `/events` — a horizontally scrollable row of already-active controls,
+     * where a per-item entrance would animate the filter you are about to click and would fight the
+     * snap scroller. So the animation is scoped to the branch that needs it rather than to the
+     * component, which is also why `/events` is untouched by this pass.
+     *
+     * The tiles use the same `card` step the event rows do — a 16px rise and a 0.98 scale, 70ms
+     * apart — so the two grids on the page clearly belong to one system. The tile is revealed as a
+     * WHOLE: its tint chip and its label are the card, not three animated parts of one.
+     */
     return (
         <ul
             id={id}
             className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
         >
-            {sports.map((sport) => {
+            {sports.map((sport, index) => {
                 const count = counts?.[sport.slug];
 
                 return (
-                    <li key={sport.id}>
+                    <Reveal
+                        as="li"
+                        key={sport.id}
+                        scroll
+                        variant="card"
+                        delay={revealDelay(index)}
+                    >
                         <Link
                             href={`/events?sport=${encodeURIComponent(sport.slug)}`}
-                            className="group flex h-full flex-col items-start gap-2.5 rounded-xl border border-ink-100 bg-white p-4 transition hover:border-ink-200 hover:bg-ink-50/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                            /*
+                             * `motion-safe:` on the hover lift, not a plain one: a visitor who asked
+                             * for reduced motion gets the colour/border change (which communicates the
+                             * hover) and NO movement at all, without needing a rule in the reduce
+                             * block for it. The lift is 2px — the design deliberately removed the old
+                             * heavy card raise, and 2px plus a border tint is the subtle version of it.
+                             */
+                            className="group flex h-full flex-col items-start gap-2.5 rounded-xl border border-ink-100 bg-white p-4 transition hover:border-ink-200 hover:bg-ink-50/40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 motion-safe:hover:-translate-y-0.5"
                         >
                             <span
                                 aria-hidden
@@ -102,7 +127,7 @@ export default function SportGrid({
                                     : "Lihat event"}
                             </span>
                         </Link>
-                    </li>
+                    </Reveal>
                 );
             })}
         </ul>

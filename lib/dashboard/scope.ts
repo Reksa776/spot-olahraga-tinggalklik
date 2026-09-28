@@ -1,3 +1,5 @@
+import type { PlatformRole } from "@prisma/client";
+
 import { AppError } from "@/lib/api/errors";
 import {
     PERMISSIONS,
@@ -225,6 +227,50 @@ export function canEnterDashboard(
         hasPlatformSurface ||
         capabilities.hasActivePicProfile ||
         capabilities.hasPlatformRoleEntry
+    );
+}
+
+/**
+ * Should the PUBLIC navigation offer a "Dashboard" item to this account?
+ *
+ * ── IT IS THE PLATFORM-ROLE AXIS OF THE ENTRY GATE, REUSED ─────────────────────
+ * The answer is exactly `hasPlatformRoleEntry` — the same field `canEnterDashboard` admits a
+ * PLAIN MANAGER or a PENDING PIC on. It is derived from the authoritative
+ * `User.platformRole`, so nothing here hardcodes a role: every real platform role (ADMIN,
+ * MANAGER, PIC) qualifies and a CUSTOMER does not, and a future role is handled by the column
+ * that already governs it. `__tests__/auth-flow/dashboard-navigation.test.ts` pins that
+ * agreement against `canEnterDashboard` role by role, so the navbar cannot start disagreeing
+ * with the gate it advertises.
+ *
+ * ── WHY IT TAKES A ROLE RATHER THAN THE CAPABILITY SET ─────────────────────────
+ * A capability set needs a resolved `AuthzScope`, i.e. a `User` row plus the caller's
+ * memberships and grants. The public header is on EVERY discovery page and renders for every
+ * visitor; `components/ticketing/SiteHeader.tsx` documents that it reads the session and adds
+ * no query. The platform role is already in that session (mirrored from the database by
+ * `auth.ts`, refreshed under the approved D-48 bound, and documented as the value for cheap
+ * routing/UI gating), so this helper costs the header nothing.
+ *
+ * The consequence is a deliberate, documented asymmetry: an account whose ENTRY right comes
+ * only from a tenant membership or an ACTIVE PICProfile — both unreachable through the
+ * application's own provisioning, which assigns a platform role alongside them — can still
+ * open `/dashboard` and is simply not advertised it. That is a courtesy gap, never an access
+ * one.
+ *
+ * ── UX ONLY, EXACTLY LIKE THE MENU ────────────────────────────────────────────
+ * Hiding the item protects nothing: `/dashboard` is behind `canEnterDashboard` in
+ * `app/dashboard/layout.tsx` and every page and service under it re-decides its own read. An
+ * anonymous visitor who types the URL gets the login page, a CUSTOMER gets the access-denied
+ * panel, and neither outcome changes by a single row because a link was rendered or not.
+ */
+export function shouldShowDashboardNav(
+    platformRole: PlatformRole | null | undefined
+): boolean {
+    // Absence is a refusal, matching `computeDashboardCapabilities` resolving a null column to
+    // CUSTOMER: an unknown or missing role is hidden rather than advertised (fail closed).
+    return (
+        platformRole !== null &&
+        platformRole !== undefined &&
+        platformRole !== "CUSTOMER"
     );
 }
 

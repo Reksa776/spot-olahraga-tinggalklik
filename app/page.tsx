@@ -69,6 +69,12 @@ export async function generateMetadata(): Promise<Metadata> {
 
 const SECTION_LIMIT = 8;
 
+/**
+ * When the empty state arrives, in milliseconds. One step behind the hero's cascade, which ends at
+ * 300ms, so the page reads as one sequence arriving rather than as two unrelated ones.
+ */
+const EMPTY_STATE_DELAY_MS = 360;
+
 export default async function DiscoveryHomePage() {
     const origin = await getServerOrigin();
 
@@ -105,9 +111,26 @@ export default async function DiscoveryHomePage() {
 
             <div className="mx-auto max-w-7xl space-y-14 px-4 py-12 sm:px-6 lg:px-8 lg:py-16">
                 {totalEvents === 0 ? (
+                    /*
+                     * The empty state is the page's smallest event — one centred card with no grid
+                     * under it — so it takes the subtle `up` step rather than the `section`
+                     * treatment the four real sections use. That difference is the point: a
+                     * fallback state should not arrive with more force than the content it is
+                     * standing in for.
+                     *
+                     * It is the one block below the hero that reveals ON PAINT rather than on
+                     * scroll, and the delay is why: this card sits inside the first screen at every
+                     * viewport (its top lands between 75% and 90% of the window height), so the
+                     * observer would classify it as "already on screen" and leave it to appear
+                     * without motion — which is exactly what a fallback state must not do, since
+                     * "nothing is on sale" is the message the visitor has to receive. Revealing it
+                     * on the clock, one step behind the hero's cascade, gives it the page's quietest
+                     * entrance and no way to be missed.
+                     */
                     <Reveal
                         as="section"
-                        scroll
+                        variant="up"
+                        delay={EMPTY_STATE_DELAY_MS}
                         className="rounded-xl border border-ink-100 bg-white px-6 py-16 text-center"
                     >
                         <h2 className="text-xl font-extrabold text-ink-900">
@@ -125,7 +148,7 @@ export default async function DiscoveryHomePage() {
                         </Link>
                     </Reveal>
                 ) : (
-                    <Reveal as="section" scroll variant="scale" aria-labelledby="terdekat">
+                    <Reveal as="section" scroll variant="section" aria-labelledby="terdekat">
                         <SectionHeader
                             id="terdekat"
                             title="Event terdekat"
@@ -136,7 +159,12 @@ export default async function DiscoveryHomePage() {
                     </Reveal>
                 )}
 
-                <Reveal as="section" scroll aria-labelledby="cabang-olahraga-heading">
+                <Reveal
+                    as="section"
+                    scroll
+                    variant="section"
+                    aria-labelledby="cabang-olahraga-heading"
+                >
                     <SectionHeader
                         id="cabang-olahraga-heading"
                         title="Cabang olahraga"
@@ -152,7 +180,7 @@ export default async function DiscoveryHomePage() {
                 </Reveal>
 
                 {free.items.length > 0 ? (
-                    <Reveal as="section" scroll aria-labelledby="gratis">
+                    <Reveal as="section" scroll variant="section" aria-labelledby="gratis">
                         <SectionHeader
                             id="gratis"
                             title="Ada tiket gratis"
@@ -164,7 +192,7 @@ export default async function DiscoveryHomePage() {
                 ) : null}
 
                 {newest.items.length > 0 ? (
-                    <Reveal as="section" scroll aria-labelledby="baru">
+                    <Reveal as="section" scroll variant="section" aria-labelledby="baru">
                         <SectionHeader
                             id="baru"
                             title="Baru ditambahkan"

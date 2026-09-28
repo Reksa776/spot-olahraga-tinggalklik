@@ -681,24 +681,41 @@ html.dark {
  * CUSTOMER PAGE ENTRANCE (PHASE 42) — ADDITIVE MOTION ONLY
  * ==============================================================================
  *
- * ONE CSS-only entrance system for the four customer-facing pages (/, /events,
- * /ticketing/tickets, /ticketing/orders). It is driven by two data attributes and
- * zero JavaScript:
+ * ONE entrance system for the four customer-facing pages (/, /events, /ticketing/tickets,
+ * /ticketing/orders). It has two modes, both driven by data attributes, and the stagger is
+ * always a plain CSS `animation-delay`:
  *
- *   [data-reveal]         — a TIME-based entrance that runs on first paint. Used for
- *                           above-the-fold blocks (hero copy, page headers, filters)
- *                           and for the staggered card lists.
- *   [data-reveal-scroll]  — a SCROLL-DRIVEN entrance (`animation-timeline: view()`),
- *                           used for the landing page's sections below the fold. Where
- *                           the browser does not support view timelines the attribute
- *                           has no rule at all, so the content is simply visible.
+ *   [data-reveal]         — the PAINT-TIME mode: the animation runs on first paint, on its
+ *                           own clock. Used above the fold (hero copy, page headers,
+ *                           filters), where "entering the viewport" has already happened.
+ *   [data-reveal-scroll]  — the ENTRY-TRIGGERED mode, for everything below the fold. It has
+ *                           two implementations of the same entrance:
  *
- * WHY CSS AND NOT A JAVASCRIPT OBSERVER
- *   • No client bundle, so a server page stays a server page.
- *   • No hydration mismatch: the attributes and any `animation-delay` are rendered
- *     identically on the server and the client.
- *   • Content can never be stranded hidden by a failed script — the animation is
- *     purely declarative and the no-support path renders the element visible.
+ *                             2a. WITHOUT JavaScript (`animation-timeline: view()`): the same
+ *                                 entrance with its progress tied to the scroll position.
+ *                                 Harder to see as motion, but it needs no bundle and cannot
+ *                                 hide content.
+ *                             2b. WITH JavaScript (`components/ui/RevealObserver.tsx`): one
+ *                                 shared IntersectionObserver arms the page and creates each
+ *                                 element's entrance once, on the clock, as it scrolls in.
+ *                                 That is what runs in practice — and arming removes 2a
+ *                                 outright rather than overriding it.
+ *
+ * WHY A SHARED OBSERVER *AND* CSS, RATHER THAN ONE OR THE OTHER
+ *   • A scroll-linked reveal is effectively invisible on anything short: its progress IS
+ *     scroll distance, so a 40px heading completes its entire entry inside one wheel notch
+ *     and a tall section moves ~0.05px per scrolled pixel. A clock-driven entrance is the
+ *     same 500-650ms for every visitor, at whatever speed they scroll.
+ *   • ONE observer instance watches every element — that is what the API is for. There is no
+ *     scroll listener, no requestAnimationFrame loop and no observer per element, and the CSS
+ *     still animates (visibly) if the bundle never runs.
+ *   • Content can never be stranded hidden: an element is only hidden once the observer is
+ *     proven alive, anything already on screen is marked static instead of animated, and the
+ *     reduce-motion block at the end of this section outranks every rule here.
+ *   • NO ANIMATION IS EVER PAUSED, and no live `animation-timeline` is ever reassigned. Both
+ *     of those look equivalent to "hold it, then start it" and are not: un-pausing an
+ *     animation whose timeline has just changed makes Chrome resolve the start time from the
+ *     OLD, scroll-linked progress. See 2b — that single detail is why this section exists.
  *
  * WHY THE STAGGER IS A PLAIN `animation-delay`
  *   `components/ui/Reveal.tsx` writes `animation-delay: <n>ms` inline. It is a
@@ -714,6 +731,72 @@ html.dark {
   --tk-reveal-ease: cubic-bezier(0.22, 1, 0.36, 1);
   /* The rise is deliberately small: enough to read as "settling", not enough to move the page. */
   --tk-reveal-shift: 12px;
+
+  /*
+   * THE OTHER RHYTHM STEPS. Every one is `transform`-only and small by design; together they give
+   * the page a CADENCE instead of one uniform movement, and the cadence is reviewable here rather
+   * than implied by which step each call site happened to pick.
+   *
+   *   SECTION — the block a visitor has scrolled to. The biggest treatment below the hero, and the
+   *             slowest, so a section reads as ARRIVING rather than as a slideshow of parts.
+   *   CARD    — an event card or a sport tile. Smaller and quicker than its section, because the
+   *             row is what should read as a group: the stagger, not the distance, is the effect.
+   *   QUIET   — the footer. The least movement on the page, deliberately: it is the last thing a
+   *             visitor reads, not the last thing that should compete for attention.
+   */
+  --tk-reveal-shift-section: 18px;
+  --tk-reveal-shift-card: 16px;
+  --tk-reveal-shift-quiet: 8px;
+  --tk-reveal-duration-section: 620ms;
+  --tk-reveal-duration-card: 580ms;
+  --tk-reveal-duration-quiet: 620ms;
+
+  /*
+   * THE SCALE FACTOR — the only one in the system, and the reason the keyframe count stays at two.
+   * The hero settles from 0.985 and a card from 0.98: enough to read as the card "landing", far too
+   * little to read as a zoom, and never applied to a full-width section (scaling a whole section
+   * would move its own content, which is the layout shift this system exists to avoid).
+   */
+  --tk-reveal-scale-factor: 0.985;
+  --tk-reveal-scale-factor-card: 0.98;
+}
+
+/*
+ * RESPONSIVE DISTANCE — a smaller viewport moves LESS, never more.
+ *
+ * On a phone a 16px rise is a much larger fraction of the screen than it is on a desktop, and a
+ * tall section entering the viewport has less room to travel before its own content is being read.
+ * The distance is therefore stepped DOWN at the tablet and phone breakpoints (and the phone
+ * duration shortened), which is also what guarantees the motion can never contribute to a
+ * horizontal or vertical overflow: the shift only ever shrinks.
+ *
+ * Only the distance/duration tokens are overridden here — the variant NAMES and the timing
+ * function are identical at every width, so there is no second choreography to keep in sync and no
+ * separate mobile markup anywhere.
+ */
+@media (max-width: 1023.98px) {
+  :root {
+    --tk-reveal-shift: 10px;
+    --tk-reveal-shift-section: 14px;
+    --tk-reveal-shift-card: 13px;
+    --tk-reveal-shift-quiet: 6px;
+    --tk-reveal-duration-section: 580ms;
+    --tk-reveal-duration-card: 540ms;
+  }
+}
+
+@media (max-width: 639.98px) {
+  :root {
+    --tk-reveal-shift: 8px;
+    --tk-reveal-shift-section: 12px;
+    --tk-reveal-shift-card: 10px;
+    /* 5px, not the tablet's 6px: every step keeps shrinking, so the footer stays the quietest
+     * movement on the page at every width rather than tying with the tablet's. */
+    --tk-reveal-shift-quiet: 5px;
+    --tk-reveal-duration: 460ms;
+    --tk-reveal-duration-section: 540ms;
+    --tk-reveal-duration-card: 500ms;
+  }
 }
 
 @keyframes tk-reveal-up {
@@ -730,7 +813,8 @@ html.dark {
 @keyframes tk-reveal-scale {
   from {
     opacity: 0;
-    transform: translate3d(0, var(--tk-reveal-shift), 0) scale(0.985);
+    transform: translate3d(0, var(--tk-reveal-shift), 0)
+      scale(var(--tk-reveal-scale-factor));
   }
   to {
     opacity: 1;
@@ -748,32 +832,141 @@ html.dark {
   animation: tk-reveal-up var(--tk-reveal-duration) var(--tk-reveal-ease) both;
 }
 
-[data-reveal="scale"] {
-  animation-name: tk-reveal-scale;
-}
-
 /*
- * Scroll-driven variant. The default rule keeps the element fully visible, so the
- * `@supports` block below is the ONLY thing that can hide it — and only in a browser that
- * can also reveal it by scrolling.
+ * ── MODE 2 · ENTRY-TRIGGERED ───────────────────────────────────────────────────
+ *
+ * The default rule keeps the element fully visible, so nothing below can hide it unless the
+ * browser can also reveal it — and only ever with the observer proven alive.
  */
 [data-reveal-scroll] {
   opacity: 1;
 }
 
+/*
+ * 2a. THE NO-JAVASCRIPT PATH — the entrance driven by scroll position.
+ *
+ * Where the bundle never runs this is what the visitor gets. It is kept because it is strictly
+ * better than a static block, because it needs no JavaScript at all, and because it cannot strand
+ * content hidden: a browser that supports a view timeline is by definition a browser that can
+ * advance it, and anything outside the entry range is simply not yet scrolled to.
+ */
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {
-    [data-reveal-scroll] {
+    /*
+     * Scoped to a page that has NOT been armed, so arming REMOVES this rule instead of overriding
+     * the animation it declares. That is not a cosmetic distinction — see 2b. The scope is wrapped
+     * in `:where()` so the selector's specificity stays exactly what it was before the scope
+     * existed, and the rhythm-step block below still decides `animation-name`/`animation-duration`
+     * here too.
+     */
+    :where(html:not([data-reveal-armed])) [data-reveal-scroll] {
       animation: tk-reveal-up var(--tk-reveal-duration) var(--tk-reveal-ease) both;
       animation-timeline: view();
       /* Completes a little after the element's top edge crosses the viewport bottom. */
       animation-range: entry 0% entry 55%;
     }
-
-    [data-reveal-scroll="scale"] {
-      animation-name: tk-reveal-scale;
-    }
   }
+}
+
+/*
+ * 2b. THE ONE-SHOT PATH — what actually runs on the page.
+ *
+ * `RevealObserver` sets `data-reveal-armed` on `<html>` once its observers are live, and then
+ * `data-reveal-in` on each element as it enters the viewport. The entrance is a plain
+ * clock-driven animation, so the cascade is real elapsed time — 70ms per item, the same for every
+ * visitor — instead of a ramp whose speed is the visitor's scroll speed.
+ *
+ * ── WHY THE ENTRANCE IS CREATED AND NOT UN-PAUSED ───────────────────────────────
+ * This block used to hold each element at the first keyframe with `animation-play-state: paused`
+ * and start it with `animation-play-state: running`, and arming used to detach the live
+ * `view()` animation by setting `animation-timeline: auto`. Both halves of that are gone, because
+ * in Chrome the un-pause of an animation whose timeline had just been switched is resolved by
+ * PRESERVING the old scroll-linked progress: the start time of the "running" animation was placed
+ * arbitrarily far into the FUTURE — measured in Chrome 153 at 1.6s for the first element, growing
+ * by roughly a frame per element in document order, up to 37s for the last one. A section heading
+ * therefore reached full opacity 4.7s after entering the viewport, most of a phone's sport grid
+ * never appeared at all, and the footer's bottom line stayed at `opacity: 0` forever. The animation
+ * only ever started once its fabricated start time came around.
+ *
+ * An armed element that has not been revealed is now simply TRANSPARENT and has no animation to
+ * un-pause; the moment it is revealed, its entrance is CREATED here — a fresh, ordinary,
+ * document-timeline animation starting on the next frame. The hero's six paint-time reveals, which
+ * are created together, all share one identical start time; that is the behaviour this block
+ * borrows. Nothing is ever paused, so nothing can be resumed into the wrong moment.
+ *
+ * ── WHY IT IS SAFE ─────────────────────────────────────────────────────────────
+ *   • An element is only transparent while `data-reveal-armed` is on the document, and that
+ *     attribute exists only after the observer has classified every element and is provably
+ *     alive: below the fold → watched, already on screen → `data-reveal-static`. Arming can
+ *     therefore never hide something the visitor is looking at.
+ *   • The `data-reveal-static` rule is the escape hatch: it returns an element to its resting,
+ *     fully visible state with no animation at all, and it is what a no-JavaScript browser and a
+ *     reduced-motion visitor effectively get too.
+ *   • Every selector below is wrapped in `:where()` for the two RULES that declare an animation, so
+ *     they contribute ZERO specificity and the rhythm-step block further down still owns
+ *     `animation-name`/`animation-duration`. The one selector that hides an element carries its own
+ *     specificity, because it has to beat the `[data-reveal-scroll] { opacity: 1 }` default.
+ *   • Under `prefers-reduced-motion: reduce` this block does not apply at all, so the transparent
+ *     state cannot exist for a visitor who asked for less motion.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  /*
+   * The one selector here that is NOT zero-specificity, because it has to beat the
+   * `[data-reveal-scroll] { opacity: 1 }` default above. `:not()` is used to exclude an element
+   * that has already been revealed or already declared static, so this rule and the two below can
+   * never fight over the same element whatever order they end up in.
+   */
+  html[data-reveal-armed]
+    [data-reveal-scroll]:not([data-reveal-in]):not([data-reveal-static]) {
+    opacity: 0;
+  }
+
+  :where(html[data-reveal-armed]) :where([data-reveal-scroll][data-reveal-in]) {
+    animation: tk-reveal-up var(--tk-reveal-duration) var(--tk-reveal-ease) both;
+  }
+
+  :where(html[data-reveal-armed]) :where([data-reveal-scroll][data-reveal-static]) {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * ── THE RHYTHM STEPS — ONE PLACE, BOTH MODES ───────────────────────────────────
+ *
+ * Every step reuses the SAME two keyframes and moves only tokens (distance, duration, and the one
+ * scale factor), so there is exactly one movement definition in this stylesheet and a step can never
+ * drift into a different KIND of motion.
+ *
+ * This block is deliberately LAST of the animation rules. The mode rules above set the `animation`
+ * shorthand, and a shorthand resets `animation-duration` and `animation-name`, so the token
+ * overrides have to win a specificity tie by source order — which is exactly what happens here.
+ * Each selector names both attributes, because a step means the same thing in either mode.
+ */
+[data-reveal="scale"],
+[data-reveal-scroll="scale"] {
+  animation-name: tk-reveal-scale;
+}
+
+[data-reveal="section"],
+[data-reveal-scroll="section"] {
+  --tk-reveal-shift: var(--tk-reveal-shift-section);
+  animation-duration: var(--tk-reveal-duration-section);
+}
+
+[data-reveal="card"],
+[data-reveal-scroll="card"] {
+  --tk-reveal-shift: var(--tk-reveal-shift-card);
+  --tk-reveal-scale-factor: var(--tk-reveal-scale-factor-card);
+  animation-name: tk-reveal-scale;
+  animation-duration: var(--tk-reveal-duration-card);
+}
+
+[data-reveal="quiet"],
+[data-reveal-scroll="quiet"] {
+  --tk-reveal-shift: var(--tk-reveal-shift-quiet);
+  animation-duration: var(--tk-reveal-duration-quiet);
 }
 
 /*
@@ -781,8 +974,10 @@ html.dark {
  *
  * Both attributes are neutralised, and `opacity`/`transform` are forced to their resting
  * values, so content is visible immediately and remains fully usable. `!important` is used
- * because it must beat both the `both` fill and an inline `animation-delay`; this is the
- * documented exception where a user preference has to win over a specific rule.
+ * because it must beat the `both` fill, the inline `animation-delay` and the armed
+ * `animation-play-state: paused`; this is the documented exception where a user preference has to
+ * win over a specific rule. The armed/paused state is also inside a `no-preference` guard of its
+ * own, so there are two independent reasons a reduced-motion visitor never sees a hidden element.
  */
 @media (prefers-reduced-motion: reduce) {
   [data-reveal],

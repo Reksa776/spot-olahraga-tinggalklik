@@ -58,7 +58,8 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         route: "/dashboard",
         file: "app/dashboard/page.tsx",
         status: "KEEP",
-        referencedBy: "components/dashboard/DashboardAppShell.tsx",
+        referencedBy:
+            "components/dashboard/DashboardAppShell.tsx, components/ticketing/SiteHeader.tsx (the capability-gated public \"Dashboard\" item)",
     },
     {
         route: "/dashboard/check-in",

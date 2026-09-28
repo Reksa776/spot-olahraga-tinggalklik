@@ -22,11 +22,21 @@ import type { PlatformRole } from "@prisma/client";
  * ── WHY THE DESTINATIONS ARE PATHS AND NOT "ALLOW CLIENT IN" ────────────────────
  * Each destination is a page that re-authenticates and re-authorises on the server:
  *
- *   ADMIN / MANAGER → /dashboard       (`app/dashboard/layout.tsx` gates on real capabilities)
- *   PIC             → /dashboard/pic   (gated by the same layout, then by the PIC service)
- *   CUSTOMER        → /ticketing/tickets (ownership predicate + `ticket.read.own`)
+ *   ADMIN / MANAGER → /dashboard     (`app/dashboard/layout.tsx` gates on real capabilities)
+ *   PIC             → /dashboard/pic (gated by the same layout, then by the PIC service)
+ *   CUSTOMER        → /             (the public storefront — no session required)
  *
  * So an intent can only ever move a browser; it cannot widen what that browser may see.
+ *
+ * ── WHY THE BUYER LANDS ON THE STOREFRONT, NOT THE WALLET ───────────────────────
+ * The buyer used to be sent straight to `/ticketing/tickets`. That is a page a customer can
+ * READ, so it was never a security problem, but it was the wrong front door: a buyer who
+ * signed in to browse (the majority) arrived in their own order history with no way onward
+ * except the header, and a buyer with no tickets yet landed on an empty state as the reward
+ * for signing in. `/` is the discovery surface (search, sports, events, and the buyer's own
+ * shortcuts in the signed-in header), so it is the honest destination for "I am just here to
+ * buy". The wallet is one click away and re-authorises itself regardless — every destination
+ * in this table gates itself server-side, so this is navigation, not authority.
  */
 
 export const LOGIN_ROLE_INTENTS = [
@@ -69,7 +79,12 @@ export const LOGIN_ROLE_INTENT_META: Record<LoginRoleIntent, LoginRoleIntentMeta
     CUSTOMER: {
         label: "Pembeli",
         caption: "Masuk untuk melihat pesanan dan e-tiket Anda.",
-        destination: "/ticketing/tickets",
+        /**
+         * The storefront. Deliberately NOT the ticket wallet — see the module header. It is
+         * still a path in the same table, so it goes through the same validator as every
+         * other destination and cannot become a redirect to another origin.
+         */
+        destination: "/",
     },
 };
 

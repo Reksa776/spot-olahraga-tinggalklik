@@ -50,12 +50,18 @@ function readCode(relativePath: string): string {
 
 const AUTH_PAGES = ["app/login/page.tsx", "app/register/page.tsx"] as const;
 
-/** The path each role's own surface lives at, from the pure intent table. */
+/**
+ * The path each role's own surface lives at, from the pure intent table.
+ *
+ * The CUSTOMER row changed under "DASHBOARD NAVBAR + CUSTOMER LOGIN REDIRECT": an
+ * authenticated buyer is sent to the public storefront (`/`) rather than into their ticket
+ * wallet, which is the destination they had before and one their account never required.
+ */
 const ROLE_DESTINATIONS = [
     ["ADMIN", "/dashboard"],
     ["MANAGER", "/dashboard"],
     ["PIC", "/dashboard/pic"],
-    ["CUSTOMER", "/ticketing/tickets"],
+    ["CUSTOMER", "/"],
 ] as const;
 
 /* ==================================================================================
@@ -78,7 +84,7 @@ describe("an authenticated visitor is redirected to their own surface", () => {
         // must agree, or it would send an account somewhere its own guards refuse.
         expect(decideSessionGate({ platformRole: null }, null)).toEqual({
             action: "redirect",
-            to: "/ticketing/tickets",
+            to: "/",
         });
     });
 
@@ -103,7 +109,7 @@ describe("an authenticated visitor is redirected to their own surface", () => {
         // clicked can therefore never widen the destination.
         expect(decideSessionGate({ platformRole: "CUSTOMER" }, null)).toEqual({
             action: "redirect",
-            to: "/ticketing/tickets",
+            to: "/",
         });
 
         expect(decideSessionGate.length).toBe(2);
@@ -152,7 +158,7 @@ describe("the interrupted destination is preserved, and validated", () => {
         for (const loop of ["/login", "/register", "/login?callbackUrl=/dashboard"]) {
             expect(decideSessionGate({ platformRole: "CUSTOMER" }, loop)).toEqual({
                 action: "redirect",
-                to: "/ticketing/tickets",
+                to: "/",
             });
         }
     });

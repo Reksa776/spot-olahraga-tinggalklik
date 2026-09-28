@@ -1,5 +1,18 @@
 import Link from "next/link";
 
+import Reveal from "@/components/ui/Reveal";
+
+/**
+ * The heading cascade. 80ms per step — a sequence, not a queue.
+ *
+ * Each step is its own `Reveal` rather than one wrapper around all three, because the whole point
+ * is that the heading, its sub-line and its action arrive in that order. They are `scroll` reveals,
+ * so the cascade plays as the section enters the viewport instead of on first paint at the top of
+ * a document the visitor has not scrolled yet.
+ */
+const SUBTITLE_DELAY_MS = 80;
+const ACTION_DELAY_MS = 80;
+
 type Props = {
     title: string;
     subtitle?: string;
@@ -26,24 +39,43 @@ export default function SectionHeader({
     return (
         <div className="mb-4 flex items-end justify-between gap-4 sm:mb-6">
             <div className="min-w-0">
-                <h2
+                <Reveal
+                    as="h2"
+                    scroll
+                    variant="section"
                     id={id}
                     className="scroll-mt-24 text-xl font-extrabold tracking-tight text-ink-900 sm:text-2xl"
                 >
                     {title}
-                </h2>
+                </Reveal>
                 {subtitle ? (
-                    <p className="mt-1 text-sm text-ink-500">{subtitle}</p>
+                    <Reveal
+                        as="p"
+                        scroll
+                        delay={SUBTITLE_DELAY_MS}
+                        className="mt-1 text-sm text-ink-500"
+                    >
+                        {subtitle}
+                    </Reveal>
                 ) : null}
             </div>
 
             {href ? (
-                <Link
-                    href={href}
-                    className="shrink-0 rounded-lg px-1 py-1 text-sm font-semibold text-brand-700 transition hover:text-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                // A `div` wrapper rather than revealing the anchor itself: the reveal attribute must
+                // land on a plain element, and a nested link is invalid HTML. `shrink-0` moves from
+                // the anchor to the wrapper, so the flex row is laid out exactly as before.
+                <Reveal
+                    scroll
+                    delay={ACTION_DELAY_MS}
+                    className="shrink-0"
                 >
-                    {actionLabel}
-                </Link>
+                    <Link
+                        href={href}
+                        className="rounded-lg px-1 py-1 text-sm font-semibold text-brand-700 transition hover:text-brand-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+                    >
+                        {actionLabel}
+                    </Link>
+                </Reveal>
             ) : null}
         </div>
     );

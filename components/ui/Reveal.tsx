@@ -22,17 +22,20 @@ import type {
  * no runtime behaviour beyond setting two attributes and one style.
  *
  * ── THE TWO MODES ───────────────────────────────────────────────────────────────
- *   • default   → `data-reveal`: plays once when the page is painted (entrance).
- *   • `scroll`  → `data-reveal-scroll`: plays as the element enters the viewport via
- *                 `animation-timeline: view()`. In a browser without view-timeline support the
- *                 attribute has no CSS rule and the element is simply visible.
+ *   • default   → `data-reveal`: plays once when the page is painted. For content above the fold,
+ *                 where "entering the viewport" has already happened.
+ *   • `scroll`  → `data-reveal-scroll`: plays once when the element ENTERS THE VIEWPORT. The
+ *                 attribute is inert on its own — `components/ui/RevealObserver.tsx` is what
+ *                 starts it, once per element, on the clock — and the stylesheet carries a
+ *                 scroll-linked `animation-timeline: view()` entrance as the no-JavaScript path.
  *
  * ── THE DELAY IS PRESENTATIONAL, AND CAPPED ─────────────────────────────────────
  * `delay` is a number of milliseconds supplied by the caller (an index in a list), never data. It
  * becomes an inline `animation-delay`, which is written identically during the server render and in
- * the browser. `revealDelay()` caps the value so a long list cannot produce a hundred distinct
- * delays — beyond the cap every card shares the last step, which reads as a group settling rather
- * than a queue draining.
+ * the browser. In the one-shot mode that delay is real elapsed time — the items of a row genuinely
+ * arrive 70ms apart — which is the only reason a stagger reads as one at all. `revealDelay()` caps
+ * the value so a long list cannot produce a hundred distinct delays; beyond the cap every card
+ * shares the last step, which reads as a group settling rather than a queue draining.
  *
  * ── WHAT IT DOES NOT DO ─────────────────────────────────────────────────────────
  * It never hides content itself, never waits for an animation to finish before an element becomes
@@ -40,11 +43,22 @@ import type {
  * decoration over content that is already there.
  */
 
-/** One stagger step. 60 ms reads as a sequence without ever feeling like a queue. */
-export const REVEAL_STEP_MS = 60;
+/**
+ * One stagger step, in milliseconds.
+ *
+ * 70ms is inside the band that reads as a SEQUENCE rather than a queue: below ~40ms the items look
+ * simultaneous, above ~90ms the row starts to feel like it is loading. Because the one-shot mode
+ * runs on the clock, this number is literally the gap a visitor sees between two cards arriving.
+ */
+export const REVEAL_STEP_MS = 70;
 
-/** The cap. Past this every item shares the final delay, so a long list cannot crawl. */
-export const REVEAL_MAX_DELAY_MS = 300;
+/**
+ * The cap, in milliseconds.
+ *
+ * Past this every item shares the final delay, so a row of four and a row of forty cost the same
+ * last arrival (350ms) and a long list cannot crawl.
+ */
+export const REVEAL_MAX_DELAY_MS = 350;
 
 /**
  * The stagger delay for the item at `index`.
@@ -56,7 +70,18 @@ export function revealDelay(index: number, base = 0): number {
     return base + Math.min(index * REVEAL_STEP_MS, REVEAL_MAX_DELAY_MS);
 }
 
-type Variant = "up" | "scale";
+/**
+ * The five rhythm steps. All five share ONE set of keyframes and differ only in distance, duration
+ * and (for `scale`/`card`) the single scale factor — see the token block in `app/globals.css` — so
+ * choosing a step chooses an intensity, never a different kind of movement.
+ *
+ *   `up`      — the default: a heading, a row of chips, a single block.
+ *   `scale`   — the hero's treatment. The only step that scales above the fold, once per page.
+ *   `section` — a below-the-fold section: the biggest and slowest movement on the page.
+ *   `card`    — an event card or a sport tile, which lands from a 0.98 scale.
+ *   `quiet`   — the footer's. Deliberately the least movement on the page.
+ */
+type Variant = "up" | "scale" | "section" | "card" | "quiet";
 
 type RevealProps = {
     /**
@@ -71,9 +96,9 @@ type RevealProps = {
     as?: ElementType;
     /** Stagger delay in ms. Omitted/0 writes no inline style at all. */
     delay?: number;
-    /** `up` (default) or `scale` for a hero-like block. */
+    /** Which rhythm step to play. Defaults to `up`. */
     variant?: Variant;
-    /** Play as the element scrolls into view instead of on first paint. */
+    /** Play once, when the element enters the viewport, instead of on first paint. */
     scroll?: boolean;
     className?: string;
     style?: CSSProperties;

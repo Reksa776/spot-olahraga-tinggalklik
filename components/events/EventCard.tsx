@@ -37,13 +37,25 @@ export default function EventCard({ event }: { event: PublicEventCard }) {
         >
             <div className="relative aspect-16/10 w-full overflow-hidden bg-ink-100">
                 {event.bannerUrl ? (
-                    // Plain <img>: the project does not configure next/image remote patterns for
-                    // locally-served uploads, and these files are already server-processed.
+                    /*
+                     * Plain <img>: the project does not configure next/image remote patterns for
+                     * locally-served uploads, and these files are already server-processed.
+                     *
+                     * The hover treatment is a 2% scale on the image inside the already-clipped
+                     * frame — `transform` only, so nothing reflows, and the frame's `overflow-hidden`
+                     * means it can never bleed past the card. It is written `motion-safe:` so a
+                     * visitor who asked for reduced motion gets the card's existing hover affordances
+                     * (border, shadow, title colour, the underline on "Lihat detail") and no movement.
+                     *
+                     * Deliberately NOT a card-wide lift or a shadow bloom: the card's visual
+                     * simplification is a design decision, and this is the smallest thing that adds
+                     * life without undoing it.
+                     */
                     <img
                         src={event.bannerUrl}
                         alt={event.title}
                         loading="lazy"
-                        className="h-full w-full object-cover"
+                        className="h-full w-full object-cover motion-safe:transition-transform motion-safe:duration-500 motion-safe:group-hover:scale-[1.02]"
                     />
                 ) : (
                     <div className="flex h-full w-full items-center justify-center bg-ink-100">

@@ -119,9 +119,18 @@ describe("every intent destination is a safe same-origin path", () => {
         expect(defaultDestinationForIntent("ADMIN")).toBe("/dashboard");
         expect(defaultDestinationForIntent("MANAGER")).toBe("/dashboard");
 
-        // And each of the four lands somewhere that gates itself server-side.
+        // And the three back-office entrances land somewhere that gates itself server-side.
         expect(defaultDestinationForIntent("PIC")).toBe("/dashboard/pic");
-        expect(defaultDestinationForIntent("CUSTOMER")).toBe("/ticketing/tickets");
+
+        /*
+         * The buyer lands on the public storefront — NOT `/ticketing/tickets`.
+         *
+         * `"DASHBOARD NAVBAR + CUSTOMER LOGIN REDIRECT"`: a buyer who signs in to browse was
+         * being dropped into their own order history instead of the discovery surface, and a
+         * buyer with no tickets yet landed on an empty state as the reward for signing in.
+         * `/` is the front door; the wallet is one click away and re-authorises itself.
+         */
+        expect(defaultDestinationForIntent("CUSTOMER")).toBe("/");
     });
 });
 
@@ -155,12 +164,11 @@ describe("the destination is derived from the SERVER's role", () => {
     });
 
     it("a customer who clicks Admin is routed to the customer surface", () => {
-        // This is the escalation attempt, expressed as the navigation decision it actually is.
+        // This is the escalation attempt, expressed as the navigation decision it actually is:
+        // the SERVER's role wins, and a customer's own surface is the public storefront.
         const actual = intentForPlatformRole("CUSTOMER");
 
-        expect(
-            postLoginDestination(null, { intentDefault: actual })
-        ).toBe("/ticketing/tickets");
+        expect(postLoginDestination(null, { intentDefault: actual })).toBe("/");
     });
 });
 
@@ -191,7 +199,7 @@ describe("postLoginDestination", () => {
             "/register",
         ]) {
             expect(postLoginDestination(hostile, { intentDefault: "CUSTOMER" })).toBe(
-                "/ticketing/tickets"
+                "/"
             );
         }
     });
