@@ -8,6 +8,7 @@ import {
 } from "@/lib/authz";
 import { hashPassword } from "@/lib/password";
 import { prisma } from "@/lib/prisma";
+import { publishCustomerUpdated } from "@/lib/realtime/publishers";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
 /**
@@ -299,6 +300,16 @@ export async function createManagedUser(
         request,
     });
 
+    /*
+     * REALTIME: the account and its memberships are committed. Announced to the platform and to
+     * every tenant whose membership changed, because an operator list on those tenants now has a
+     * member it did not have before.
+     */
+    publishCustomerUpdated({
+        userId: created.id,
+        organizerIds: membershipOrganizerIds,
+    });
+
     return { id: created.id, platformRole: input.role };
 }
 
@@ -438,6 +449,9 @@ export async function setManagedUserDisabled(
         afterState: { disabled: updated.disabledAt !== null },
         request,
     });
+
+    // REALTIME: a suspension or reinstatement is visible on every surface that lists accounts.
+    publishCustomerUpdated({ userId: updated.id });
 
     return { id: updated.id, disabled: updated.disabledAt !== null };
 }

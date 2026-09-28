@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import {
@@ -27,6 +28,24 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  */
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Browser tab title, entity-specific: "Pesanan <orderNumber>".
+ *
+ * The order number is read from the ROUTE, not the database, so this asks no question the URL does
+ * not already answer and cannot leak another tenant's order: the page itself still resolves the
+ * order through `getDashboardOrder`, which scopes the lookup and renders the not-found boundary for
+ * an order the actor may not read. The brand suffix is composed by the root layout.
+ */
+export async function generateMetadata({
+    params,
+}: {
+    params: Promise<{ orderNumber: string }>;
+}): Promise<Metadata> {
+    const { orderNumber } = await params;
+
+    return { title: `Pesanan ${orderNumber}` };
+}
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",

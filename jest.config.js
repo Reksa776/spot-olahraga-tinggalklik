@@ -85,6 +85,13 @@ module.exports = {
         // rather than any one vertical's business rules (it reads orders, tickets, payments
         // and refunds together, and changes none of them).
         "**/__tests__/dashboard/*.test.ts",
+        // REALTIME SYNCHRONIZATION. A namespace of its own because its subject is the
+        // INVALIDATION PLUMBING rather than any one vertical: the event taxonomy and the page
+        // dependency map, the commit-time publish seam, the server-derived audience scoping, and
+        // the browser-side policy (coalescing, deduplication, visibility, fallback, dirty forms)
+        // that every dashboard/PIC/customer page shares. It reads orders, payments, tickets,
+        // refunds and settlements together and changes none of their rules.
+        "**/__tests__/realtime/*.test.ts",
     ],
     // WHY forceExit IS SET
     // -------------------

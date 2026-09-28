@@ -63,10 +63,26 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-    title: "Pesanan tiket",
-    robots: { index: false, follow: false },
-};
+/**
+ * Browser tab title, entity-specific: "Pesanan <orderNumber>".
+ *
+ * The order number comes from the ROUTE, so this asks the database nothing — the page still resolves
+ * the order through `getOwnOrder`, which applies the ownership predicate and renders 404 for another
+ * buyer's order. Still `noindex`: a buyer's order is not a public page. The brand suffix is composed
+ * by the root layout's `title.template`.
+ */
+export async function generateMetadata({
+    params,
+}: {
+    params: Promise<{ orderNumber: string }>;
+}): Promise<Metadata> {
+    const { orderNumber } = await params;
+
+    return {
+        title: `Pesanan ${orderNumber}`,
+        robots: { index: false, follow: false },
+    };
+}
 
 /** Buyer-facing label for the order's own `OrderStatus`. */
 const ORDER_STATUS: Record<string, { label: string; className: string }> = {

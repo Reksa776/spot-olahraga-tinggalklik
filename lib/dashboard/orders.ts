@@ -1,4 +1,4 @@
-import { Prisma, type OrderStatus } from "@prisma/client";
+import { Prisma, type OrderStatus, type PaymentStatus } from "@prisma/client";
 
 import { PERMISSIONS, type AuthzScope } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
@@ -20,6 +20,41 @@ import { resolveOrganizerFilter } from "./scope";
  * re-derivation from current ticket prices, so a historical order keeps its historical
  * value.
  */
+
+/**
+ * The ORDER lifecycle states the dashboard is willing to QUERY, in lifecycle order.
+ *
+ * The tuple is `as const` so a typo in a page becomes a compile error, and it is typed as a subset
+ * of the Prisma enum, so a rename in the schema breaks the build here rather than silently at
+ * runtime. It is what the orders page validates a deep-linked `?status=` against before the value
+ * reaches Prisma — an unrecognised value is ignored rather than handed to the query layer, where an
+ * enum comparison would raise instead of rendering a page.
+ */
+export const ORDER_STATUS_FILTERS = [
+    "PENDING_PAYMENT",
+    "PAID",
+    "CANCELLED",
+    "EXPIRED",
+    "REFUNDED",
+    "PARTIALLY_REFUNDED",
+] as const satisfies readonly OrderStatus[];
+
+/**
+ * The GATEWAY payment states the orders list offers as its one status filter, in lifecycle order.
+ *
+ * Exported from the read model because THAT is where the two lifecycles are defined: the orders page
+ * imports this rather than keeping a second copy, so the options a pill offers and the values the
+ * `paymentStatus` predicate accepts cannot drift apart.
+ */
+export const PAYMENT_STATUS_FILTERS = [
+    "UNPAID",
+    "PENDING",
+    "PAID",
+    "FAILED",
+    "EXPIRED",
+    "REFUNDED",
+    "PARTIALLY_REFUNDED",
+] as const satisfies readonly PaymentStatus[];
 
 const ORDER_SELECT = {
     id: true,
@@ -59,15 +94,36 @@ export type DashboardOrderRow = Prisma.EventOrderGetPayload<{
 export type DashboardOrderListParams = {
     organizerId?: string | null;
     status?: OrderStatus | null;
+    /**
+     * The GATEWAY payment state (`EventOrder.paymentStatus`) — a separate concept from the order
+     * status above.
+     *
+     * It exists because "Tiket terjual" opens the orders list filtered on `paymentStatus = PAID`,
+     * and that is deliberately NOT the same predicate as `status = PAID`: a late settlement leaves
+     * a terminal order status (`CANCELLED`/`EXPIRED`) while `paymentStatus` becomes `PAID`. Keeping
+     * the two fields distinct is what lets each filter mean exactly what the KPI means.
+     *
+     * When both `status` and `paymentStatus` are supplied they are AND-ed as sibling where keys —
+     * one narrows the other, it never replaces it.
+     */
+    paymentStatus?: PaymentStatus | null;
     q?: string | null;
     /**
-     * PHASE 18B (D-P17-17 / D-P17-18): the operator's "needs attention" filter. It selects the
-     * two recoverable states the product decisions left deliberately manual:
+     * PHASE 18B (D-P17-17 / D-P17-18): the reconciliation read. It selects the two recoverable
+     * states the product decisions left deliberately manual:
      *
      *   * a LATE SETTLEMENT (`fulfilmentBlockedAt` set) — money recorded, fulfilment blocked,
      *     never silently resurrected; and
      *   * a PAID order with ZERO tickets — allowed by construction because ticket issuance is
      *     buyer-triggered, and recoverable without the platform minting tickets on its own.
+     *
+     * ── WHY IT IS NO LONGER A CONTROL ON THE ORDERS PAGE ────────────────────────────
+     * The orders list now offers ONE status filter (the gateway `paymentStatus`) plus search, so the
+     * `Tampilan` / "Perlu tindakan" pill row and the page's `?review=1` handling were removed from the
+     * SURFACE. This capability is deliberately retained: it is the read a reconciliation sweep uses to
+     * find orders that moved money without moving inventory (`refund-reconciliation-visibility`
+     * exercises it directly), and an operational/audit view of those two states must keep existing.
+     * Nothing about the predicate changed — only who can reach it from the dashboard.
      *
      * Read-only: it changes no order, and neither branch here can issue a ticket.
      */
@@ -122,6 +178,9 @@ export async function listDashboardOrders(
     const where: Prisma.EventOrderWhereInput = {
         organizerId: { in: organizerIds },
         ...(params.status ? { status: params.status } : {}),
+        ...(params.paymentStatus
+            ? { paymentStatus: params.paymentStatus }
+            : {}),
         ...(and.length > 0 ? { AND: and } : {}),
     };
 

@@ -25,6 +25,9 @@ import { isAuthzError } from "@/lib/authz/errors";
 
 export const dynamic = "force-dynamic";
 
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Maintenance" };
+
 export default async function DashboardMaintenanceSettingsPage() {
     const scope = await getAuthzScope();
 

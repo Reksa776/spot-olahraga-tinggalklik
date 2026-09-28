@@ -41,6 +41,9 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
 
 export const dynamic = "force-dynamic";
 
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Detail Pencairan" };
+
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
     timeStyle: "short",

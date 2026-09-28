@@ -39,6 +39,21 @@ export const SETTLEMENT_STATUSES = [
     "REJECTED",
 ] as const;
 
+export type SettlementStatus = (typeof SETTLEMENT_STATUSES)[number];
+
+/**
+ * "Menunggu persetujuan" — the payouts still awaiting an operator decision.
+ *
+ * `REQUESTED` (PIC-initiated, not yet reviewed) plus `PENDING_APPROVAL` (prepared, submitted). It
+ * is the SAME union the dashboard overview counts for its "Pencairan menunggu" tile
+ * (`awaiting`), so the tile and the board cannot disagree. `APPROVED`, `PAID`, `DRAFT`, `FAILED`,
+ * `CANCELLED` and `REJECTED` are deliberately excluded.
+ */
+export const SETTLEMENT_AWAITING_APPROVAL_STATUSES = [
+    "REQUESTED",
+    "PENDING_APPROVAL",
+] as const satisfies readonly SettlementStatus[];
+
 export const settlementStatusSchema = z.enum(SETTLEMENT_STATUSES);
 
 const idSchema = z.string().trim().min(1).max(64);

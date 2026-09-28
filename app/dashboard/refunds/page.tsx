@@ -1,5 +1,7 @@
 import type { RefundStatus } from "@prisma/client";
 
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import { RefundDecisionActions } from "@/components/dashboard/RefundDecisionActions";
 import { RefundEvidenceActions } from "@/components/dashboard/RefundEvidenceActions";
 import {
@@ -12,7 +14,11 @@ import {
     type Tone,
 } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
-import { listDashboardRefunds } from "@/lib/dashboard/refunds";
+import { REFUND_STATUS_LABELS } from "@/lib/dashboard/filter-options";
+import {
+    REFUND_NEEDS_HANDLING_STATUSES,
+    listDashboardRefunds,
+} from "@/lib/dashboard/refunds";
 import { refundStaffEvidenceUrl } from "@/lib/ticketing/refunds/payload";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
@@ -27,6 +33,13 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * requested amount before that, so a completed refund never appears to have moved more or
  * less than it did.
  *
+ * ── "PERLU DITANGANI" IS A PILL, NOT A NEW URL FORMAT ───────────────────────────
+ * The operator worklist is `PENDING` ∪ `PROCESSING` — the SAME union the overview's "Refund perlu
+ * ditangani" tile counts — and it is still expressed as the repeated parameter
+ * (`?status=PENDING&status=PROCESSING`) the read model and `LinkPagination` already handle. The
+ * pill's members are passed by reference from `REFUND_NEEDS_HANDLING_STATUSES`, so the label and
+ * the predicate cannot drift. The individual lifecycle statuses remain single-value pills.
+ *
  * ── THE MANUAL RAIL NEEDS RECONCILIATION EVIDENCE ON THIS PAGE ──────────────────
  * Because the production rail is a manual bank transfer (D-P17-04 = B), the operator cannot
  * look to a provider dashboard for the truth. Two columns carry it instead: the transfer
@@ -39,6 +52,9 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Refunds" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -92,16 +108,38 @@ function processingAge(from: Date | null, now: Date): string | null {
     return `${Math.floor(hours / 24)} hari`;
 }
 
-function parseStatus(value: string | undefined): RefundStatus | null {
-    return value && (VALID_STATUSES as string[]).includes(value)
-        ? (value as RefundStatus)
-        : null;
+function parseStatuses(value: string | string[] | undefined): RefundStatus[] {
+    if (value === undefined) {
+        return [];
+    }
+
+    const values = Array.isArray(value) ? value : [value];
+    const seen = new Set<RefundStatus>();
+
+    for (const candidate of values) {
+        if ((VALID_STATUSES as readonly string[]).includes(candidate)) {
+            seen.add(candidate as RefundStatus);
+        }
+    }
+
+    return [...seen];
+}
+
+/** Set equality (order-independent), used to recognise the "Perlu Ditangani" worklist. */
+function sameStatusSet(
+    selected: readonly RefundStatus[],
+    expected: readonly RefundStatus[]
+): boolean {
+    return (
+        selected.length === expected.length &&
+        expected.every((status) => selected.includes(status))
+    );
 }
 
 export default async function DashboardRefundsPage({
     searchParams,
 }: {
-    searchParams: Promise<{ status?: string; page?: string; q?: string }>;
+    searchParams: Promise<{ status?: string | string[]; page?: string; q?: string }>;
 }) {
     const params = await searchParams;
     const scope = await getAuthzScope();
@@ -110,16 +148,40 @@ export default async function DashboardRefundsPage({
         return null;
     }
 
-    const status = parseStatus(params.status);
+    /*
+     * A repeated `?status=` is how the "Perlu Ditangani" union is expressed
+     * (`PENDING` + `PROCESSING`). Every value is narrowed against `RefundStatus` before it reaches
+     * the scoped read, and an invalid value is dropped rather than forwarded.
+     */
+    const statuses = parseStatuses(params.status);
+    const isNeedsHandling = sameStatusSet(
+        statuses,
+        REFUND_NEEDS_HANDLING_STATUSES
+    );
     const page = params.page ? Number(params.page) : 1;
     // One clock read for the whole render, so every "PROCESSING for N" cell is consistent.
     const now = new Date();
 
     const result = await listDashboardRefunds(scope, {
-        status,
+        statuses,
         q: params.q ?? null,
         page,
         limit: 20,
+    });
+
+    const statusField = buildFilterField({
+        name: "status",
+        label: "Status refund",
+        allLabel: "Semua status",
+        values: statuses,
+        members: VALID_STATUSES,
+        labels: REFUND_STATUS_LABELS,
+        // The worklist is a repeated parameter, exactly as the KPI tile deep-links it.
+        union: {
+            value: "needs_handling",
+            label: "Perlu Ditangani",
+            statuses: REFUND_NEEDS_HANDLING_STATUSES,
+        },
     });
 
     return (
@@ -130,11 +192,31 @@ export default async function DashboardRefundsPage({
                 description="Permintaan pengembalian dana dari pembeli. Setujui atau tolak permintaan, mulai proses yang sudah disetujui, lalu catat bukti transfer bank untuk menyelesaikannya. Refund hanya menjadi REFUNDED setelah bukti transfer dicatat. Pemohon tidak dapat memutuskan permintaannya sendiri."
             />
 
+            <FilterBar
+                basePath="/dashboard/refunds"
+                current={{
+                    status: statuses.length > 0 ? statuses : undefined,
+                    q: params.q,
+                }}
+                fields={[statusField]}
+                search={{
+                    label: "Cari refund",
+                    placeholder: "Nomor refund, pesanan, atau pembeli",
+                    value: params.q,
+                }}
+            />
+
             <DataTable
                 minWidth={1240}
                 empty={
                     <EmptyBlock
-                        title="Belum ada permintaan refund"
+                        title={
+                            statuses.length === 0
+                                ? "Belum ada permintaan refund"
+                                : isNeedsHandling
+                                  ? "Tidak ada refund yang perlu ditangani"
+                                  : `Tidak ada refund berstatus ${statuses.join(", ")}`
+                        }
                         description="Permintaan refund dari pembeli akan muncul di sini."
                     />
                 }
@@ -281,7 +363,10 @@ export default async function DashboardRefundsPage({
                         page={page}
                         totalPages={result.pagination.totalPages}
                         basePath="/dashboard/refunds"
-                        query={{ status: params.status, q: params.q }}
+                        query={{
+                            status: statuses.length > 0 ? statuses : undefined,
+                            q: params.q,
+                        }}
                         label="Halaman"
                     />
                 }

@@ -29,6 +29,13 @@ import SiteShell from "@/components/ticketing/SiteShell";
  */
 export const dynamic = "force-dynamic";
 
+/**
+ * Browser tab title for the 404. Next.js reads a `metadata` export from `not-found.tsx` and merges it
+ * above the root layout's template, so `notFound()` — which is rendered INSIDE the root layout — is
+ * titled like any other route. The brand suffix is composed by the layout.
+ */
+export const metadata = { title: "Halaman tidak ditemukan" };
+
 export default function NotFound() {
     return (
         <SiteShell>

@@ -30,6 +30,9 @@ import { computeDashboardCapabilities } from "@/lib/dashboard/scope";
 
 export const dynamic = "force-dynamic";
 
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Settings" };
+
 export default async function DashboardSettingsPage() {
     const scope = await getAuthzScope();
 

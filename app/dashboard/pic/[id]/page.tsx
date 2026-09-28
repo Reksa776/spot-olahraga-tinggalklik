@@ -35,6 +35,9 @@ import { getPicDetail } from "@/lib/pic/service";
 
 export const dynamic = "force-dynamic";
 
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Detail PIC" };
+
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
     timeStyle: "short",

@@ -10,6 +10,7 @@ import { requireEventAccess } from "@/lib/events/access";
 import { isEventCheckInOpen } from "@/lib/events/sales-state";
 import { prisma } from "@/lib/prisma";
 import { getClientIp } from "@/lib/rate-limit";
+import { publishTicketCheckedIn } from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
 import { TICKET_QR_PREFIX, isTicketCode } from "../tickets/reference";
@@ -91,6 +92,14 @@ const CHECK_IN_TICKET_SELECT = {
     checkedInAt: true,
     eventId: true,
     attendeeName: true,
+    /**
+     * The ticket's holder, read ONLY to address the realtime announcement to the buyer.
+     *
+     * It is never returned to the gate: the scanner response carries the ticket code, the
+     * attendee name and the ticket type, and nothing about who owns the account. A nullable
+     * column, so an unclaimed ticket simply has no customer audience.
+     */
+    holderUserId: true,
     ticketType: { select: { name: true } },
 } as const satisfies Prisma.TicketSelect;
 
@@ -530,6 +539,23 @@ export async function checkInTicket(params: {
             ),
         });
     }
+
+    /*
+     * REALTIME: announced AFTER the admission transaction resolved, and ONLY for an accepted
+     * admission.
+     *
+     * A REFUSED scan is deliberately silent. The attendance list this invalidates reads
+     * `result: "SUCCESS"` rows only, so a refusal changes no page it would tell anyone about — and a
+     * busy gate producing hundreds of bad scans per hour would otherwise generate hundreds of
+     * useless invalidations. That is the difference between over-invalidating (safe but wasteful)
+     * and a storm (wasteful enough to matter).
+     */
+    publishTicketCheckedIn({
+        ticketId: ticket.id,
+        eventId: gate.id,
+        organizerId: gate.organizerId,
+        ticketOwnerUserId: ticket.holderUserId,
+    });
 
     await writeTicketingAudit({
         action: "checkin.success",

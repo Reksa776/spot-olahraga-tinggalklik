@@ -7,6 +7,7 @@ import {
     type AuthzScope,
 } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
+import { publishEventChanged } from "@/lib/realtime/publishers";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
 import { releaseOrderReservations } from "@/lib/ticketing/reservations";
@@ -119,6 +120,13 @@ export type OrganizerEventListParams = {
     /** Optional filter. When present it is authorized, never trusted. */
     organizerId?: string | null;
     status?: EventStatus | null;
+    /**
+     * A multi-value status filter, for a KPI whose definition is a UNION of statuses ("event
+     * aktif" = PUBLISHED ∪ ONGOING). When present and non-empty it takes precedence over the
+     * single `status`; an unknown value can never arrive here, because the caller validates the
+     * query-string against `EVENT_STATUS_FILTERS` first.
+     */
+    statuses?: EventStatus[] | null;
     q?: string | null;
     page?: number;
     limit?: number;
@@ -170,9 +178,18 @@ export async function listOrganizerEvents(
         };
     }
 
+    // The single-value and multi-value filters are the SAME predicate at different arities, so
+    // they are resolved once here rather than merged as two sibling keys.
+    const statusWhere: Prisma.EventWhereInput =
+        params.statuses && params.statuses.length > 0
+            ? { status: { in: params.statuses } }
+            : params.status
+              ? { status: params.status }
+              : {};
+
     const where: Prisma.EventWhereInput = {
         organizerId: { in: organizerIds },
-        ...(params.status ? { status: params.status } : {}),
+        ...statusWhere,
         ...(params.q
             ? {
                   OR: [
@@ -432,6 +449,12 @@ export async function createEvent(
         request,
     });
 
+    publishEventChanged({
+        type: "EVENT_CREATED",
+        eventId: created.id,
+        organizerId,
+    });
+
     return created;
 }
 
@@ -657,6 +680,12 @@ export async function updateEvent(
         request,
     });
 
+    publishEventChanged({
+        type: "EVENT_UPDATED",
+        eventId: current.id,
+        organizerId: current.organizerId,
+    });
+
     return updated;
 }
 
@@ -825,6 +854,14 @@ export async function publishEvent(
         request,
     });
 
+    // REALTIME: a draft became live, so the catalog, the event detail and its availability all
+    // move. Published after the commit, never inside it.
+    publishEventChanged({
+        type: "EVENT_PUBLISHED",
+        eventId: current.id,
+        organizerId: current.organizerId,
+    });
+
     return {
         event: updated,
         bannerRecommended: !current.bannerUrl,
@@ -972,6 +1009,12 @@ export async function completeEvent(
         request,
     });
 
+    publishEventChanged({
+        type: "EVENT_UPDATED",
+        eventId: current.id,
+        organizerId: current.organizerId,
+    });
+
     return { event: updated, alreadyCompleted: false };
 }
 
@@ -1040,6 +1083,12 @@ export async function unpublishEvent(
         beforeState: { status: current.status },
         afterState: { status: updated.status },
         request,
+    });
+
+    publishEventChanged({
+        type: "EVENT_UPDATED",
+        eventId: current.id,
+        organizerId: current.organizerId,
     });
 
     return updated;
@@ -1116,6 +1165,12 @@ export async function deleteEvent(
             status: current.status,
         },
         request,
+    });
+
+    publishEventChanged({
+        type: "EVENT_UPDATED",
+        eventId: current.id,
+        organizerId: current.organizerId,
     });
 
     return { id: current.id };
@@ -1355,6 +1410,14 @@ export async function cancelEvent(
         request,
     });
 
+    // REALTIME: cancellation is the widest event change in the product — the catalog, the event's
+    // orders, refund eligibility and the buyers' own pages all move. Announced once, after commit.
+    publishEventChanged({
+        type: "EVENT_CANCELLED",
+        eventId: current.id,
+        organizerId: current.organizerId,
+    });
+
     return { event: updated, expiredOrders, alreadyCancelled: false };
 }
 
@@ -1463,6 +1526,12 @@ export async function archiveEvent(
             dataDeleted: false,
         },
         request,
+    });
+
+    publishEventChanged({
+        type: "EVENT_UPDATED",
+        eventId: current.id,
+        organizerId: current.organizerId,
     });
 
     return { event: updated, alreadyArchived: false };

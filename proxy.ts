@@ -143,6 +143,16 @@ export const PROTECTED_API_PREFIXES = [
     // the service guard: own-scope for a PIC reading their own ledger, or a tenant/platform
     // permission for an operator. This entry is defence in depth.
     "/api/reports/",
+    // ── The realtime invalidation stream ──────────────────────────────────────
+    // A long-lived Server-Sent Events connection that carries invalidation NOTIFICATIONS only,
+    // never data. It requires a session because the set of signals a connection may receive is
+    // derived from the caller's server-resolved scope, and an anonymous caller has no scope to
+    // derive: the handler refuses 401 and delivers nothing. This entry makes the proxy answer
+    // 401 JSON before the stream is ever constructed, which is what keeps an EventSource from
+    // being handed a redirect to the login page it cannot use. The real control is inside the
+    // handler (`resolveRealtimeAudience` plus the audience intersection), exactly like the
+    // prefixes above; this entry is defence in depth.
+    "/api/realtime/",
 ];
 
 /**

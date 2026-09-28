@@ -1,5 +1,7 @@
 import type { PaymentStatus } from "@prisma/client";
 
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import {
     DataTable,
     EmptyBlock,
@@ -11,6 +13,7 @@ import {
 } from "@/components/dashboard/primitives";
 import ReconcilePaymentButton from "@/components/organizer/ReconcilePaymentButton";
 import { PERMISSIONS, decideOrganizerPermission, getAuthzScope } from "@/lib/authz";
+import { PAYMENT_STATUS_LABELS } from "@/lib/dashboard/filter-options";
 import { listDashboardPayments } from "@/lib/dashboard/payments";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
@@ -22,15 +25,19 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * webhook, so an operator cannot manufacture a paid order here. The gateway-issued VA number
  * is shown so an operator can match a bank statement against it.
  *
- * ── PHASE 27E: "VERIFIKASI STATUS" IS NOT A MANUAL PAID OVERRIDE ────────────────
- * The one action added to this page ASKS the provider for the authoritative status of a
- * transaction it already knows about. The operator supplies no amount, no status and no
- * transaction id — the button sends an empty POST whose URL names the payment, and the
- * server resolves everything else. A payment changes state only when the provider's own
- * answer says it was paid, matched against the persisted transaction id, the environment,
- * the reference, the instrument and the amount. So this is the same authority the webhook
- * has, obtained over a different channel; it is not the "admin can mark it paid" control
- * the paragraph above promises is absent.
+ * ── THE STATUS FILTER WAS ALREADY IMPLEMENTED AND INVISIBLE ─────────────────────
+ * `?status=` has been parsed and forwarded to `listDashboardPayments` since the page was written,
+ * but no control ever rendered it — the filter existed only for someone who typed the URL. It is now
+ * a visible row of pills over the SAME validated enum members, so nothing about the query changes; the
+ * accepted values are exactly the ones `parseStatus` already narrowed against.
+ *
+ * ── THE RECONCILIATION WORKLIST BECOMES USABLE ──────────────────────────────────
+ * `lib/dashboard/payments.ts` describes this list as the reconciliation worklist and notes that "the
+ * table already searches by payment reference and order number". That was true of the read model and
+ * of no visible control. The search box is the missing half: an operator holding a stuck payment's
+ * reference can now find it and verify it in one click. The per-row action is unchanged, and it is
+ * still the only thing on this page that can move a payment's state — by ASKING the provider, never
+ * by asserting.
  *
  * The column is rendered only where the actor holds `payment.reconcile` in that payment's
  * own tenant, and rows whose provider transaction id was never captured show the reason
@@ -38,6 +45,9 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Payments" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -93,12 +103,35 @@ export default async function DashboardPaymentsPage({
         limit: 20,
     });
 
+    const statusField = buildFilterField({
+        name: "status",
+        label: "Status pembayaran",
+        allLabel: "Semua status",
+        values: status ? [status] : [],
+        members: VALID_STATUSES,
+        labels: PAYMENT_STATUS_LABELS,
+    });
+
     return (
         <div className="flex flex-col gap-6">
             <PageHeader
                 eyebrow="Dashboard"
                 title="Pembayaran"
                 description="Percobaan pembayaran pada gateway. Status berubah menjadi PAID hanya setelah webhook terverifikasi; tidak ada perubahan manual dari dashboard."
+            />
+
+            <FilterBar
+                basePath="/dashboard/payments"
+                current={{
+                    status: status ?? undefined,
+                    q: params.q,
+                }}
+                fields={[statusField]}
+                search={{
+                    label: "Cari pembayaran",
+                    placeholder: "Referensi, nomor pesanan, atau pembeli",
+                    value: params.q,
+                }}
             />
 
             <DataTable
@@ -190,7 +223,7 @@ export default async function DashboardPaymentsPage({
                         page={page}
                         totalPages={result.pagination.totalPages}
                         basePath="/dashboard/payments"
-                        query={{ status: params.status, q: params.q }}
+                        query={{ status: status ?? undefined, q: params.q }}
                         label="Halaman"
                     />
                 }

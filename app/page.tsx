@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 import EventRow from "@/components/ticketing/EventRow";
@@ -8,12 +9,14 @@ import SiteShell from "@/components/ticketing/SiteShell";
 import Reveal from "@/components/ui/Reveal";
 import { parseOrThrow } from "@/lib/api/validation";
 import { getServerOrigin } from "@/lib/app-origin.server";
+import { getApplicationBranding } from "@/lib/app-settings";
 import {
     countPublicEventsBySport,
     listPublicEvents,
     type PublicEventCard,
 } from "@/lib/events/catalog";
 import { catalogQuerySchema } from "@/lib/events/validation";
+import { platformTitle } from "@/lib/metadata";
 import { listPublicSports } from "@/lib/sports/service";
 
 /**
@@ -46,11 +49,23 @@ import { listPublicSports } from "@/lib/sports/service";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = {
-    title: "TinggalKlik.Co — Temukan Event & Pertandingan Olahraga",
-    description:
-        "Cari event olahraga dan pertandingan di seluruh Indonesia: basket, badminton, futsal, voli, lari, dan lainnya. Beli tiket dan simpan e-tiket Anda.",
-};
+/**
+ * The landing page's title, with the brand composed rather than spelled out.
+ *
+ * `title.absolute` is used deliberately: this route IS the segment the root layout's
+ * `title.template` is defined in, so a template is not applied to it. Composing here through the
+ * SAME helper the layout uses is what keeps "Home — TinggalKlik.Co" identical in shape to every other
+ * page's title while still following a renamed platform.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+    const branding = await getApplicationBranding();
+
+    return {
+        title: { absolute: platformTitle("Home", branding.platformName) },
+        description:
+            "Cari event olahraga dan pertandingan di seluruh Indonesia: basket, badminton, futsal, voli, lari, dan lainnya. Beli tiket dan simpan e-tiket Anda.",
+    };
+}
 
 const SECTION_LIMIT = 8;
 

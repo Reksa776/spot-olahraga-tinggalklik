@@ -1,3 +1,4 @@
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
 import {
     DataTable,
     EmptyBlock,
@@ -14,9 +15,21 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * A customer is a `User` with at least one order in the organizers the actor may read orders
  * in — derived, never a second customer model. The aggregation is done in the database, so
  * the page does not need to load every order to count them.
+ *
+ * ── THE SEARCH THE READ MODEL ALREADY HAD ───────────────────────────────────────
+ * `listDashboardCustomers` has always accepted `q` and resolved it through `buildBuyerSearch`
+ * (name / email / phone). The page never read the parameter and never forwarded it, so the capability
+ * was unreachable from the product. It is now a labelled search box and the parameter is passed
+ * through unchanged — which is the whole change: no new filter, no new predicate, no new column.
+ *
+ * The bar carries no pill row because this list has no status to filter on; the search box IS the
+ * complete filter set. Pagination keeps holding the term, so page 3 of a search stays that search.
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Customers" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -26,7 +39,7 @@ const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
 export default async function DashboardCustomersPage({
     searchParams,
 }: {
-    searchParams: Promise<{ page?: string }>;
+    searchParams: Promise<{ page?: string; q?: string }>;
 }) {
     const params = await searchParams;
     const scope = await getAuthzScope();
@@ -37,7 +50,11 @@ export default async function DashboardCustomersPage({
 
     const page = params.page ? Number(params.page) : 1;
 
-    const result = await listDashboardCustomers(scope, { page, limit: 20 });
+    const result = await listDashboardCustomers(scope, {
+        q: params.q ?? null,
+        page,
+        limit: 20,
+    });
 
     return (
         <div className="flex flex-col gap-6">
@@ -45,6 +62,17 @@ export default async function DashboardCustomersPage({
                 eyebrow="Dashboard"
                 title="Pelanggan"
                 description="Pembeli yang pernah memesan tiket dari event yang bisa kamu akses. Belanja dihitung dari pesanan berstatus lunas."
+            />
+
+            <FilterBar
+                basePath="/dashboard/customers"
+                current={{ q: params.q }}
+                fields={[]}
+                search={{
+                    label: "Cari pelanggan",
+                    placeholder: "Nama, email, atau nomor telepon",
+                    value: params.q,
+                }}
             />
 
             <DataTable
@@ -96,6 +124,7 @@ export default async function DashboardCustomersPage({
                         page={page}
                         totalPages={result.pagination.totalPages}
                         basePath="/dashboard/customers"
+                        query={{ q: params.q }}
                         label="Halaman"
                     />
                 }

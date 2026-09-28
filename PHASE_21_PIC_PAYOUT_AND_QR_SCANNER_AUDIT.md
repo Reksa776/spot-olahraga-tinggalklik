@@ -44,6 +44,32 @@ A `PIC`-role account with a non-ACTIVE profile gets `AccountStandingNotice` (§P
 | "Pencairan" table (50 rows) — **payout history, read-only** | `listMySettlements` | `pic_fee.read.own` |
 | "Ekspor CSV" anchor | `/api/reports/my-pic-fee/export` | `report.export.own_pic_fee` |
 
+> **SUPERSEDED — PIC DASHBOARD V2.** The rows above describe the pre-V2 tiles. The StatGrid now
+> separates the two questions that were collapsed into one: **Potensi Fee** = `fee.potential`
+> (`Σ EARNED − Σ REVERSAL`, i.e. the fee the sales have earned, *not* reduced by a `PAYOUT`) and
+> **Fee Bersih** = `payout.approvedTotal` (`Σ Settlement.netAmount` over `APPROVED` ∪ `PAID`, i.e.
+> what the settlement engine has approved for transfer). The old flat
+> `feeEarned`/`feeReversed`/`netFee` fields became the nested `fee` block
+> (`earned`/`reversed`/`potential`/`netBalance`), the "Ringkasan Fee" card shows Potensi Fee **and**
+> Fee Bersih, and all five tiles are links to the section that produces each number. Sources:
+> `app/dashboard/pic/page.tsx`, `lib/pic/self-service.ts#getMyPicOverview`,
+> `lib/pic/ledger.ts#getPicFeeEntitlement`. The entitlement/payout split, the `Event Saya` filters
+> and the per-event sales columns are pinned by `__tests__/pic-self-service/dashboard-*.test.ts`.
+>
+> **SUPERSEDED — PIC DASHBOARD V3 (the `Tiket Terjual` tile no longer loops).** V2 pointed the
+> `Tiket Terjual` tile at `?attributionPaymentStatus=PAID#attributions`, i.e. a *filtered view of
+> the order list the reader had just scrolled past* — clicking the tile looked like the dashboard
+> was going in circles. The tile now targets its own `#tickets-sold` section: an **event-level**
+> rollup (`EVENT | Pesanan Lunas | Tiket Terjual | Penjualan`) over the identical PAID-only set the
+> tile counts, built by `getMyPicTicketSales` (`lib/pic/self-service.ts`) — two aggregations plus
+> one event lookup, no query per event or per order, and its totals equal the KPI by construction.
+> `Atribusi Terbaru` remains the **order-level** list (all payment states, payment filter intact)
+> and gains a per-order `Tiket` column (`Σ EventOrderItem.quantity`, one grouped query per page).
+> `Pesanan Atribusi → #attributions`, `Event Ditugaskan → ?assignmentStatus=ACTIVE#events`,
+> `Potensi Fee → #fees` and `Fee Bersih → #payouts` are unchanged. Pinned by
+> `__tests__/pic-self-service/dashboard-kpi-navigation.test.ts` (§KPI navigation) and
+> `dashboard-filters.integration.test.ts` (§B2, real database).
+
 The "Pencairan" card copy is explicit that payouts are **operator-managed**: *"Pencairan dikelola penyelenggara…"* and *"Penyelenggara akan menyiapkan pembayaran fee kamu…"*.
 
 ### 2.3 Is there an "Ajukan Pencairan" button today? **No.**

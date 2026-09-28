@@ -7,6 +7,7 @@ import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import { requireOwnResource } from "@/lib/authz/guards";
 import { PERMISSIONS, type AuthzScope } from "@/lib/authz/permissions";
 import { prisma } from "@/lib/prisma";
+import { publishPaymentCreated, publishPaymentUpdated } from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
 import { moneyString } from "../order-payload";
@@ -560,6 +561,20 @@ export async function createOrderPayment(params: {
             },
         });
 
+        /*
+         * REALTIME: the attempt row is committed as FAILED, so the payments list has something new
+         * to show. This is the one flow that matches PAYMENT_UPDATED — payment state moved WITHOUT
+         * money settling (no money ever moved here: no session was ever recorded, so the order was
+         * not advanced). The publish therefore precedes the throw deliberately: the write is
+         * committed, and a caller-facing 503 does not un-commit it.
+         */
+        publishPaymentUpdated({
+            paymentId: payment.id,
+            orderId: order.id,
+            organizerId: order.organizerId,
+            buyerUserId: order.userId,
+        });
+
         throw new AppError(ERROR_CODES.PROVIDER_UNAVAILABLE, {
             message: "Gagal membuat sesi pembayaran. Silakan coba lagi.",
             details: { reason },
@@ -712,6 +727,19 @@ export async function createOrderPayment(params: {
         request: params.httpRequest,
     });
 
+    /*
+     * REALTIME: the session is committed and the order's `UNPAID → PENDING` transition is committed
+     * with it, so both the payments list and the order list have something new to show.
+     *
+     * Emitted only on the CREATING path. The resume path above returns a session that already
+     * existed, and announcing it would send every open tab to re-read data that has not changed.
+     */
+    publishPaymentCreated({
+        paymentId: settled.id,
+        orderId: order.id,
+        organizerId: order.organizerId,
+        buyerUserId: order.userId,
+    });
 
     return toPayload({ order: currentOrder, payment: settled, resumed: false });
 }

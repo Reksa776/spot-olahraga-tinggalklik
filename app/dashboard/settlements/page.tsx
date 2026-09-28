@@ -9,10 +9,17 @@ import {
     TextLink,
     type Tone,
 } from "@/components/dashboard/primitives";
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import { SettlementPrepareForm } from "@/components/dashboard/SettlementPrepareForm";
+import { SETTLEMENT_STATUS_LABELS } from "@/lib/dashboard/filter-options";
 import { prisma } from "@/lib/prisma";
 import { listSettlements } from "@/lib/ticketing/settlement/service";
-import { SETTLEMENT_STATUSES } from "@/lib/ticketing/settlement/validation";
+import {
+    SETTLEMENT_AWAITING_APPROVAL_STATUSES,
+    SETTLEMENT_STATUSES,
+    type SettlementStatus,
+} from "@/lib/ticketing/settlement/validation";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
@@ -28,12 +35,21 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * `settlement.prepare` tenants (or refuses a forged `organizerId` as 404), so an actor
  * with no settleable tenant simply sees an empty state — never another organizer's payout.
  *
- * ── STATUS FILTER ───────────────────────────────────────────────────────────────────
- * `?status=` mirrors the settlement enums. An unknown value is ignored (the page never
- * builds a query the schema would reject), exactly like the refunds board.
+ * ── STATUS FILTER: ONE PILL ROW, TWO VOCABULARIES ───────────────────────────────
+ * `?status=` mirrors the settlement enums, and an unknown value is ignored (the page never builds a
+ * query the schema would reject). The "Menunggu Persetujuan" queue — `REQUESTED` ∪
+ * `PENDING_APPROVAL`, the same union the overview's "Pencairan menunggu" tile counts — stays the
+ * repeated parameter the read model and the pager already handle, and its members are taken from
+ * `SETTLEMENT_AWAITING_APPROVAL_STATUSES` by reference so the label and the predicate cannot drift.
+ *
+ * Nothing in the money engine changed: this page still only READS, and every financial step still
+ * goes through the API service that re-guards it.
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Settlements" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -53,18 +69,40 @@ const STATUS_TONE: Record<string, Tone> = {
     REJECTED: "error",
 };
 
-function parseStatus(
-    value: string | undefined
-): (typeof SETTLEMENT_STATUSES)[number] | null {
-    return value && (SETTLEMENT_STATUSES as readonly string[]).includes(value)
-        ? (value as (typeof SETTLEMENT_STATUSES)[number])
-        : null;
+function parseStatuses(
+    value: string | string[] | undefined
+): SettlementStatus[] {
+    if (value === undefined) {
+        return [];
+    }
+
+    const values = Array.isArray(value) ? value : [value];
+    const seen = new Set<SettlementStatus>();
+
+    for (const candidate of values) {
+        if ((SETTLEMENT_STATUSES as readonly string[]).includes(candidate)) {
+            seen.add(candidate as SettlementStatus);
+        }
+    }
+
+    return [...seen];
+}
+
+/** Set equality (order-independent), used to recognise the "Menunggu Persetujuan" queue. */
+function sameStatusSet(
+    selected: readonly SettlementStatus[],
+    expected: readonly SettlementStatus[]
+): boolean {
+    return (
+        selected.length === expected.length &&
+        expected.every((status) => selected.includes(status))
+    );
 }
 
 export default async function DashboardSettlementsPage({
     searchParams,
 }: {
-    searchParams: Promise<{ status?: string; page?: string }>;
+    searchParams: Promise<{ status?: string | string[]; page?: string }>;
 }) {
     const params = await searchParams;
     const scope = await getAuthzScope();
@@ -73,12 +111,21 @@ export default async function DashboardSettlementsPage({
         return null;
     }
 
-    const status = parseStatus(params.status);
+    /*
+     * A repeated `?status=` is how the "Menunggu Persetujuan" union is expressed
+     * (`REQUESTED` + `PENDING_APPROVAL`). Every value is narrowed against the settlement enum
+     * before it reaches the scoped read; an invalid value is dropped, not forwarded.
+     */
+    const statuses = parseStatuses(params.status);
+    const isAwaitingApproval = sameStatusSet(
+        statuses,
+        SETTLEMENT_AWAITING_APPROVAL_STATUSES
+    );
     const page = params.page ? Number(params.page) : 1;
 
     const [result, organizers, pics] = await Promise.all([
         listSettlements(scope, {
-            status: status ?? undefined,
+            statuses,
             page,
             limit: 20,
         }),
@@ -112,6 +159,21 @@ export default async function DashboardSettlementsPage({
 
     const totalPages = Math.max(1, Math.ceil(result.total / 20));
 
+    const statusField = buildFilterField({
+        name: "status",
+        label: "Status pencairan",
+        allLabel: "Semua status",
+        values: statuses,
+        members: SETTLEMENT_STATUSES,
+        labels: SETTLEMENT_STATUS_LABELS,
+        // The approval queue is a repeated parameter, exactly as the KPI tile deep-links it.
+        union: {
+            value: "awaiting_approval",
+            label: "Menunggu Persetujuan",
+            statuses: SETTLEMENT_AWAITING_APPROVAL_STATUSES,
+        },
+    });
+
     return (
         <div className="flex flex-col gap-6">
             <PageHeader
@@ -129,14 +191,24 @@ export default async function DashboardSettlementsPage({
                 }))}
             />
 
+            <FilterBar
+                basePath="/dashboard/settlements"
+                current={{
+                    status: statuses.length > 0 ? statuses : undefined,
+                }}
+                fields={[statusField]}
+            />
+
             <DataTable
                 minWidth={1100}
                 empty={
                     <EmptyBlock
                         title={
-                            status
-                                ? `Belum ada pencairan ${status}`
-                                : "Belum ada pencairan"
+                            statuses.length === 0
+                                ? "Belum ada pencairan"
+                                : isAwaitingApproval
+                                  ? "Tidak ada pencairan menunggu persetujuan"
+                                  : `Belum ada pencairan ${statuses.join(", ")}`
                         }
                         description="Pencairan yang disiapkan akan muncul di sini. Gunakan formulir di atas untuk menyiapkan pencairan baru."
                     />
@@ -216,7 +288,7 @@ export default async function DashboardSettlementsPage({
                         page={page}
                         totalPages={totalPages}
                         basePath="/dashboard/settlements"
-                        query={{ status: params.status }}
+                        query={{ status: statuses.length > 0 ? statuses : undefined }}
                         label="Halaman"
                     />
                 }

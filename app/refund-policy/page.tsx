@@ -3,15 +3,14 @@ import Link from "next/link";
 import SiteShell from "@/components/ticketing/SiteShell";
 import { getPublicStoreSetting } from "@/lib/store-settings";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "Kebijakan Refund — <platform
+ * name>". The `description` is inherited into `openGraph` rather than duplicated there.
+ */
 export const metadata: Metadata = {
     title: "Kebijakan Refund",
     description:
         "Kebijakan pengembalian dana (refund) untuk pembelian tiket di TinggalKlik.Co. Baca syarat, kondisi, dan prosedur pengajuan refund.",
-    openGraph: {
-        title: "Kebijakan Refund",
-        description:
-            "Kebijakan pengembalian dana (refund) untuk pembelian tiket di TinggalKlik.Co.",
-    },
 };
 
 export default async function RefundPolicyPage() {

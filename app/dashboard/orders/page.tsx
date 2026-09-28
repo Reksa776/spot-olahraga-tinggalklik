@@ -1,17 +1,23 @@
-import type { OrderStatus } from "@prisma/client";
+import type { OrderStatus, PaymentStatus } from "@prisma/client";
 
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import {
     DataTable,
     EmptyBlock,
     LinkPagination,
     PageHeader,
     StatusBadge,
-    TableToolbar,
     TextLink,
     type Tone,
 } from "@/components/dashboard/primitives";
 import { getAuthzScope } from "@/lib/authz";
-import { listDashboardOrders } from "@/lib/dashboard/orders";
+import { ORDER_STATUS_LABELS, PAYMENT_STATUS_LABELS } from "@/lib/dashboard/filter-options";
+import {
+    ORDER_STATUS_FILTERS,
+    PAYMENT_STATUS_FILTERS,
+    listDashboardOrders,
+} from "@/lib/dashboard/orders";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
 /**
@@ -20,9 +26,40 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * Read-only, scoped to the organizers the actor may read orders in. No control on this page
  * can change an order's status or amount — the design forbids admin control of money, and
  * the order lifecycle is driven by checkout, payment and the verified webhook.
+ *
+ * ── ONE STATUS FILTER: THE GATEWAY PAYMENT STATE ───────────────────────────────
+ * `Status pembayaran` is the ONE status filter this page offers, as a row of visible pills, plus a
+ * search box:
+ *
+ *   paymentStatus   `EventOrder.paymentStatus` — the GATEWAY column, a lifecycle of its own. A late
+ *                   settlement leaves a TERMINAL order status (`CANCELLED`/`EXPIRED`) while the
+ *                   payment is `PAID`, which is why the "Tiket terjual" tile links here with
+ *                   `paymentStatus=PAID` and never with `status=PAID`;
+ *   q               the free-text search the read model already implemented (order number, buyer
+ *                   name, buyer email).
+ *
+ * Two order-status concepts deliberately NO LONGER have a control here, because a two-status-model
+ * choice on one list is what made this page ambiguous:
+ *
+ *   status          the ORDER lifecycle. The pill row is gone; a validated `?status=` is still
+ *                   HONOURED, because the overview's "Menunggu bayar" tile deep-links to
+ *                   `/dashboard/orders?status=PENDING_PAYMENT` and that drill-down must keep
+ *                   working. It is stated in the bar's `hint` when it is in force, so the table
+ *                   never narrows invisibly — but it is not a choosable filter any more;
+ *   review=1        the operator worklist. The control, the `?review=1` link and the page's
+ *                   parameter are gone. The read-model capability is UNCHANGED (`needsReview` is
+ *                   still what the reconciliation read path uses; see `lib/dashboard/orders.ts`),
+ *                   so nothing in the backend lost a predicate to make this legible.
+ *
+ * `status` and `paymentStatus` remain SIBLING `where` keys in the read model, so when a deep link
+ * carries a status it is AND-ed with the payment filter — one narrows the other, it never replaces
+ * it.
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Orders" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -49,18 +86,27 @@ const PAYMENT_TONE: Record<string, Tone> = {
     PARTIALLY_REFUNDED: "info",
 };
 
-const VALID_STATUSES: OrderStatus[] = [
-    "PENDING_PAYMENT",
-    "PAID",
-    "CANCELLED",
-    "EXPIRED",
-    "REFUNDED",
-    "PARTIALLY_REFUNDED",
-];
+/*
+ * Both vocabularies come from the read model, which is where the two lifecycles are defined, so the
+ * page cannot validate against a list that has drifted from the predicates it feeds.
+ */
+const VALID_STATUSES = ORDER_STATUS_FILTERS;
+const VALID_PAYMENT_STATUSES = PAYMENT_STATUS_FILTERS;
 
+/** The order lifecycle, validated. Only a deep link ever supplies one. */
 function parseStatus(value: string | undefined): OrderStatus | null {
-    return value && (VALID_STATUSES as string[]).includes(value)
+    return value && (VALID_STATUSES as readonly string[]).includes(value)
         ? (value as OrderStatus)
+        : null;
+}
+
+function parsePaymentStatus(
+    value: string | string[] | undefined
+): PaymentStatus | null {
+    const raw = Array.isArray(value) ? value[0] : value;
+
+    return raw && (VALID_PAYMENT_STATUSES as readonly string[]).includes(raw)
+        ? (raw as PaymentStatus)
         : null;
 }
 
@@ -68,10 +114,10 @@ export default async function DashboardOrdersPage({
     searchParams,
 }: {
     searchParams: Promise<{
-        status?: string;
+        status?: string | string[];
+        paymentStatus?: string | string[];
         page?: string;
         q?: string;
-        review?: string;
     }>;
 }) {
     const params = await searchParams;
@@ -81,20 +127,41 @@ export default async function DashboardOrdersPage({
         return null;
     }
 
-    const status = parseStatus(params.status);
+    /*
+     * A deep-linked order status, validated against `OrderStatus` before it reaches Prisma. It has no
+     * control any more, but it is still forwarded: the "Menunggu bayar" tile's drill-down depends on
+     * it, and dropping it would make that tile open a list of every order.
+     */
+    const status = parseStatus(Array.isArray(params.status) ? params.status[0] : params.status);
+    const paymentStatus = parsePaymentStatus(params.paymentStatus);
     const page = params.page ? Number(params.page) : 1;
-    // PHASE 18B (D-P17-17 / D-P17-18): the "needs attention" view. It is a READ filter on
-    // two recoverable states, and review mode deliberately ignores the status filter so an
-    // operator sees the whole worklist in one place.
-    const needsReview = params.review === "1";
 
     const result = await listDashboardOrders(scope, {
-        status: needsReview ? null : status,
+        status,
+        paymentStatus,
         q: params.q ?? null,
-        needsReview,
         page,
         limit: 20,
     });
+
+    /* The ONE filter field this page owns. */
+    const paymentStatusField = buildFilterField({
+        name: "paymentStatus",
+        label: "Status pembayaran",
+        allLabel: "Semua pembayaran",
+        values: paymentStatus ? [paymentStatus] : [],
+        members: VALID_PAYMENT_STATUSES,
+        labels: PAYMENT_STATUS_LABELS,
+    });
+
+    /*
+     * The deep link, stated rather than offered: the order status a KPI carried in, and the link
+     * that clears it. Deliberately NOT a pill row — there is nothing here to choose from, and the
+     * "status pesanan" filter is not part of this page's filter surface.
+     */
+    const deepLinkHint = status
+        ? `Menampilkan pesanan dengan status pesanan ${ORDER_STATUS_LABELS[status] ?? status} (dari kartu dashboard). `
+        : null;
 
     return (
         <div className="flex flex-col gap-6">
@@ -104,40 +171,49 @@ export default async function DashboardOrdersPage({
                 description="Pesanan tiket dari event yang bisa kamu akses. Total diambil dari snapshot harga saat pemesanan, bukan dari harga tiket saat ini."
             />
 
-            {/*
-                PHASE 18B (D-P17-17 / D-P17-18) — the two recoverable states the product
-                decisions left manual get a worklist instead of an automatic resolution:
-                a late settlement (money in, fulfilment blocked) and a paid order with no
-                tickets (issuance is buyer-triggered). Nothing here issues a ticket or
-                restores inventory; it only makes the cases findable.
-            */}
-            <TableToolbar>
-                <div className="flex items-center gap-4 text-sm">
-                    <TextLink href="/dashboard/orders">
-                        {needsReview ? "Semua pesanan" : "• Semua pesanan"}
-                    </TextLink>
-                    <TextLink href="/dashboard/orders?review=1">
-                        {needsReview ? "• Perlu tindakan" : "Perlu tindakan"}
-                    </TextLink>
-                    <span className="text-xs text-muted-foreground">
-                        Pembayaran terlambat &amp; pesanan sudah dibayar tetapi tiket belum
-                        terbit
-                    </span>
-                </div>
-            </TableToolbar>
+            <FilterBar
+                basePath="/dashboard/orders"
+                /*
+                 * `status` rides along so a deep-linked drill-down survives a payment-filter change
+                 * and pagination — the read model ANDs the two.
+                 */
+                current={{
+                    status: status ?? undefined,
+                    paymentStatus: paymentStatus ?? undefined,
+                    q: params.q,
+                }}
+                fields={[paymentStatusField]}
+                search={{
+                    label: "Cari pesanan",
+                    placeholder: "Nomor pesanan, pembeli, atau email",
+                    value: params.q,
+                }}
+                hint={
+                    deepLinkHint ? (
+                        <>
+                            {deepLinkHint}
+                            <TextLink href="/dashboard/orders">
+                                Tampilkan semua pesanan
+                            </TextLink>
+                        </>
+                    ) : (
+                        "Status pembayaran adalah kolom gateway (paymentStatus), terpisah dari status pesanan."
+                    )
+                }
+            />
 
             <DataTable
                 minWidth={1060}
                 empty={
                     <EmptyBlock
                         title={
-                            needsReview
-                                ? "Tidak ada pesanan yang perlu tindakan"
+                            status
+                                ? `Tidak ada pesanan berstatus ${ORDER_STATUS_LABELS[status] ?? status}`
                                 : "Belum ada pesanan"
                         }
                         description={
-                            needsReview
-                                ? "Tidak ada pembayaran terlambat dan tidak ada pesanan yang sudah dibayar tetapi belum menerbitkan tiket."
+                            status
+                                ? "Tidak ada pesanan dengan status pesanan itu pada event yang bisa kamu akses."
                                 : "Pesanan akan muncul di sini setelah pembeli menyelesaikan checkout."
                         }
                     />
@@ -150,7 +226,14 @@ export default async function DashboardOrdersPage({
                     { header: "Total", align: "right" },
                     { header: "Status" },
                     { header: "Pembayaran" },
-                    { header: "Perlu tindakan" },
+                    /*
+                     * The read-only operational signal, kept: a late settlement and a paid order with
+                     * no tickets are exactly the states an operator must be able to SEE (see
+                     * `lib/dashboard/orders.ts`). The header no longer repeats the removed worklist
+                     * filter's name, so the column reads as information rather than as the ghost of a
+                     * filter that is gone.
+                     */
+                    { header: "Perhatian" },
                     { header: "Dibuat" },
                 ]}
                 rows={result.items.map((order) => ({
@@ -229,9 +312,9 @@ export default async function DashboardOrdersPage({
                         totalPages={result.pagination.totalPages}
                         basePath="/dashboard/orders"
                         query={{
-                            status: params.status,
+                            status: status ?? undefined,
+                            paymentStatus: paymentStatus ?? undefined,
                             q: params.q,
-                            review: params.review,
                         }}
                         label="Halaman"
                     />

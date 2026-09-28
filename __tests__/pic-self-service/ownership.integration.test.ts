@@ -394,7 +394,7 @@ describe("TEST 7 — reading another user's records is PIC_ACCESS_DENIED", () =>
 describe("TEST 8 — every read is scoped to the session user's own profile", () => {
     test("A sees their own assignments, including the revoked one, and never B's", async () => {
         signInAs(picA.id);
-        const assignments = await listMyPicAssignments(picA.id);
+        const { items: assignments } = await listMyPicAssignments(picA.id);
 
         const events = assignments.map((a) => a.eventSlug).sort();
         expect(events).toEqual([
@@ -451,7 +451,7 @@ describe("TEST 9 — a CUSTOMER owning a profile may read profile-scoped data, n
         expect(profile.status).toBe("ACTIVE");
         expect(profile.id).toBe(profileCustomer.id);
 
-        const assignments = await listMyPicAssignments(customerPic.id);
+        const { items: assignments } = await listMyPicAssignments(customerPic.id);
         expect(assignments.map((a) => a.eventSlug)).toEqual([
             `picss-own-evt-a-${SUFFIX}`,
         ]);

@@ -3,15 +3,14 @@ import Link from "next/link";
 import SiteShell from "@/components/ticketing/SiteShell";
 import { getPublicStoreSetting } from "@/lib/store-settings";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "Syarat & Ketentuan —
+ * <platform name>". The `description` is inherited into `openGraph` rather than duplicated there.
+ */
 export const metadata: Metadata = {
     title: "Syarat & Ketentuan",
     description:
         "Syarat dan ketentuan penggunaan layanan dan pembelian tiket di TinggalKlik.Co. Baca dengan seksama sebelum melakukan transaksi.",
-    openGraph: {
-        title: "Syarat & Ketentuan",
-        description:
-            "Syarat dan ketentuan penggunaan layanan dan pembelian tiket di TinggalKlik.Co.",
-    },
 };
 
 const PLATFORM_NAME = "TinggalKlik.Co";

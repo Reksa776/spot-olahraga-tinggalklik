@@ -151,13 +151,16 @@ describe("the dashboard overview shows operational KPIs, charts and recent activ
         expect(source).toContain("EventPerformanceChart");
     });
 
-    it("offers a selectable period AND a custom date range", () => {
+    it("offers the period shortcuts AND a custom date range", () => {
         const source = code(DASHBOARD_PAGE);
 
-        expect(source).toContain("DASHBOARD_REPORT_PERIODS");
-        expect(source).toContain("period=");
+        // The shortcuts are a row of pill LINKS (one click, applied by the URL before hydration),
+        // and the explicit range stays a server-rendered GET form.
+        expect(source).toContain("PeriodPills");
         expect(source).toContain('type="date"');
         expect(source).toContain("resolveDashboardReportFilters");
+        // Neither control may become a client component: the window has to be right in the first byte.
+        expect(source).not.toContain("useState");
     });
 
     it("gates the charts on the report read permission and says so instead of plotting zeroes", () => {

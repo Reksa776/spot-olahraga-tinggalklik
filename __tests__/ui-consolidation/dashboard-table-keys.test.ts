@@ -205,3 +205,118 @@ describe("DataTable emits no missing-key warning", () => {
         ).toEqual([]);
     });
 });
+
+/*
+ * ==================================================================================
+ * A SLOT THE CALLER PASSES AS A LIST IS STILL WARNING-FREE
+ * ==================================================================================
+ *
+ * The reported warning names `DataTable` as the renderer AND the page as the element's owner:
+ *
+ *   "Each child in a list should have a unique "key" prop.
+ *    Check the render method of `DataTable`.
+ *    It was passed a child from DashboardOrdersPage."
+ *
+ * That is the signature of an ARRAY created by the page and rendered inside `DataTable` — a slot
+ * (`empty` / `caption` / `footer`), a cell, or a column header the caller built as a list. React
+ * requires a key on every element that lands in an array, and `React.Children.toArray` alone does
+ * NOT satisfy it (it marks the clones for re-validation). The regression below pins the fix: a
+ * list supplied for ANY slot renders without the warning.
+ */
+describe("DataTable tolerates a caller-supplied LIST in any slot", () => {
+    const LIST = [
+        createElement("span", null, "satu"),
+        createElement("span", null, "dua"),
+    ];
+
+    test("`footer` supplied as a list of unkeyed elements", () => {
+        expect(
+            warningsFrom(() =>
+                createElement(DataTable, {
+                    columns: COLUMNS,
+                    rows: [{ key: "r1", cells: ["a", "b", "c", "d"] }],
+                    footer: LIST,
+                })
+            )
+        ).toEqual([]);
+    });
+
+    test("`empty` supplied as a list of unkeyed elements", () => {
+        expect(
+            warningsFrom(() =>
+                createElement(DataTable, {
+                    columns: COLUMNS,
+                    rows: [],
+                    empty: LIST,
+                })
+            )
+        ).toEqual([]);
+    });
+
+    test("`caption` supplied as a list of unkeyed elements", () => {
+        expect(
+            warningsFrom(() =>
+                createElement(DataTable, {
+                    columns: COLUMNS,
+                    rows: [{ key: "r1", cells: ["a", "b", "c", "d"] }],
+                    caption: LIST,
+                })
+            )
+        ).toEqual([]);
+    });
+
+    test("a single CELL supplied as a list of unkeyed elements", () => {
+        expect(
+            warningsFrom(() =>
+                createElement(DataTable, {
+                    columns: COLUMNS,
+                    rows: [
+                        {
+                            key: "r1",
+                            cells: [
+                                createElement("span", null, "a"),
+                                LIST,
+                                createElement("span", null, "c"),
+                                createElement("span", null, "d"),
+                            ],
+                        },
+                    ],
+                })
+            )
+        ).toEqual([]);
+    });
+
+    test("a column HEADER supplied as a list of unkeyed elements", () => {
+        expect(
+            warningsFrom(() =>
+                createElement(DataTable, {
+                    columns: [
+                        { header: "A" },
+                        { header: LIST },
+                        { header: "C" },
+                        { header: "D" },
+                    ],
+                    rows: [{ key: "r1", cells: ["a", "b", "c", "d"] }],
+                })
+            )
+        ).toEqual([]);
+    });
+
+    test("a keyed caller list keeps its identity — the fix does not re-key by position blindly", () => {
+        // The rendered markup must still contain every child, in order, with no wrapper elements.
+        const html = renderToStaticMarkup(
+            createElement(DataTable, {
+                columns: COLUMNS,
+                rows: [{ key: "r1", cells: ["a", "b", "c", "d"] }],
+                footer: [
+                    createElement("span", { key: "first" }, "satu"),
+                    createElement("span", { key: "second" }, "dua"),
+                ],
+            })
+        );
+
+        expect(html).toContain("satu");
+        expect(html).toContain("dua");
+        expect(html).not.toContain("<div><span>satu</span>");
+    });
+});

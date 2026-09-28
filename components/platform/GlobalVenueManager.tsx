@@ -44,7 +44,17 @@ type Venue = {
     eventCount: number;
 };
 
-export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
+/**
+ * @param filtered True when the list on screen is a SEARCH result, so the empty state describes the
+ *   search rather than claiming the platform has no canonical venues at all.
+ */
+export default function GlobalVenueManager({
+    venues,
+    filtered = false,
+}: {
+    venues: Venue[];
+    filtered?: boolean;
+}) {
     const router = useRouter();
 
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -122,8 +132,16 @@ export default function GlobalVenueManager({ venues }: { venues: Venue[] }) {
                     minWidth={780}
                     empty={
                         <EmptyBlock
-                            title="Belum ada venue global"
-                            description="Venue kanonik ditambahkan di sini agar bisa dipakai semua organizer."
+                            title={
+                                filtered
+                                    ? "Tidak ada venue global yang cocok"
+                                    : "Belum ada venue global"
+                            }
+                            description={
+                                filtered
+                                    ? "Tidak ada venue kanonik dengan nama itu. Hapus kata kuncinya untuk melihat semuanya."
+                                    : "Venue kanonik ditambahkan di sini agar bisa dipakai semua organizer."
+                            }
                         />
                     }
                     columns={[

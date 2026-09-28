@@ -4,6 +4,10 @@ import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import { requireOrganizerAccess, requireOwnResource } from "@/lib/authz/guards";
 import { PERMISSIONS, type AuthzScope } from "@/lib/authz/permissions";
 import { prisma } from "@/lib/prisma";
+import {
+    publishRefundCreated,
+    publishRefundUpdated,
+} from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
 import { moneyString } from "../order-payload";
@@ -336,12 +340,54 @@ export async function requestRefund(
         request,
     });
 
+    // REALTIME, after the commit: the refund exists, so the tenant's queue, the buyer's order page
+    // and the PIC's ledger view all have something to re-read.
+    const requestAudience = await refundAudience(refundId);
+
+    publishRefundCreated({
+        refundId: String(refundId),
+        organizerId: order.organizerId,
+        buyerUserId: order.userId,
+        picProfileId: requestAudience.picProfileId,
+    });
+
     return payload;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Staff decisions
 // ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The audience a refund change must reach: the tenant, the buyer and the credited PIC of the order
+ * the refund belongs to.
+ *
+ * Resolved from the ORDER rather than from `Refund.requestedByUserId`, because an operator may
+ * raise or decide a refund the buyer never requested — and the person who must see the new state is
+ * the order's buyer either way. The credited PIC matters because a refund posts a REVERSAL to the
+ * fee ledger, which moves the PIC's own dashboard.
+ *
+ * One extra read per refund transition, on a path that runs a handful of times a day and always
+ * around a staff decision. That is a deliberate trade: threading `userId`/`picProfileId` out of
+ * six different `select` literals would widen each of them, and one of the six loads the refund
+ * without its order at all.
+ */
+async function refundAudience(refundId: number): Promise<{
+    buyerUserId: string | null;
+    picProfileId: string | null;
+}> {
+    const refund = await prisma.refund.findUnique({
+        where: { id: refundId },
+        select: {
+            eventOrder: { select: { userId: true, picProfileId: true } },
+        },
+    });
+
+    return {
+        buyerUserId: refund?.eventOrder?.userId ?? null,
+        picProfileId: refund?.eventOrder?.picProfileId ?? null,
+    };
+}
 
 async function loadRefundForDecision(refundId: number) {
     const refund = await prisma.refund.findUnique({
@@ -434,6 +480,15 @@ export async function approveRefund(
         request,
     });
 
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
+    });
+
     return payload;
 }
 
@@ -511,6 +566,15 @@ export async function rejectRefund(
         afterState: { status: "REJECTED", reason: input.reason },
         reason: "REFUND_REJECTED",
         request,
+    });
+
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
     });
 
     return payload;
@@ -640,6 +704,15 @@ export async function executeRefund(
         request,
     });
 
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
+    });
+
     return readRefundPayload(refundId);
 }
 
@@ -738,6 +811,19 @@ export async function settleRefund(
         });
     }
 
+    /*
+     * REALTIME: only a CONFIRMED settlement announces. `RETRY_LATER` returned above and rolled back,
+     * so a settlement that did not move money is silent — the same rule as the payment rail.
+     */
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
+    });
+
     return readRefundPayload(refundId);
 }
 
@@ -793,6 +879,17 @@ export async function failRefund(
     }
 
     await processFailedRefund(refundId, input.reason, { actor, request });
+
+    // REALTIME: the failure was committed and the ticket claims were released, so both the tenant's
+    // queue and the buyer's page have a new state to read.
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
+    });
 
     return readRefundPayload(refundId);
 }
@@ -895,6 +992,20 @@ export async function attachRefundEvidence(
         },
         reason: "REFUND_EVIDENCE_UPLOADED",
         request,
+    });
+
+    /*
+     * REALTIME: the row and the file are both committed, so the operator's detail view and the
+     * BUYER's own view of that refund can pick up the new evidence. The status did not change here,
+     * which is exactly why this is announced as an update rather than left implicit.
+     */
+    const audience = await refundAudience(refundId);
+
+    publishRefundUpdated({
+        refundId: String(refundId),
+        organizerId: refund.organizerId,
+        buyerUserId: audience.buyerUserId,
+        picProfileId: audience.picProfileId,
     });
 
     return { ...(await readRefundPayload(refundId)), evidence: stored };

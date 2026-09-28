@@ -2,15 +2,17 @@ import type { Metadata } from "next";
 import SiteShell from "@/components/ticketing/SiteShell";
 import FaqContent from "./FaqContent";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "FAQ — <platform name>".
+ *
+ * There is deliberately no `openGraph` block. Next.js inherits the resolved title and the
+ * `description` below into `openGraph` when a page does not set them, so a second copy here could
+ * only ever drift from the tab title.
+ */
 export const metadata: Metadata = {
-    title: "FAQ | Pertanyaan Umum",
+    title: "FAQ",
     description:
         "Jawaban atas pertanyaan umum seputar event, pembelian tiket, pembayaran, dan pengembalian dana di TinggalKlik.Co.",
-    openGraph: {
-        title: "FAQ | Pertanyaan Umum",
-        description:
-            "Jawaban atas pertanyaan umum seputar event, pembelian tiket, pembayaran, dan pengembalian dana.",
-    },
 };
 
 export default function FaqPage() {

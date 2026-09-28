@@ -44,7 +44,7 @@ import { getAuthzScope } from "@/lib/authz";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-    title: "Masuk",
+    title: "Login",
     description: "Masuk ke akun TinggalKlik.Co untuk membeli tiket dan mengelola event.",
     robots: { index: false, follow: false },
 };

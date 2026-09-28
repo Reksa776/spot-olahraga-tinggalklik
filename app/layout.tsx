@@ -1,13 +1,17 @@
 import "./globals.css";
 
+import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { Toaster } from "react-hot-toast";
 
 import { auth } from "@/auth";
 import AuthProvider from "@/components/providers/AuthProvider";
+import { RealtimeProvider } from "@/components/realtime/RealtimeProvider";
 import { THEME_BOOTSTRAP_SCRIPT } from "@/components/dashboard/theme/theme-config";
-import { getMaintenanceState } from "@/lib/app-settings";
+import { getApplicationBranding, getMaintenanceState } from "@/lib/app-settings";
+import { brandingIcons } from "@/lib/branding/metadata";
+import { brandingTitle } from "@/lib/metadata";
 import { MAINTENANCE_PATH, maintenanceBlocksPage } from "@/lib/maintenance";
 
 /**
@@ -100,6 +104,44 @@ import { MAINTENANCE_PATH, maintenanceBlocksPage } from "@/lib/maintenance";
  * matcher, so the public surface is closed in practice, and the loop hazard is eliminated
  * structurally rather than by care.
  */
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DOCUMENT METADATA — THE TAB FOLLOWS THE CONFIGURED BRANDING, AND SO DOES THE TITLE
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Two things are set here, and NOTHING else: the tab ICON and the title TEMPLATE. Both come from
+ * `getApplicationBranding()` (`PlatformSetting.logoUrl` / `PlatformSetting.platformName`), which is
+ * React-`cache()`d AND composes on the same request-cached `getApplicationSettings()` query the
+ * maintenance check below already issues — so neither costs an extra database round trip.
+ *
+ * ── THE ICON ───────────────────────────────────────────────────────────────────
+ * The browser tab icon must be the platform's own logo. `brandingIcons` owns the fallback: a `null`
+ * logo resolves to the static `/favicon.ico`, so a deployment with no configured logo still has a
+ * tab icon and can never emit a broken icon URL.
+ *
+ * This is the reason `app/favicon.ico` was moved to `public/favicon.ico`: file-based metadata takes
+ * priority over `generateMetadata`, so leaving it in `app/` would mean the configured logo never
+ * wins. The static file is preserved as the fallback, referenced from the metadata instead.
+ *
+ * ── THE TITLE ──────────────────────────────────────────────────────────────────
+ * `title.template` (`%s — <platform name>`) is what makes every page's short feature title render as
+ * "<Feature> — TinggalKlik.Co" without any page naming the brand. `title.default` is required
+ * alongside a template and is the platform name itself, so a route that defines no title of its own
+ * still names the product instead of falling back to its path.
+ *
+ * This layout deliberately sets NO `description` and NO `robots`: those belong to each page, and
+ * Next merges parent metadata with the page's, so a page-level value always wins. Only a `title` a
+ * page does NOT define resolves to the default here.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+    const branding = await getApplicationBranding();
+
+    return {
+        title: brandingTitle(branding),
+        icons: brandingIcons(branding),
+    };
+}
+
 export default async function RootLayout({
     children,
 }: Readonly<{
@@ -141,7 +183,26 @@ export default async function RootLayout({
                 />
 
                 <AuthProvider>
-                    {children}
+                    {/*
+                     * ── THE ONE REALTIME MANAGER (root-mounted, session-aware) ──────────────
+                     *
+                     * Mounted HERE so every surface in the product is covered by the same
+                     * mechanism — the back office, the PIC dashboard and the CUSTOMER pages
+                     * (orders, tickets, refunds) alike. A customer page refreshes its own order the
+                     * moment the payment settles, without a single line of realtime code in that
+                     * page.
+                     *
+                     * `enabled` is `Boolean(session)`, resolved SERVER-side by this layout: an
+                     * anonymous visitor never opens a stream and never polls, so a public catalogue
+                     * page pays nothing for this feature. It is a routing hint and not authority —
+                     * the stream endpoint re-resolves the session and refuses an empty audience.
+                     *
+                     * The provider renders no chrome of its own beyond a small connection pill and
+                     * the dirty-form banner, and it never participates in layout.
+                     */}
+                    <RealtimeProvider enabled={Boolean(session)}>
+                        {children}
+                    </RealtimeProvider>
 
                     <Toaster
                         position="top-right"

@@ -38,6 +38,7 @@ import type {
     PrepareSettlementInput,
     RejectSettlementInput,
     SettlementListQuery,
+    SettlementStatus,
 } from "./validation";
 
 /**
@@ -480,9 +481,21 @@ export async function readSettlementProof(
  * `GET /api/organizer/settlements` — tenant-scoped list. Without `organizerId` the
  * scope is every organizer the actor may settle in; with it, the decider must allow it.
  */
+/**
+ * A list query plus the dashboard's optional multi-value status filter.
+ *
+ * `statuses` is deliberately an EXTENSION of the validated API query rather than a new field in
+ * `settlementListQuerySchema`: the API keeps its single-`status` contract, while the dashboard's
+ * "Menunggu Persetujuan" tile needs the union `REQUESTED` ∪ `PENDING_APPROVAL`. Values are
+ * validated against the enum by the caller before they arrive.
+ */
+export type SettlementListParams = SettlementListQuery & {
+    statuses?: SettlementStatus[];
+};
+
 export async function listSettlements(
     scope: AuthzScope,
-    query: SettlementListQuery
+    query: SettlementListParams
 ): Promise<{ items: ReturnType<typeof buildSettlementPayload>[]; total: number }> {
     const organizerIds = resolveOrganizerFilter(
         scope,
@@ -494,9 +507,16 @@ export async function listSettlements(
         return { items: [], total: 0 };
     }
 
+    const statusWhere: Prisma.SettlementWhereInput =
+        query.statuses && query.statuses.length > 0
+            ? { status: { in: query.statuses } }
+            : query.status
+              ? { status: query.status }
+              : {};
+
     const where: Prisma.SettlementWhereInput = {
         organizerId: { in: organizerIds },
-        ...(query.status ? { status: query.status } : {}),
+        ...statusWhere,
         ...(query.picProfileId ? { picProfileId: query.picProfileId } : {}),
     };
 

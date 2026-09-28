@@ -34,8 +34,12 @@ import {
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "Maintenance — <platform
+ * name>". Spelling the brand out here would render it twice.
+ */
 export const metadata = {
-    title: "Maintenance — TinggalKlik.Co",
+    title: "Maintenance",
     description: "Website sedang dalam maintenance.",
     // A maintenance notice has no business being indexed.
     robots: { index: false, follow: false },

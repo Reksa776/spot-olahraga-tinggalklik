@@ -16,6 +16,7 @@ import {
 import { Field, Input } from "@/components/dashboard/ui/input";
 import {
     DataTable,
+    EmptyBlock,
     ErrorBlock,
     PrimaryAction,
     SectionCard,
@@ -57,9 +58,14 @@ type Venue = {
 type Props = {
     organizerId: string;
     venues: Venue[];
+    /**
+     * True when the list on screen is a SEARCH result. Only the empty state reads it: "Belum ada
+     * venue" would be a claim about the database when the truth is that the term matched nothing.
+     */
+    filtered?: boolean;
 };
 
-export default function VenueManager({ organizerId, venues }: Props) {
+export default function VenueManager({ organizerId, venues, filtered = false }: Props) {
     const router = useRouter();
 
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -160,6 +166,18 @@ export default function VenueManager({ organizerId, venues }: Props) {
             >
                 <DataTable
                     minWidth={820}
+                    empty={
+                        <EmptyBlock
+                            title={
+                                filtered ? "Tidak ada venue yang cocok" : "Belum ada venue"
+                            }
+                            description={
+                                filtered
+                                    ? "Tidak ada venue dengan nama itu pada daftar yang bisa kamu akses. Hapus kata kuncinya untuk melihat semuanya."
+                                    : "Tambahkan venue milik organizer ini agar bisa dipakai pada event."
+                            }
+                        />
+                    }
                     columns={[
                         { header: "Venue" },
                         { header: "Kota" },

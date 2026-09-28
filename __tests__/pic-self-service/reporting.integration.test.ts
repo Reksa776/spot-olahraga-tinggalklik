@@ -397,9 +397,9 @@ describe("TEST 16 — fee summary is ledger-derived", () => {
             getMyFeeSummary(picUser.id),
         ]);
 
-        expect(Number(overview.feeEarned)).toBe(7500);
-        expect(Number(overview.feeReversed)).toBe(500);
-        expect(Number(overview.netFee)).toBe(7000);
+        expect(Number(overview.fee.earned)).toBe(7500);
+        expect(Number(overview.fee.reversed)).toBe(500);
+        expect(Number(overview.fee.netBalance)).toBe(7000);
 
         expect(Number(summary.earned)).toBe(7500);
         expect(Number(summary.reversed)).toBe(500);
@@ -407,6 +407,26 @@ describe("TEST 16 — fee summary is ledger-derived", () => {
 
         // Decimal arithmetic, not float: net is exactly 7000.00.
         expect(summary.net.toFixed(2)).toBe("7000.00");
+    });
+
+    test("the fee ENTITLEMENT (potensi) is EARNED − REVERSAL, and no payout exists yet", async () => {
+        signInAs(picUser.id);
+        const overview = await getMyPicOverview(picUser.id);
+
+        // 7500 credits − 500 reversal: the fee the sales have earned, which is exactly the
+        // canonical balance here because this fixture has no PAYOUT rows.
+        expect(Number(overview.fee.potential)).toBe(7000);
+        expect(overview.fee.potential.equals(overview.fee.earned.minus(overview.fee.reversed))).toBe(
+            true
+        );
+
+        // PIC DASHBOARD V2 — "fee bersih" comes from the settlement engine, not from the
+        // ledger, so an untouched ledger reports zero approved payouts rather than a number.
+        expect(Number(overview.payout.approvedTotal)).toBe(0);
+        expect(Number(overview.payout.approvedAmount)).toBe(0);
+        expect(Number(overview.payout.paidAmount)).toBe(0);
+        expect(overview.payout.approvedCount).toBe(0);
+        expect(overview.payout.paidCount).toBe(0);
     });
 
     test("the ledger list carries the reversal as a VOID DEBIT and stays EARNED/VOID-only", async () => {

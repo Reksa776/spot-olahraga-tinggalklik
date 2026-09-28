@@ -5,6 +5,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import type { AuthzScope } from "@/lib/authz/permissions";
 import { prisma } from "@/lib/prisma";
+import { publishSettlementChanged } from "@/lib/realtime/publishers";
 
 import { writeTicketingAuditInTx } from "../audit-log";
 import { withContentionRetry } from "../db-contention";
@@ -353,6 +354,36 @@ export type PrepareSettlementOutcome =
  * prepares collide on the unique index (P2002), the loser re-reads and returns the
  * winner's row.
  */
+/**
+ * Announce a settlement change AFTER its transaction has resolved.
+ *
+ * `organizerId` and `picProfileId` are read back from the row rather than threaded through the
+ * transaction, because a settlement satisfies either a tenant payout or a PIC payout request and the
+ * two callers already hold different subsets of that information. This runs once per settlement
+ * transition — a handful of times a day, around a staff decision — so one read costs nothing and
+ * keeps the audience policy in one place.
+ *
+ * Never called for an outcome that changed nothing (`ALREADY`, `EXISTS`, `RETRY_LATER`): those
+ * either replayed an earlier transition or rolled back, and announcing them would send every open
+ * dashboard to re-read data that has not moved.
+ */
+async function announceSettlement(
+    type: "SETTLEMENT_CREATED" | "SETTLEMENT_UPDATED",
+    settlementId: string
+): Promise<void> {
+    const row = await prisma.settlement.findUnique({
+        where: { id: settlementId },
+        select: { organizerId: true, picProfileId: true },
+    });
+
+    publishSettlementChanged({
+        type,
+        settlementId,
+        organizerId: row?.organizerId ?? null,
+        picProfileId: row?.picProfileId ?? null,
+    });
+}
+
 export async function createPreparedSettlement(
     input: PrepareSettlementInput
 ): Promise<PrepareSettlementOutcome> {
@@ -529,6 +560,12 @@ export async function createPreparedSettlement(
             };
         }
 
+        // REALTIME, after the commit: a settlement row exists (or was already there, in which case
+        // re-serving it is a replay and announces nothing).
+        if (result.value.outcome === "CREATED") {
+            await announceSettlement("SETTLEMENT_CREATED", result.value.settlementId);
+        }
+
         return result.value;
     } catch (error) {
         if (isUniqueViolation(error)) {
@@ -625,6 +662,15 @@ export async function submitSettlement(
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
     }
 
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
+    }
+
     return result.value;
 }
 
@@ -704,6 +750,15 @@ export async function approveSettlement(
 
     if (!result.ok) {
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
+    }
+
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
     }
 
     return result.value;
@@ -1046,6 +1101,15 @@ export async function markSettlementPaid(
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
     }
 
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
+    }
+
     return result.value;
 }
 
@@ -1125,6 +1189,15 @@ export async function failSettlement(
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
     }
 
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
+    }
+
     return result.value;
 }
 
@@ -1198,6 +1271,15 @@ export async function cancelSettlement(
 
     if (!result.ok) {
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
+    }
+
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
     }
 
     return result.value;
@@ -1285,6 +1367,15 @@ export async function rejectSettlement(
 
     if (!result.ok) {
         return { outcome: "RETRY_LATER", settlementId, detail: result.reason } as const;
+    }
+
+    /*
+     * REALTIME, after the commit, and ONLY for a transition that moved the row. `ALREADY` is an
+     * idempotent replay: the caller asked for a state the settlement already holds, so there is
+     * nothing for any dashboard to re-read.
+     */
+    if (result.value.outcome === "DONE") {
+        await announceSettlement("SETTLEMENT_UPDATED", settlementId);
     }
 
     return result.value;

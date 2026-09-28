@@ -263,6 +263,23 @@ server {
         proxy_set_header X-Forwarded-For   $remote_addr;
         proxy_set_header X-Real-IP         $remote_addr;
     }
+
+    # ── The realtime invalidation stream (Server-Sent Events) ─────────────
+    # MUST come before `location /` and MUST disable buffering. See §4.5.
+    location /api/realtime/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Real-IP         $remote_addr;
+
+        proxy_buffering off;
+        proxy_cache     off;
+        # A stream is idle by design between heartbeats; the app's own 25s
+        # heartbeat keeps it inside any sane read timeout.
+        proxy_read_timeout 1h;
+    }
 }
 ```
 
@@ -297,6 +314,43 @@ keyed by client and §4.3 is wrong.
 
 **Symptom of a misconfigured deployment:** the first five failed sign-ins *from anywhere in
 the world* block sign-in for everyone for 15 minutes.
+
+### 4.5 The realtime stream path must NOT be buffered
+
+The application keeps its open dashboards current through a Server-Sent Events stream at
+**`/api/realtime/stream`** (`lib/realtime/sse.ts`, pinned by `__tests__/realtime/stream-route.test.ts`).
+It is a long-lived `text/event-stream` response: the server writes a heartbeat every 25 seconds and
+an invalidation frame whenever a mutation commits.
+
+The application already sends `Cache-Control: no-transform` and `X-Accel-Buffering: no`, which is
+the portable half of the requirement. **nginx does not honour `no-transform` for buffering**, so the
+proxy must also be told not to buffer this path:
+
+**REQUIRED:** `proxy_buffering off;` on a `location /api/realtime/` block, plus
+`proxy_read_timeout` raised well above the heartbeat interval (the snippet above uses `1h`).
+
+Why it is load-bearing rather than cosmetic: a buffered stream is **indistinguishable from a dead
+one**. The browser receives no frames, the client's 25-second staleness check expires, and every open
+tab silently switches to its 15-second fallback refresh — correct but degraded, and invisible in the
+UI apart from the connection pill reading `Memperbarui…` instead of `Live`. Nothing errors, so
+without this note the symptom is easily read as "realtime is just a bit slow".
+
+**Verification** (replace `HOST`), from the host:
+
+```bash
+# 1. The open frame must arrive IMMEDIATELY, not after a buffer flush.
+#    (401 JSON without a session is also a pass: it proves the path is routed.)
+time curl -sN --max-time 3 https://HOST/api/realtime/stream | head -c 40
+
+# 2. Frames must be separate, not coalesced: the retry hint then a heartbeat.
+curl -sN --max-time 30 https://HOST/api/realtime/stream | head -c 200
+```
+
+A correct deployment prints `retry: 5000` within milliseconds. A buffered one prints nothing until
+the connection closes.
+
+**Symptom of a misconfigured deployment:** every dashboard works, but the connection pill never
+reads `Live`, and server request volume rises roughly in proportion to the number of open tabs.
 
 ---
 

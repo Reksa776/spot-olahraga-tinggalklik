@@ -7,6 +7,7 @@ import {
     type AuthzScope,
 } from "@/lib/authz";
 import { prisma } from "@/lib/prisma";
+import { publishVenueUpdated } from "@/lib/realtime/publishers";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
 import { requirePlatformPermission } from "@/lib/authz";
@@ -218,6 +219,9 @@ export async function createVenue(
         request,
     });
 
+    // REALTIME, after the insert: the venue list (global or tenant) gained a row.
+    publishVenueUpdated({ venueId: venue.id, organizerId });
+
     return { ...venue, isGlobal: organizerId === null };
 }
 
@@ -271,6 +275,8 @@ export async function updateVenue(
         },
         request,
     });
+
+    publishVenueUpdated({ venueId: updated.id, organizerId: updated.organizerId });
 
     return { ...updated, isGlobal: updated.organizerId === null };
 }
@@ -332,6 +338,9 @@ export async function deleteVenue(
         },
         request,
     });
+
+    // REALTIME: the row is gone, so every venue list that showed it must re-read.
+    publishVenueUpdated({ venueId: venue.id, organizerId: venue.organizerId });
 
     return { id: venue.id };
 }

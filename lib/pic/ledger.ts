@@ -30,6 +30,54 @@ export type PicLedgerBalance = {
     net: Prisma.Decimal;
 };
 
+/**
+ * ── ENTITLEMENT vs BALANCE ───────────────────────────────────────────────────────
+ *
+ * `getPicLedgerBalance` above answers "what do we still owe this PIC?" — it nets EVERY
+ * DEBIT, including the `PAYOUT` rows written when a settlement is actually paid, so a
+ * fully-settled PIC reads 0.
+ *
+ * A different question the PIC's own dashboard has to answer is "how much fee has this PIC
+ * EARNED?", and the payout rows must NOT subtract from that: a transfer moves money, it does
+ * not un-earn a fee. That figure is `Σ EARNED − Σ REVERSAL`, i.e. exactly the vocabulary
+ * `lib/pic/reconciliation.ts` reports (`earned.total`, `reversal.total`) and the ledger's own
+ * docblock describes ("CREDIT = earned, DEBIT = reversal/payout"). It is an aggregation over
+ * the SAME rows, not a second fee formula: no rate, basis or rounding is applied here.
+ *
+ * Only `EARNED` and `REVERSAL` are read, because those are the two entry types the money
+ * engine actually writes today (`PHASE_21_PIC_PAYOUT_AND_QR_SCANNER_AUDIT.md` §3.2: every
+ * writer of `PICFeeLedger`), and an unrecognised future credit is therefore absent from the
+ * total rather than silently inflating it.
+ */
+export type PicFeeEntitlement = {
+    /** Σ `EARNED` CREDIT rows — the fee posted from settled sales. */
+    earned: Prisma.Decimal;
+    /** Σ `REVERSAL` DEBIT rows — fee given back when an order was refunded. */
+    reversed: Prisma.Decimal;
+    /** `earned − reversed`. Never below zero is NOT guaranteed: a carried claw-back can exceed. */
+    potential: Prisma.Decimal;
+};
+
+/** The fee a PIC has earned from sales (see the docblock above). */
+export async function getPicFeeEntitlement(
+    picProfileId: string,
+    organizerId?: string | null
+): Promise<PicFeeEntitlement> {
+    const byType = await prisma.pICFeeLedger.groupBy({
+        by: ["type"],
+        where: { picProfileId, ...(organizerId ? { organizerId } : {}) },
+        _sum: { amount: true },
+    });
+
+    const sum = (type: string) =>
+        byType.find((entry) => entry.type === type)?._sum.amount ?? ZERO;
+
+    const earned = sum("EARNED");
+    const reversed = sum("REVERSAL");
+
+    return { earned, reversed, potential: earned.sub(reversed) };
+}
+
 /** Full balance for ONE PIC, all rows. */
 export async function getPicLedgerBalance(
     picProfileId: string

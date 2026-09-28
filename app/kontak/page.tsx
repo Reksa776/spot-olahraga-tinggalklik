@@ -2,15 +2,15 @@ import type { Metadata } from "next";
 import SiteShell from "@/components/ticketing/SiteShell";
 import { getPublicStoreSetting } from "@/lib/store-settings";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "Kontak — <platform name>".
+ * The `description` is inherited into `openGraph` rather than duplicated there, so the social card
+ * and the tab cannot disagree.
+ */
 export const metadata: Metadata = {
-    title: "Kontak Kami",
+    title: "Kontak",
     description:
         "Hubungi kami melalui email atau telepon. Kami siap membantu Anda mengenai tiket, event, pesanan, dan layanan lainnya.",
-    openGraph: {
-        title: "Kontak Kami",
-        description:
-            "Hubungi kami melalui email atau telepon. Kami siap membantu Anda.",
-    },
 };
 
 export default async function KontakPage() {

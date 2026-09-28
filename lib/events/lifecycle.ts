@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { publishEventChanged } from "@/lib/realtime/publishers";
 import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 
 /**
@@ -250,6 +251,18 @@ export async function advanceEventLifecycleBatch(
             afterState: { status: "ONGOING" },
             reason: "EVENT_STARTED",
         });
+
+        /*
+         * REALTIME: the CAS above committed, so this transition happened. Announced per event —
+         * there is no bulk announcement in the taxonomy, and inventing one would make the audience
+         * (which is per tenant) meaningless. A batch is at most `batchSize` events, they arrive
+         * together, and the client coalesces the burst into ONE refresh.
+         */
+        publishEventChanged({
+            type: "EVENT_UPDATED",
+            eventId: candidate.id,
+            organizerId: candidate.organizerId,
+        });
     }
 
     /* ── STEP 2: {PUBLISHED,ONGOING} → COMPLETED ────────────────────────────────── */
@@ -300,6 +313,12 @@ export async function advanceEventLifecycleBatch(
                 completedAt: now.toISOString(),
             },
             reason: "EVENT_ENDED",
+        });
+
+        publishEventChanged({
+            type: "EVENT_UPDATED",
+            eventId: candidate.id,
+            organizerId: candidate.organizerId,
         });
     }
 

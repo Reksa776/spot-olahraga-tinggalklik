@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import type { FilterUrlState } from "@/components/dashboard/filters/filter-types";
+import { PeriodPills } from "@/components/dashboard/filters/PeriodPills";
 import { TableToolbar } from "@/components/dashboard/primitives";
 import { Button } from "@/components/dashboard/ui/button";
 import { Input, Label } from "@/components/dashboard/ui/input";
@@ -15,15 +17,24 @@ import { Input, Label } from "@/components/dashboard/ui/input";
  *
  * ── WHY NATIVE CONTROLS ────────────────────────────────────────────────────────
  * The rest of the dashboard uses the shadcn `Input`/`Button` (both of which are plain wrappers and
- * are used here), but the two dropdowns are NATIVE `<select>` elements styled with the same token
+ * are used here), but the dropdowns are NATIVE `<select>` elements styled with the same token
  * classes. The radix `Select` keeps its value in component state and reflects it into form
  * submission through a synthetic element, which is fine for a client form and wrong for this one:
  * a filter that depends on hydration is a filter that silently reports the WRONG window the first
  * time someone opens the page in a fresh tab, and the whole point of this surface is that the
  * numbers it shows are the numbers it queried.
  *
- * The period shortcuts are links rather than more form state: each one is a complete, explicit
- * query, so "30 hari terakhir" is a URL someone can send to a colleague.
+ * ── THE PERIOD IS A ROW OF PILLS ───────────────────────────────────────────────
+ * The window shortcuts are LINKS, not more form state: each one is a complete, explicit query, so
+ * "30 hari terakhir" is a URL someone can send to a colleague, it is applied by the URL itself before
+ * any JavaScript runs, and the current window is visibly highlighted. Crucially the shortcut sets
+ * ONLY `period` — it never carries `from`/`to` — because `resolveDashboardReportFilters` gives an
+ * explicit `from` precedence over a shortcut, so a link that posted both would silently keep the OLD
+ * window when someone chose "7 hari". Submitting the shortcut therefore REPLACES the range, and it
+ * carries the other filters (event, status) so they survive.
+ *
+ * The date/event/status form keeps carrying its own dates for the mirror-image reason: applying an
+ * event or a status must NOT reset the window someone just typed.
  *
  * The download links are plain `<a>` elements, not `next/link`: the endpoint answers with
  * `Content-Disposition: attachment`, which a client-side navigation cannot honour.
@@ -45,7 +56,7 @@ export function ReportFilterBar({
     values,
     events,
     statuses,
-    periods,
+    period,
     downloads,
     notice,
 }: {
@@ -53,7 +64,11 @@ export function ReportFilterBar({
     values: ReportFilterValues;
     events: { id: string; title: string }[];
     statuses: { value: string; label: string }[];
-    periods: { key: string; label: string; href: string; active: boolean }[];
+    /** The `Periode` pill row: the active shortcut, and the filters it must preserve. */
+    period: {
+        active: string | null;
+        current: FilterUrlState;
+    };
     downloads: { key: string; label: string; href: string }[];
     notice?: string | null;
 }) {
@@ -132,26 +147,11 @@ export function ReportFilterBar({
             </TableToolbar>
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-muted-foreground">
-                        Periode
-                    </span>
-
-                    {periods.map((period) => (
-                        <Link
-                            key={period.key}
-                            href={period.href}
-                            aria-current={period.active ? "true" : undefined}
-                            className={
-                                period.active
-                                    ? "rounded-field border border-primary bg-primary/10 px-3 py-1.5 text-[0.8125rem] font-semibold text-primary"
-                                    : "rounded-field border border-input px-3 py-1.5 text-[0.8125rem] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                            }
-                        >
-                            {period.label}
-                        </Link>
-                    ))}
-                </div>
+                <PeriodPills
+                    basePath={action}
+                    active={period.active}
+                    current={period.current}
+                />
 
                 <div className="flex flex-wrap items-center gap-2">
                     {downloads.map((download) => (

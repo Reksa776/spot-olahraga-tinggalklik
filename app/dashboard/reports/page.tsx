@@ -18,11 +18,9 @@ import { hasOrganizerPermission } from "@/lib/dashboard/scope";
 import {
     DASHBOARD_REPORT_ORDER_STATUSES,
     DASHBOARD_REPORT_ORDER_STATUS_LABELS,
-    DASHBOARD_REPORT_PERIODS,
     getDashboardReport,
     resolveDashboardReportFilters,
     toDashboardChartPoints,
-    type DashboardReportPeriod,
 } from "@/lib/dashboard/reports";
 import { formatIdr } from "@/lib/ticketing/ui/format";
 
@@ -55,6 +53,9 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
 
 export const dynamic = "force-dynamic";
 
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Reports" };
+
 const STATUS_TONE: Record<string, Tone> = {
     PENDING_PAYMENT: "pending",
     PAID: "success",
@@ -62,12 +63,6 @@ const STATUS_TONE: Record<string, Tone> = {
     EXPIRED: "neutral",
     REFUNDED: "info",
     PARTIALLY_REFUNDED: "info",
-};
-
-const PERIOD_LABELS: Record<DashboardReportPeriod, string> = {
-    "7d": "7 hari",
-    "30d": "30 hari",
-    "3m": "3 bulan",
 };
 
 /** Only the filters that are actually set become query parameters. */
@@ -101,10 +96,17 @@ export default async function DashboardReportsPage({
         return null;
     }
 
+    /*
+     * The window shortcut, if any. `period` is validated by the shared parser below, which is the
+     * SAME function the download endpoint uses in strict mode — so a shared URL cannot mean two
+     * different windows. An unrecognised value is ignored (and reported), never forwarded.
+     */
+    const requestedPeriod = params.period ?? null;
+
     const filters = resolveDashboardReportFilters({
         from: params.from ?? null,
         to: params.to ?? null,
-        period: params.period ?? null,
+        period: requestedPeriod,
         eventId: params.eventId ?? null,
         status: params.status ?? null,
     });
@@ -117,13 +119,6 @@ export default async function DashboardReportsPage({
     const canExport =
         hasOrganizerPermission(scope, PERMISSIONS.REPORT_TRANSACTION_READ) &&
         hasOrganizerPermission(scope, PERMISSIONS.REPORT_EXPORT_TRANSACTION);
-
-    const periodHref = (period: DashboardReportPeriod) =>
-        `/dashboard/reports${queryString({
-            period,
-            eventId: params.eventId ?? null,
-            status: params.status ?? null,
-        })}`;
 
     // A window with no orders, no tickets and no refunds is a REAL zero, and every figure on the
     // page says so. The charts get an empty series in that case so they render their empty state
@@ -147,7 +142,7 @@ export default async function DashboardReportsPage({
         notices.push(`Status pesanan "${params.status}" tidak dikenal, filter diabaikan.`);
     }
 
-    if (params.period && !report.filters.period) {
+    if (requestedPeriod && !report.filters.period) {
         notices.push(`Periode "${params.period}" tidak dikenal, filter diabaikan.`);
     }
 
@@ -181,14 +176,13 @@ export default async function DashboardReportsPage({
                     value: status,
                     label: DASHBOARD_REPORT_ORDER_STATUS_LABELS[status],
                 }))}
-                periods={(Object.keys(DASHBOARD_REPORT_PERIODS) as DashboardReportPeriod[]).map(
-                    (period) => ({
-                        key: period,
-                        label: PERIOD_LABELS[period],
-                        href: periodHref(period),
-                        active: report.filters.period === period,
-                    })
-                )}
+                period={{
+                    active: report.filters.period,
+                    current: {
+                        eventId: report.filters.eventId ?? undefined,
+                        status: report.filters.orderStatus ?? undefined,
+                    },
+                }}
                 downloads={
                     canExport
                         ? [

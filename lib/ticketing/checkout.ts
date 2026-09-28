@@ -10,6 +10,10 @@ import {
 } from "@/lib/events/sales-state";
 import { resolveReferralAtCheckout } from "@/lib/pic/attribution";
 import { prisma } from "@/lib/prisma";
+import {
+    publishOrderCreated,
+    publishPicAttributionCreated,
+} from "@/lib/realtime/publishers";
 
 import type { CheckoutRequest } from "./checkout-validation";
 import {
@@ -425,6 +429,13 @@ export async function createTicketOrder(params: {
     // Reassigned inside the transaction if the referral resolves to a real PIC fee.
     let picFeeTotal = new Prisma.Decimal(0);
     let organizerNetAmount = total;
+    /*
+     * Captured OUTSIDE the transaction callback so the realtime publish below can address the PIC
+     * without re-reading the order. Both are re-assigned on every attempt and only the SUCCESSFUL
+     * attempt's values survive, because only a resolved `$transaction` reaches the publish.
+     */
+    let picProfileIdForOrder: string | null = null;
+    let attributionId: string | null = null;
 
     // Single-currency MVP (§36.5). All rows default to IDR and no client input can set
     // this, so a mismatch can only mean a data problem — refuse rather than mislabel.
@@ -504,6 +515,7 @@ export async function createTicketOrder(params: {
                     );
 
                     picFeeTotal = referral ? referral.picFeeTotal : new Prisma.Decimal(0);
+                    picProfileIdForOrder = referral?.picProfileId ?? null;
                     // D-23: the organizer ABSORBS the PIC fee — the buyer's `total` is
                     // untouched, the organizer's net is net-of-PIC-fee.
                     organizerNetAmount = total.sub(picFeeTotal);
@@ -538,7 +550,8 @@ export async function createTicketOrder(params: {
                     // in the same transaction as the order, so an order cannot exist with
                     // a fee snapshot but no attribution (or vice versa).
                     if (referral) {
-                        await tx.pICAttribution.create({
+                        const attribution = await tx.pICAttribution.create({
+                            select: { id: true },
                             data: {
                                 orderId: order.id,
                                 organizerId: event.organizerId,
@@ -554,6 +567,8 @@ export async function createTicketOrder(params: {
                                 selfReferral: referral.selfReferral,
                             },
                         });
+
+                        attributionId = attribution.id;
                     }
 
                     const referralLineByType = new Map(
@@ -740,6 +755,32 @@ export async function createTicketOrder(params: {
         },
         request: params.httpRequest,
     });
+
+    /*
+     * ── REALTIME: AFTER THE COMMIT, NEVER INSIDE IT ──────────────────────────────
+     *
+     * This runs where the audit row runs, and for the same reason: the transaction has resolved, so
+     * the order exists. A rolled-back attempt returns earlier (or retries) and therefore announces
+     * nothing — a client can never be told to re-read an order that was never created.
+     *
+     * A REPLAY does not reach here either: `resolveIdempotentReplay` returns from inside the loop,
+     * so re-posting the same idempotency key re-serves the payload without a second announcement.
+     */
+    publishOrderCreated({
+        orderId,
+        organizerId: event.organizerId,
+        buyerUserId: actor.userId,
+        picProfileId: picProfileIdForOrder,
+    });
+
+    if (attributionId !== null && picProfileIdForOrder !== null) {
+        publishPicAttributionCreated({
+            attributionId,
+            eventId: event.id,
+            organizerId: event.organizerId,
+            picProfileId: picProfileIdForOrder,
+        });
+    }
 
     return { payload: await buildOrderPayload(row), replayed: false };
 }

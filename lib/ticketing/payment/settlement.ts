@@ -1,6 +1,11 @@
 import { Prisma, type PaymentTransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import {
+    publishPaymentFailed,
+    publishPaymentPaid,
+    publishPicLedgerUpdated,
+} from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
 import { withContentionRetry } from "../db-contention";
@@ -510,6 +515,40 @@ export async function settleVerifiedPayment(
 
     const settled = result.value;
 
+    /*
+     * ── REALTIME: AFTER THE COMMIT, NEVER INSIDE IT ──────────────────────────────
+     *
+     * This is the single most consequential announcement in the product: the order becomes PAID,
+     * its tickets become issuable, the PIC fee ledger gains EARNED rows, and the PIC's sales
+     * rollup moves. Every affected surface re-reads its own authoritative data — nothing is pushed
+     * as a value, so an out-of-order or duplicated delivery can only cause a redundant read.
+     *
+     * Only state-changing outcomes announce. `ALREADY_PAID` and `NOT_APPLICABLE` changed nothing,
+     * and `RETRY_LATER` returned above, so a rolled-back settlement is silent by construction.
+     */
+    if (settled.outcome === "SETTLED" || settled.outcome === "LATE_SETTLEMENT") {
+        const identity = await readOrderIdentity(input.orderId);
+
+        publishPaymentPaid({
+            orderId: input.orderId,
+            orderNumber: identity.orderNumber,
+            organizerId: identity.organizerId,
+            buyerUserId: identity.userId,
+            picProfileId: identity.picProfileId,
+        });
+
+        // The settlement transaction posts the EARNED fee rows, so a PIC order's ledger and its
+        // dashboard moved too. `ledgerId` is left null: the announcement identifies the FAMILY that
+        // changed, and the authoritative rows are one read away.
+        if (identity.picProfileId !== null) {
+            publishPicLedgerUpdated({
+                ledgerId: null,
+                organizerId: identity.organizerId,
+                picProfileId: identity.picProfileId,
+            });
+        }
+    }
+
     // ── Audit, after the commit ──────────────────────────────────────────────────
     // Phase 6's convention, and the design's §32.3 rule is satisfied in the way that
     // matters: the audit row describes a state that provably exists, because it is written
@@ -573,16 +612,37 @@ export async function settleVerifiedPayment(
     return settled;
 }
 
-/** Read the two identity fields an outcome needs even when the transaction rolled back. */
-async function readOrderIdentity(
-    orderId: string
-): Promise<{ orderNumber: string; organizerId: string }> {
+/**
+ * Read the identity fields an outcome needs even when the transaction rolled back.
+ *
+ * `userId` and `picProfileId` are read here too, because they are exactly what the REALTIME
+ * announcement needs to address the right people: the buyer (own-scope) and the credited PIC
+ * (own-scope). Reading them after the commit — rather than threading them out of the transaction
+ * callback — keeps the settle path's data flow unchanged, and this runs once per payment, not per
+ * request.
+ */
+async function readOrderIdentity(orderId: string): Promise<{
+    orderNumber: string;
+    organizerId: string;
+    userId: string;
+    picProfileId: string | null;
+}> {
     const row = await prisma.eventOrder.findUniqueOrThrow({
         where: { id: orderId },
-        select: { orderNumber: true, organizerId: true },
+        select: {
+            orderNumber: true,
+            organizerId: true,
+            userId: true,
+            picProfileId: true,
+        },
     });
 
-    return { orderNumber: row.orderNumber, organizerId: row.organizerId };
+    return {
+        orderNumber: row.orderNumber,
+        organizerId: row.organizerId,
+        userId: row.userId,
+        picProfileId: row.picProfileId,
+    };
 }
 
 /**
@@ -746,7 +806,21 @@ export async function failVerifiedPayment(input: {
         };
     }
 
+    /*
+     * REALTIME: the provider reported a failure, so the order was cancelled and its seats went back
+     * on sale. Announced after the commit, and only for the outcome that actually changed rows —
+     * `ALREADY_PAID` and `NOT_APPLICABLE` are silent.
+     */
     if (result.value.outcome === "ORDER_FAILED") {
+        const identity = await readOrderIdentity(input.orderId);
+
+        publishPaymentFailed({
+            orderId: input.orderId,
+            organizerId: result.value.organizerId,
+            buyerUserId: identity.userId,
+            picProfileId: identity.picProfileId,
+        });
+
         await writeTicketingAudit({
             action: "payment.failed",
             actorType: "PROVIDER",

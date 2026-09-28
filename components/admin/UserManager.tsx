@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { apiFetch, ClientApiError } from "@/components/organizer/api";
@@ -88,7 +88,21 @@ const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     timeZone: "Asia/Jakarta",
 });
 
-export default function UserManager({ users }: { users: ManagedUserRow[] }) {
+export default function UserManager({
+    users,
+    filtered = false,
+    footer,
+}: {
+    users: ManagedUserRow[];
+    /**
+     * True when the list on screen is a FILTERED page (role and/or search). Only the empty state
+     * reads it: "Belum ada pengguna" would be a false claim about the database when the truth is
+     * that the current filter matched nothing.
+     */
+    filtered?: boolean;
+    /** The pager, rendered by the page that owns the query state (this component owns none). */
+    footer?: ReactNode;
+}) {
     const router = useRouter();
 
     const [busy, setBusy] = useState(false);
@@ -289,10 +303,17 @@ export default function UserManager({ users }: { users: ManagedUserRow[] }) {
                     }))}
                     empty={
                         <EmptyBlock
-                            title="Belum ada pengguna"
-                            description="Buat akun MANAGER atau PIC dengan tombol Tambah Pengguna."
+                            title={
+                                filtered ? "Tidak ada pengguna yang cocok" : "Belum ada pengguna"
+                            }
+                            description={
+                                filtered
+                                    ? "Tidak ada akun yang sesuai dengan peran atau kata kunci itu. Pilih peran lain atau hapus kata kuncinya."
+                                    : "Buat akun MANAGER atau PIC dengan tombol Tambah Pengguna."
+                            }
                         />
                     }
+                    footer={footer}
                 />
             </SectionCard>
 

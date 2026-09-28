@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { Children, Fragment, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { Alert, AlertDescription, AlertTitle } from "@/components/dashboard/ui/alert";
@@ -256,6 +256,23 @@ export function SectionCard({
 }
 
 /* ------------------------------------------------------------------------------------------------
+ * KPI CARD LINK
+ * ------------------------------------------------------------------------------------------------
+ * The treatment for a `StatCard` the operator can CLICK THROUGH to the rows behind its number.
+ *
+ * It is a class rather than an `href` prop on `StatCard` on purpose: four of the pages that render
+ * a tile are reading a figure with nowhere to drill into, so navigation must stay a decision of the
+ * page that knows the destination. Wrapping the card in a `<Link>` and styling the card it CONTAINS
+ * keeps the tile's exact dimensions while adding a pointer cursor, a hover border/elevation and a
+ * visible keyboard focus ring.
+ *
+ * Exported here — rather than copied into each page — so the overview and the PIC dashboard cannot
+ * drift into two different "clickable tile" treatments.
+ */
+export const KPI_CARD_LINK_CLASS =
+    "group block h-full rounded-card outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background [&>div]:transition [&>div]:duration-150 hover:[&>div]:border-primary/40 hover:[&>div]:shadow-raised";
+
+/* ------------------------------------------------------------------------------------------------
  * STAT CARD
  * ------------------------------------------------------------------------------------------------
  * The number is the hero: 30px, tight tracking, tabular figures. The icon rides in a soft tinted
@@ -415,6 +432,29 @@ const ALIGN_CLASS: Record<"left" | "center" | "right", string> = {
     right: "text-right",
 };
 
+/**
+ * Render an arbitrary slot node without ever producing an unkeyed list.
+ *
+ * A caller may hand `DataTable` a single element, a list/array, a string or `null`, and React
+ * requires every element that ends up inside an array to carry a key — naming the component that
+ * rendered the array when one is missing. That is the reported warning:
+ *
+ *   'Each child in a list should have a unique "key" prop.'
+ *   'Check the render method of `DataTable`.'
+ *   'It was passed a child from <page>.'
+ *
+ * `React.Children.toArray` alone does NOT fix it: it hands back clones whose `_store.validated` is
+ * `2`, which React treats as "validate me again" and still warns about. Wrapping each member in its
+ * OWN keyed `Fragment` does: the members of the array are then keyed elements that React has not
+ * flagged, and the `Fragment` adds no DOM. Position is the only identity an arbitrary caller list
+ * has, so it is the key — stable for a given structure and never regenerated per render.
+ */
+function keyedSlot(node: ReactNode): ReactNode {
+    return Children.toArray(node).map((child, index) => (
+        <Fragment key={index}>{child}</Fragment>
+    ));
+}
+
 export function DataTable({
     columns,
     rows,
@@ -439,7 +479,7 @@ export function DataTable({
     footer?: ReactNode;
 }) {
     if (error) {
-        return <>{error}</>;
+        return <>{keyedSlot(error)}</>;
     }
 
     if (loading) {
@@ -454,18 +494,28 @@ export function DataTable({
     }
 
     if (rows.length === 0 && empty) {
-        return <>{empty}</>;
+        return <>{keyedSlot(empty)}</>;
     }
 
+    /*
+     * Every caller-supplied slot (`caption`, each column header, each cell, `footer`) is rendered
+     * through `keyedSlot`, so a slot the caller passes as a list can never become an unkeyed array
+     * inside this component. The component's OWN composed siblings carry explicit semantic keys for
+     * the same reason.
+     */
     return (
         <div className="flex flex-col gap-4">
             {/* Horizontal scroll rather than a collapsing layout: a 12-column order table stays
                 readable on a phone instead of becoming illegible columns. */}
-            <ScrollArea className="w-full">
+            <ScrollArea key="viewport" className="w-full">
                 <Table style={minWidth ? { minWidth } : undefined}>
-                    {caption ? <TableCaption>{caption}</TableCaption> : null}
+                    {caption ? (
+                        <TableCaption key="caption">
+                            {keyedSlot(caption)}
+                        </TableCaption>
+                    ) : null}
 
-                    <TableHeader>
+                    <TableHeader key="head">
                         <TableRow className="hover:bg-transparent">
                             {columns.map((column, index) => (
                                 <TableHead
@@ -473,13 +523,13 @@ export function DataTable({
                                     className={ALIGN_CLASS[column.align ?? "left"]}
                                     style={{ width: column.width }}
                                 >
-                                    {column.header}
+                                    {keyedSlot(column.header)}
                                 </TableHead>
                             ))}
                         </TableRow>
                     </TableHeader>
 
-                    <TableBody>
+                    <TableBody key="body">
                         {rows.map((row) => (
                             <TableRow key={row.key}>
                                 {row.cells.map((cell, index) => (
@@ -487,7 +537,7 @@ export function DataTable({
                                         key={columns[index]?.id ?? `cell-${index}`}
                                         className={ALIGN_CLASS[columns[index]?.align ?? "left"]}
                                     >
-                                        {cell}
+                                        {keyedSlot(cell)}
                                     </TableCell>
                                 ))}
                             </TableRow>
@@ -496,7 +546,9 @@ export function DataTable({
                 </Table>
             </ScrollArea>
 
-            {footer ? footer : null}
+            {footer ? (
+                <Fragment key="footer">{keyedSlot(footer)}</Fragment>
+            ) : null}
         </div>
     );
 }
@@ -712,7 +764,15 @@ export function LinkPagination({
     page: number;
     totalPages: number;
     basePath: string;
-    query?: Record<string, string | number | undefined | null>;
+    /**
+     * Scalars become one parameter each; an ARRAY becomes a repeated parameter
+     * (`?status=PUBLISHED&status=ONGOING`), which is how the multi-status filters are preserved
+     * across pages without joining values into a string the parser would have to split again.
+     */
+    query?: Record<
+        string,
+        string | number | undefined | null | (string | number)[]
+    >;
     label?: string;
 }) {
     if (totalPages <= 1) {
@@ -724,6 +784,17 @@ export function LinkPagination({
 
         for (const [key, value] of Object.entries(query)) {
             if (value === undefined || value === null || value === "") continue;
+
+            // A repeated parameter is appended once per value, so a union filter survives
+            // pagination exactly as the user built it.
+            if (Array.isArray(value)) {
+                for (const entry of value) {
+                    if (entry === "") continue;
+                    params.append(key, String(entry));
+                }
+                continue;
+            }
+
             params.set(key, String(value));
         }
 

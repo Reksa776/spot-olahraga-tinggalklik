@@ -28,6 +28,7 @@ import {
     DataRow,
     EmptyBlock,
     InfoNote,
+    KPI_CARD_LINK_CLASS,
     PageHeader,
     SectionCard,
     StatCard,
@@ -36,6 +37,7 @@ import {
     TextLink,
     type Tone,
 } from "@/components/dashboard/primitives";
+import { PeriodPills } from "@/components/dashboard/filters/PeriodPills";
 import { Button } from "@/components/dashboard/ui/button";
 import { Input, Label } from "@/components/dashboard/ui/input";
 import { PERMISSIONS, getAuthzScope } from "@/lib/authz";
@@ -43,11 +45,9 @@ import { getDashboardActivity, type DashboardActivityPanel } from "@/lib/dashboa
 import { getDashboardOverview } from "@/lib/dashboard/overview";
 import {
     DASHBOARD_REPORT_ORDER_STATUS_LABELS,
-    DASHBOARD_REPORT_PERIODS,
     getDashboardReport,
     resolveDashboardReportFilters,
     toDashboardChartPoints,
-    type DashboardReportPeriod,
 } from "@/lib/dashboard/reports";
 import { computeDashboardCapabilities, hasOrganizerPermission } from "@/lib/dashboard/scope";
 import { findPicProfileStanding } from "@/lib/pic/self-service";
@@ -80,11 +80,8 @@ import { formatEventSchedule, formatIdr } from "@/lib/ticketing/ui/format";
 
 export const dynamic = "force-dynamic";
 
-const PERIOD_LABELS: Record<DashboardReportPeriod, string> = {
-    "7d": "7 hari",
-    "30d": "30 hari",
-    "3m": "3 bulan",
-};
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Dashboard" };
 
 const ORDER_STATUS_TONE: Record<string, Tone> = {
     PENDING_PAYMENT: "pending",
@@ -250,6 +247,19 @@ export default async function DashboardOverviewPage({
 
     const trendForCharts =
         hasActivity && report ? toDashboardChartPoints(report.trend) : [];
+
+    /*
+     * "Laporan lengkap" used to open a bare `/dashboard/reports` — the report's DEFAULT window rather
+     * than the one on screen. It now carries the window the operator is actually looking at: the
+     * shortcut when one is active, otherwise the RESOLVED day keys. That is the same rule the
+     * report's own download links follow, so the file, the screen and this link cannot describe
+     * three different windows.
+     */
+    const reportsHref = report
+        ? report.filters.period
+            ? `/dashboard/reports?period=${report.filters.period}`
+            : `/dashboard/reports?from=${report.range.fromKey}&to=${report.range.toKey}`
+        : "/dashboard/reports";
     const refundsNeedingWork =
         (tenant?.refundsPending ?? 0) + (tenant?.refundsProcessing ?? 0);
 
@@ -262,78 +272,109 @@ export default async function DashboardOverviewPage({
             />
 
             <StatGrid>
-                <StatCard
-                    label="Total event"
-                    value={tenant?.eventsTotal ?? "—"}
-                    icon={<FiCalendar />}
-                    hint={
-                        tenant
-                            ? `${tenant.eventsUpcoming} akan datang`
-                            : "Tidak ada akses data event"
-                    }
-                />
-                <StatCard
-                    label="Event aktif"
-                    value={tenant?.eventsPublished ?? "—"}
-                    icon={<FiActivity />}
-                    tone="info"
-                    hint="Sedang dipublikasikan atau berlangsung"
-                />
-                <StatCard
-                    label="Pesanan"
-                    value={tenant?.ordersTotal ?? "—"}
-                    icon={<FiShoppingBag />}
-                    hint={
-                        tenant
-                            ? `${tenant.ordersPaid} lunas · ${tenant.ordersPendingPayment} menunggu bayar`
-                            : "Tidak ada akses data pesanan"
-                    }
-                />
-                <StatCard
-                    label="Tiket terjual"
-                    value={tenant?.ticketsSold ?? "—"}
-                    icon={<FiTag />}
-                    tone="info"
-                    hint="Tiket terbit dan check-in, tidak termasuk yang void/refund"
-                />
-                <StatCard
-                    label="Pendapatan"
-                    value={tenant ? formatIdr(Number(tenant.revenue)) : "—"}
-                    icon={<FiDollarSign />}
-                    tone="success"
-                    hint="Total pesanan berstatus lunas"
-                />
-                <StatCard
-                    label="Pesanan menunggu bayar"
-                    value={tenant?.ordersPendingPayment ?? "—"}
-                    icon={<FiClock />}
-                    tone={tenant && tenant.ordersPendingPayment > 0 ? "pending" : "neutral"}
-                    hint="Belum menerima pembayaran"
-                />
-                <StatCard
-                    label="Refund perlu ditangani"
-                    value={tenant ? refundsNeedingWork : "—"}
-                    icon={<FiRefreshCcw />}
-                    tone={refundsNeedingWork > 0 ? "warn" : "neutral"}
-                    hint={
-                        tenant
-                            ? `${tenant.refundsPending} menunggu · ${tenant.refundsProcessing} diproses · ${tenant.refundsCompleted} selesai`
-                            : "Tidak ada akses data refund"
-                    }
-                />
-                <StatCard
-                    label="Pencairan menunggu"
-                    value={settlements ? settlements.awaiting : "—"}
-                    icon={<FiCreditCard />}
-                    tone={settlements && settlements.awaiting > 0 ? "pending" : "neutral"}
-                    hint={
-                        settlements
-                            ? `${settlements.total} total · ${formatIdr(
-                                  Number(settlements.paidAmount)
-                              )} sudah dibayar`
-                            : "Tidak ada akses data pencairan"
-                    }
-                />
+                <Link href="/dashboard/events" className={KPI_CARD_LINK_CLASS}>
+                    <StatCard
+                        label="Total event"
+                        value={tenant?.eventsTotal ?? "—"}
+                        icon={<FiCalendar />}
+                        hint={
+                            tenant
+                                ? `${tenant.eventsUpcoming} akan datang`
+                                : "Tidak ada akses data event"
+                        }
+                    />
+                </Link>
+                <Link
+                    href="/dashboard/events?status=PUBLISHED&status=ONGOING"
+                    className={KPI_CARD_LINK_CLASS}
+                >
+                    <StatCard
+                        label="Event aktif"
+                        value={tenant?.eventsPublished ?? "—"}
+                        icon={<FiActivity />}
+                        tone="info"
+                        hint="Sedang dipublikasikan atau berlangsung"
+                    />
+                </Link>
+                <Link href="/dashboard/orders" className={KPI_CARD_LINK_CLASS}>
+                    <StatCard
+                        label="Pesanan"
+                        value={tenant?.ordersTotal ?? "—"}
+                        icon={<FiShoppingBag />}
+                        hint={
+                            tenant
+                                ? `Lunas ${tenant.ordersPaid} · Menunggu ${tenant.ordersPendingPayment} · Cancel/Expired ${tenant.ordersCancelled + tenant.ordersExpired}`
+                                : "Tidak ada akses data pesanan"
+                        }
+                    />
+                </Link>
+                <Link
+                    href="/dashboard/orders?paymentStatus=PAID"
+                    className={KPI_CARD_LINK_CLASS}
+                >
+                    <StatCard
+                        label="Tiket terjual"
+                        value={tenant?.ticketsSold ?? "—"}
+                        icon={<FiTag />}
+                        tone="info"
+                        hint="Tiket terbit dan check-in, tidak termasuk yang void/refund"
+                    />
+                </Link>
+                <Link href="/dashboard/reports" className={KPI_CARD_LINK_CLASS}>
+                    <StatCard
+                        label="Pendapatan"
+                        value={tenant ? formatIdr(Number(tenant.revenue)) : "—"}
+                        icon={<FiDollarSign />}
+                        tone="success"
+                        hint="Total pesanan berstatus lunas"
+                    />
+                </Link>
+                <Link
+                    href="/dashboard/orders?status=PENDING_PAYMENT"
+                    className={KPI_CARD_LINK_CLASS}
+                >
+                    <StatCard
+                        label="Pesanan menunggu bayar"
+                        value={tenant?.ordersPendingPayment ?? "—"}
+                        icon={<FiClock />}
+                        tone={tenant && tenant.ordersPendingPayment > 0 ? "pending" : "neutral"}
+                        hint="Belum menerima pembayaran"
+                    />
+                </Link>
+                <Link
+                    href="/dashboard/refunds?status=PENDING&status=PROCESSING"
+                    className={KPI_CARD_LINK_CLASS}
+                >
+                    <StatCard
+                        label="Refund perlu ditangani"
+                        value={tenant ? refundsNeedingWork : "—"}
+                        icon={<FiRefreshCcw />}
+                        tone={refundsNeedingWork > 0 ? "warn" : "neutral"}
+                        hint={
+                            tenant
+                                ? `${tenant.refundsPending} menunggu · ${tenant.refundsProcessing} diproses · ${tenant.refundsCompleted} selesai`
+                                : "Tidak ada akses data refund"
+                        }
+                    />
+                </Link>
+                <Link
+                    href="/dashboard/settlements?status=REQUESTED&status=PENDING_APPROVAL"
+                    className={KPI_CARD_LINK_CLASS}
+                >
+                    <StatCard
+                        label="Pencairan menunggu"
+                        value={settlements ? settlements.awaiting : "—"}
+                        icon={<FiCreditCard />}
+                        tone={settlements && settlements.awaiting > 0 ? "pending" : "neutral"}
+                        hint={
+                            settlements
+                                ? `${settlements.total} total · ${formatIdr(
+                                      Number(settlements.paidAmount)
+                                  )} sudah dibayar`
+                                : "Tidak ada akses data pencairan"
+                        }
+                    />
+                </Link>
             </StatGrid>
 
             {canReadTransactionReport && report ? (
@@ -346,28 +387,18 @@ export default async function DashboardOverviewPage({
                                 : `Tiket terjual per hari · ${report.range.label}`
                         }
                         actions={
-                            <div className="flex flex-wrap items-center gap-2">
-                                {(
-                                    Object.keys(DASHBOARD_REPORT_PERIODS) as DashboardReportPeriod[]
-                                ).map((period) => (
-                                    <Link
-                                        key={period}
-                                        href={`/dashboard?period=${period}`}
-                                        aria-current={
-                                            report.filters.period === period
-                                                ? "true"
-                                                : undefined
-                                        }
-                                        className={
-                                            report.filters.period === period
-                                                ? "rounded-field border border-primary bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary"
-                                                : "rounded-field border border-input px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-                                        }
-                                    >
-                                        {PERIOD_LABELS[period]}
-                                    </Link>
-                                ))}
-                            </div>
+                            /*
+                             * The window shortcuts, as a row of pill LINKS (the same component the
+                             * reports page uses). A link sets ONLY `period`, so it works before any
+                             * JavaScript runs and replaces an explicit range instead of silently
+                             * keeping it.
+                             */
+                            <PeriodPills
+                                basePath="/dashboard"
+                                active={report.filters.period}
+                                current={{}}
+                                className="justify-end"
+                            />
                         }
                     >
                         <SalesTrendChart data={trendForCharts} />
@@ -405,7 +436,7 @@ export default async function DashboardOverviewPage({
                                     Terapkan
                                 </Button>
                                 <Link
-                                    href="/dashboard/reports"
+                                    href={reportsHref}
                                     className="text-xs font-semibold text-primary underline-offset-4 hover:underline"
                                 >
                                     Laporan lengkap

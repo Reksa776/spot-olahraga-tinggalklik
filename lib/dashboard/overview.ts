@@ -36,6 +36,17 @@ export type DashboardOverview = {
         ordersTotal: number;
         ordersPaid: number;
         ordersPendingPayment: number;
+        /**
+         * The two terminal statuses that are NOT a sale, counted from the same status tally as
+         * `ordersTotal`. They are surfaced so the overview's Pesanan tile can break the count down
+         * (lunas · menunggu · cancel/expired) without a second query and without changing what
+         * `ordersTotal` means — it stays every order, whatever its status.
+         *
+         * `REFUNDED` / `PARTIALLY_REFUNDED` are deliberately NOT folded in here: a refunded order
+         * was a sale first, and the refund lifecycle has its own tile.
+         */
+        ordersCancelled: number;
+        ordersExpired: number;
         ticketsSold: number;
         /** Sum of PAID orders' `total`, as a decimal string. */
         revenue: string;
@@ -185,9 +196,8 @@ async function readTenantBlock({
         eventsTotal,
         eventsPublished,
         eventsUpcoming,
-        ordersTotal,
+        orderStatusGroups,
         ordersPaid,
-        ordersPendingPayment,
         revenueAgg,
         ticketsSold,
         paymentsPending,
@@ -224,24 +234,26 @@ async function readTenantBlock({
                   },
               })
             : Promise.resolve(0),
+        /*
+         * ONE grouped read for the whole order-status breakdown.
+         *
+         * `ordersTotal` (the sum of every group), the operator's `PENDING_PAYMENT` queue and the
+         * terminal `CANCELLED`/`EXPIRED` counts all come from this single `groupBy`, so the Pesanan
+         * tile cannot show a total that disagrees with its own parts. It is also how a status added
+         * to the enum later appears here without a new query.
+         */
         canReadOrders
-            ? prisma.eventOrder.count({
+            ? prisma.eventOrder.groupBy({
+                  by: ["status"],
                   where: { organizerId: { in: orderIds } },
+                  _count: { _all: true },
               })
-            : Promise.resolve(0),
+            : Promise.resolve<StatusTally[]>([]),
         canReadOrders
             ? prisma.eventOrder.count({
                   where: {
                       organizerId: { in: orderIds },
                       paymentStatus: "PAID",
-                  },
-              })
-            : Promise.resolve(0),
-        canReadOrders
-            ? prisma.eventOrder.count({
-                  where: {
-                      organizerId: { in: orderIds },
-                      status: "PENDING_PAYMENT",
                   },
               })
             : Promise.resolve(0),
@@ -302,14 +314,22 @@ async function readTenantBlock({
 
     const refundCount = (status: string) =>
         refundGroups.find((group) => group.status === status)?._count._all ?? 0;
+    const orderCount = (status: string) =>
+        orderStatusGroups.find((group) => group.status === status)?._count._all ?? 0;
 
     return {
         eventsTotal,
         eventsPublished,
         eventsUpcoming,
-        ordersTotal,
+        // The total stays EXACTLY "all orders": the sum of the grouped status counts.
+        ordersTotal: orderStatusGroups.reduce(
+            (total, group) => total + group._count._all,
+            0
+        ),
         ordersPaid,
-        ordersPendingPayment,
+        ordersPendingPayment: orderCount("PENDING_PAYMENT"),
+        ordersCancelled: orderCount("CANCELLED"),
+        ordersExpired: orderCount("EXPIRED"),
         ticketsSold,
         revenue: (revenueAgg._sum.total ?? ZERO).toFixed(2),
         paymentsPending,

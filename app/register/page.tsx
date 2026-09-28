@@ -39,7 +39,7 @@ import { getAuthzScope } from "@/lib/authz";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-    title: "Daftar akun",
+    title: "Register",
     description:
         "Buat akun TinggalKlik.Co untuk membeli tiket, menyimpan e-tiket, dan mengikuti event favorit Anda.",
     robots: { index: false, follow: false },

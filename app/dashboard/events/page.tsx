@@ -1,5 +1,7 @@
 import { FiCalendar, FiPlus } from "react-icons/fi";
 
+import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import {
     DataTable,
     EmptyBlock,
@@ -7,11 +9,17 @@ import {
     PageHeader,
     PrimaryAction,
     StatusBadge,
-    TableToolbar,
     TextLink,
 } from "@/components/dashboard/primitives";
+import { EVENT_STATUS_LABELS } from "@/lib/dashboard/filter-options";
 import { listOrganizerEvents } from "@/lib/events/service";
-import { EVENT_STATUS_FILTERS, eventStatusTone, parseEventStatusFilter } from "@/lib/events/status";
+import {
+    EVENT_ACTIVE_STATUSES,
+    EVENT_STATUS_FILTERS,
+    eventStatusTone,
+    isEventActiveStatusFilter,
+    parseEventStatusFilters,
+} from "@/lib/events/status";
 import { getOrganizerPageContext } from "@/lib/organizer/context";
 
 /**
@@ -24,14 +32,26 @@ import { getOrganizerPageContext } from "@/lib/organizer/context";
  *
  * ── THE STATUS FILTER IS VALIDATED, NOT FORWARDED ────────────────────────────────
  * `?status=` is a user-controlled string, and `EventStatus` is a Prisma enum: handing an
- * unrecognised value to the query layer raises instead of returning a page. `parseEventStatusFilter`
+ * unrecognised value to the query layer raises instead of returning a page. `parseEventStatusFilters`
  * narrows it against the statuses the product can actually produce, and anything else is treated
  * as "no filter" — the same defensive shape the orders, payments and refunds lists use.
+ *
+ * ── STATUS FILTERING IS A VISIBLE ROW OF PILLS ──────────────────────────────────
+ * Every status the list can be narrowed to is on screen, the applied one is highlighted, and a pill
+ * is a LINK — so the filter is one click, needs no JavaScript, is shareable, and survives a refresh.
+ * Nothing about the query changed: each pill resolves to the same `?status=` value, the "Aktif" pill
+ * still emits the REPEATED parameter (`status=PUBLISHED&status=ONGOING`, built from
+ * `EVENT_ACTIVE_STATUSES` so the union cannot drift from the union the overview tile counts), and the
+ * same validated list still reaches Prisma.
+ *
+ * ── SEARCH ──────────────────────────────────────────────────────────────────────
+ * `listOrganizerEvents` has always accepted `q` (title, event code, slug) and no control ever
+ * exposed it. The search box is that control; it adds a parameter, not a predicate.
  *
  * ── STATUS COLOUR COMES FROM THE SHARED TABLE ────────────────────────────────────
  * `eventStatusTone` (lib/events/status.ts) is the ONE place a status is mapped to a tone. This page,
  * the event detail header and the overview panel all read it, so `ONGOING` cannot render as a
- * neutral grey here while meaning something else there — which is what it did before this phase.
+ * neutral grey here while meaning something else there.
  *
  * ── PAGINATION COMES FROM THE SERVICE ────────────────────────────────────────────
  * `result.pagination.totalPages` is computed by `listOrganizerEvents` from the SAME `limit` it
@@ -40,6 +60,9 @@ import { getOrganizerPageContext } from "@/lib/organizer/context";
  */
 
 export const dynamic = "force-dynamic";
+
+/** Browser tab title. The brand suffix is composed by the root layout's `title.template`. */
+export const metadata = { title: "Events" };
 
 const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
     dateStyle: "medium",
@@ -50,19 +73,41 @@ const DATE_FORMAT = new Intl.DateTimeFormat("id-ID", {
 export default async function DashboardEventsPage({
     searchParams,
 }: {
-    searchParams: Promise<{ status?: string; page?: string }>;
+    searchParams: Promise<{ status?: string | string[]; page?: string; q?: string }>;
 }) {
     const params = await searchParams;
     const context = await getOrganizerPageContext();
 
-    const status = parseEventStatusFilter(params.status);
+    /*
+     * A repeated `?status=` is the union the "Event aktif" KPI needs (`PUBLISHED` + `ONGOING`),
+     * so the page reads the whole set and hands the validated list to the scoped service. A single
+     * value still renders exactly as before.
+     */
+    const statuses = parseEventStatusFilters(params.status);
+    const isActiveUnion = isEventActiveStatusFilter(statuses);
     const page = params.page ? Number(params.page) : 1;
+    const q = params.q ?? null;
 
     const result = await listOrganizerEvents(context.scope, {
         organizerId: context.currentOrganizerId,
-        status,
+        statuses,
+        q,
         page,
         limit: 20,
+    });
+
+    const statusField = buildFilterField({
+        name: "status",
+        label: "Status",
+        allLabel: "Semua status",
+        values: statuses,
+        members: EVENT_STATUS_FILTERS,
+        labels: EVENT_STATUS_LABELS,
+        union: {
+            value: "active",
+            label: "Aktif",
+            statuses: EVENT_ACTIVE_STATUSES,
+        },
     });
 
     return (
@@ -79,27 +124,19 @@ export default async function DashboardEventsPage({
                 }
             />
 
-            {/*
-                The status filter the service already supported but no control exposed. It is a row
-                of links — like the orders page's worklist switch — so it stays a server-rendered
-                page with no client state, and every filter is a shareable URL.
-            */}
-            <TableToolbar>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-                    <TextLink href="/dashboard/events">
-                        {status === null ? "• Semua status" : "Semua status"}
-                    </TextLink>
-
-                    {EVENT_STATUS_FILTERS.map((value) => (
-                        <TextLink
-                            key={value}
-                            href={`/dashboard/events?status=${value}`}
-                        >
-                            {status === value ? `• ${value}` : value}
-                        </TextLink>
-                    ))}
-                </div>
-            </TableToolbar>
+            <FilterBar
+                basePath="/dashboard/events"
+                current={{
+                    status: statuses.length > 0 ? statuses : undefined,
+                    q: params.q,
+                }}
+                fields={[statusField]}
+                search={{
+                    label: "Cari event",
+                    placeholder: "Nama, kode, atau slug",
+                    value: params.q,
+                }}
+            />
 
             <DataTable
                 minWidth={860}
@@ -107,17 +144,19 @@ export default async function DashboardEventsPage({
                     <EmptyBlock
                         icon={<FiCalendar size={22} />}
                         title={
-                            status === null
+                            statuses.length === 0
                                 ? "Belum ada event"
-                                : `Tidak ada event berstatus ${status}`
+                                : isActiveUnion
+                                  ? "Tidak ada event aktif"
+                                  : `Tidak ada event berstatus ${statuses.join(", ")}`
                         }
                         description={
-                            status === null
+                            statuses.length === 0
                                 ? "Buat draft event pertama, lalu publikasikan setelah jenis tiket dan waktu selesai tersedia."
                                 : "Coba pilih status lain, atau lihat semua event."
                         }
                         action={
-                            status === null ? (
+                            statuses.length === 0 ? (
                                 <PrimaryAction href="/dashboard/events/new">
                                     Event baru
                                 </PrimaryAction>
@@ -170,7 +209,10 @@ export default async function DashboardEventsPage({
                         page={page}
                         totalPages={result.pagination.totalPages}
                         basePath="/dashboard/events"
-                        query={{ status: params.status }}
+                        query={{
+                            status: statuses.length > 0 ? statuses : undefined,
+                            q: params.q,
+                        }}
                         label="Halaman"
                     />
                 }

@@ -36,8 +36,12 @@ import { normalizeCatalogParams } from "@/lib/ticketing/ui/catalog-href";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Only the FEATURE title: the root layout's `title.template` composes "Events — <platform name>",
+ * so the public catalog and the dashboard's own event list name the same feature the same way.
+ */
 export const metadata = {
-    title: "Event & Pertandingan Olahraga — TinggalKlik.Co",
+    title: "Events",
     description:
         "Jelajahi event olahraga dan pertandingan: filter berdasarkan cabang olahraga, kota, harga, dan tanggal.",
 };

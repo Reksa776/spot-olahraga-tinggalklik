@@ -1,4 +1,9 @@
-import { Prisma, type PICStatus } from "@prisma/client";
+import {
+    Prisma,
+    type EventStatus,
+    type PaymentStatus,
+    type PICStatus,
+} from "@prisma/client";
 
 import {
     AuthzError,
@@ -10,8 +15,11 @@ import {
     type Permission,
 } from "@/lib/authz";
 import { mintPicReferralToken } from "@/lib/pic/referral";
-import { getPicLedgerBalance } from "@/lib/pic/ledger";
+import { getPicFeeEntitlement, getPicLedgerBalance } from "@/lib/pic/ledger";
 import { prisma } from "@/lib/prisma";
+
+/** The zero of every money aggregate in this module — never a JS `0` in a `Decimal` sum. */
+const ZERO = new Prisma.Decimal(0);
 
 /**
  * ==========================================
@@ -69,6 +77,13 @@ import { prisma } from "@/lib/prisma";
  * the tenant dashboard, so a PENDING/FAILED/CANCELLED/REFUNDED order never inflates a
  * "sold" number. Net = CREDIT − DEBIT in `Decimal`, never an integer division, never a
  * float, and never a recomputation from the CURRENT fee config.
+ *
+ * PIC DASHBOARD V2 — two of those fee figures are now separated so the page can stop calling
+ * an ENTITLEMENT a settlement. `fee.potential` is `Σ EARNED − Σ REVERSAL` (what the sales have
+ * earned the PIC), while `payout.approvedTotal` is `Σ Settlement.netAmount` over `APPROVED` ∪
+ * `PAID` (what the settlement engine has approved for transfer). Neither is derived from the
+ * other, and neither is a new fee formula — the first aggregates existing ledger rows (see
+ * `getPicFeeEntitlement`), the second sums amounts the money engine already stored.
  */
 
 /**
@@ -241,11 +256,37 @@ export async function getMyPicProfile(userId: string) {
 }
 
 /**
- * The four numbers behind the self-service StatGrid.
+ * The five numbers behind the self-service StatGrid.
  *
  * Requires BOTH own-scope families: attribution counts and the fee figures share one page,
  * so presenting one without authority for the other is a rendering lie — one guard holds
- * both. A PIC platform role holds both (`PLATFORM_ROLE_OWN_PERMISSIONS.PIC`).
+ * both. A PIC platform role holds both (`PLATFORM_ROLE_OWN_PERMISSIONS.PIC`). The payout
+ * block reads the PIC's own `Settlement` rows, which is the same authority the payout
+ * request surface resolves (`pic_fee.read.own`), so no extra capability is claimed here.
+ *
+ * ── FEE ENTITLEMENT vs FEE SETTLED (two different questions) ─────────────────────
+ * `fee.potential` is the ledger EARNED minus REVERSAL — what the PIC's sales have earned
+ * them ("Potensi Fee"). `payout.approvedTotal` is the Σ `netAmount` of the PIC's OWN
+ * settlements that reached `APPROVED` or `PAID` ("Fee Bersih") — what has actually been
+ * approved for transfer. They are deliberately different numbers: one is derived from the
+ * sales ledger, the other from the settlement engine's own stored amounts, and neither is
+ * computed from the other.
+ *
+ * ── WHY `APPROVED ∪ PAID` IS THE "FEE BERSIH" DEFINITION ────────────────────────
+ * The settlement lifecycle is `REQUESTED → APPROVED → PAID` (`settlement.ts`): `APPROVED`
+ * means "transfer bank kini boleh dieksekusi" with the amount already frozen at prepare
+ * time, and `PAID` is that same approved payout after the transfer was evidenced — a state
+ * a row can only reach FROM `APPROVED`. Counting only the rows still sitting in `APPROVED`
+ * would make the figure DROP the moment the money was actually transferred, which is the
+ * opposite of what a cumulative "fee bersih" must do; `PAID` alone would hide everything
+ * approved but not yet transferred. The union is therefore the approved-and-beyond set, and
+ * the two legs are reported separately (`approvedAmount` / `paidAmount`) so the tile can say
+ * which is which instead of asserting a single ambiguous total. `REQUESTED`, `REJECTED`,
+ * `FAILED`, `CANCELLED` and `DRAFT` are all excluded: a request that was refused, or never
+ * reviewed, has approved nothing.
+ *
+ * No money is recomputed: the amounts are the settlements' stored `netAmount`, written by
+ * the money engine at prepare time.
  */
 export async function getMyPicOverview(userId: string) {
     const { picProfileId } = await requireMyPic(userId, [
@@ -259,6 +300,8 @@ export async function getMyPicOverview(userId: string) {
         attributedOrders,
         tickets,
         gross,
+        entitlement,
+        payoutGroups,
     ] = await Promise.all([
         prisma.pICEventAssignment.count({
             where: { picProfileId, isActive: true, revokedAt: null },
@@ -275,7 +318,27 @@ export async function getMyPicOverview(userId: string) {
             _sum: { total: true },
             where: { picProfileId, paymentStatus: "PAID" },
         }),
+        // Fee ENTITLEMENT from sales: Σ EARNED − Σ REVERSAL (payouts excluded — see the
+        // helper's docblock).
+        getPicFeeEntitlement(picProfileId),
+        // The PIC's own payouts, grouped by the settlement engine's own status enum: one
+        // read gives both the approved legs and the count, so the tile and its hint cannot
+        // describe two different sets.
+        prisma.settlement.groupBy({
+            by: ["status"],
+            where: { payeeType: "PIC", picProfileId },
+            _count: { _all: true },
+            _sum: { netAmount: true },
+        }),
     ]);
+
+    const payoutSum = (status: string) =>
+        payoutGroups.find((group) => group.status === status)?._sum.netAmount ?? ZERO;
+    const payoutCount = (status: string) =>
+        payoutGroups.find((group) => group.status === status)?._count._all ?? 0;
+
+    const approvedAmount = payoutSum("APPROVED");
+    const paidAmount = payoutSum("PAID");
 
     // `Σ CREDIT − Σ DEBIT` over the WHOLE ledger — the one canonical sum (Phase 30), the
     // same helper powering the platform admin views.
@@ -286,56 +349,264 @@ export async function getMyPicOverview(userId: string) {
         totalAssignments,
         attributedOrders,
         ticketsSold: tickets._sum.quantity ?? 0,
-        grossSales: gross._sum.total ?? new Prisma.Decimal(0),
-        feeEarned: credit,
-        feeReversed: debit,
-        netFee: net,
+        grossSales: gross._sum.total ?? ZERO,
+        fee: {
+            /** Σ EARNED credits — the fee posted from settled sales. */
+            earned: entitlement.earned,
+            /** Σ REVERSAL debits — fee given back on refunds. */
+            reversed: entitlement.reversed,
+            /** `earned − reversed`: the fee the PIC's sales have earned. */
+            potential: entitlement.potential,
+            /** Σ CREDIT − Σ DEBIT over the whole ledger (payouts included). */
+            netBalance: net,
+            credit,
+            debit,
+        },
+        payout: {
+            /** APPROVED ∪ PAID — the "Fee Bersih" figure. */
+            approvedTotal: approvedAmount.add(paidAmount),
+            /** Approved, transfer not yet evidenced. */
+            approvedAmount,
+            /** Transfer evidenced (`PAID`). */
+            paidAmount,
+            approvedCount: payoutCount("APPROVED"),
+            paidCount: payoutCount("PAID"),
+        },
     };
 }
 
-/** The PIC's own event assignments — profile-scoped, no dedicated permission. */
-export async function listMyPicAssignments(userId: string) {
-    const { picProfileId } = await requireMyPic(userId, []);
+/*
+ * ============================================================================
+ * "EVENT SAYA" — STATUS FILTERS (assignment + event)
+ * ============================================================================
+ *
+ * Two dimensions, and both come from the data that is actually stored rather than from a
+ * status vocabulary invented for the filter:
+ *
+ *   ASSIGNMENT  `PICEventAssignment` carries a boolean (`isActive`) plus the revocation
+ *               stamp (`revokedAt`), and `revokePicAssignment` writes both together. The
+ *               filter's two members are therefore exactly the two states the row can hold:
+ *               `ACTIVE` (`isActive && !revokedAt`) and `REVOKED` (`!isActive`). There is no
+ *               third state and no enum to widen — the table's own badge renders the same
+ *               pair ("Aktif" / "Dicabut").
+ *
+ *   EVENT       the Prisma `EventStatus` enum, narrowed by the same dashboard list the
+ *               events page offers (`EVENT_STATUS_FILTERS`; `PENDING_REVIEW` is absent
+ *               because no code path can produce it).
+ *
+ * An unknown value is not a filter: the page narrows the URL parameter through
+ * `parsePicAssignmentStatus` / `parseEventStatusFilters` before calling this service, so a
+ * hand-edited `?assignmentStatus=NOPE` renders "Semua penugasan" instead of reaching Prisma
+ * (where a comparison against a non-member would raise rather than render a page).
+ */
 
-    const rows = await prisma.pICEventAssignment.findMany({
-        where: { picProfileId },
-        select: {
-            id: true,
-            eventId: true,
-            feeRateBp: true,
-            isActive: true,
-            revokedAt: true,
-            assignedAt: true,
-            event: {
-                select: { title: true, slug: true, status: true, startAt: true },
-            },
-        },
-        orderBy: [{ assignedAt: "desc" }, { createdAt: "desc" }],
-        take: 100,
-    });
+/** The two states a `PICEventAssignment` row can hold. */
+export const PIC_ASSIGNMENT_STATUSES = ["ACTIVE", "REVOKED"] as const;
 
-    return rows.map((assignment) => ({
-        id: assignment.id,
-        eventId: assignment.eventId,
-        eventTitle: assignment.event.title,
-        eventSlug: assignment.event.slug,
-        eventStatus: assignment.event.status,
-        eventStartAt: assignment.event.startAt.toISOString(),
-        feeRateBp: assignment.feeRateBp,
-        isActive: assignment.isActive,
-        revokedAt: assignment.revokedAt?.toISOString() ?? null,
-        assignedAt: assignment.assignedAt.toISOString(),
-    }));
+export type PicAssignmentStatus = (typeof PIC_ASSIGNMENT_STATUSES)[number];
+
+/** Narrow a query-string value to an assignment state, or `null` for "no filter". */
+export function parsePicAssignmentStatus(
+    value: string | string[] | undefined
+): PicAssignmentStatus | null {
+    const raw = Array.isArray(value) ? value[0] : value;
+
+    return raw !== undefined &&
+        (PIC_ASSIGNMENT_STATUSES as readonly string[]).includes(raw)
+        ? (raw as PicAssignmentStatus)
+        : null;
 }
 
-/** The PIC's own attributions, newest first — `pic_attribution.read.own`. */
-export async function listMyAttributions(userId: string) {
+/** How many assignments one page of "Event Saya" shows. */
+export const PIC_ASSIGNMENT_PAGE_SIZE = 10;
+
+export type PicAssignmentFilters = {
+    /** `ACTIVE` = still assigned, `REVOKED` = withdrawn. `null` = both. */
+    assignmentStatus?: PicAssignmentStatus | null;
+    /** The event statuses to keep (already validated against `EventStatus`). Empty = all. */
+    eventStatuses?: readonly EventStatus[];
+    page?: number;
+    limit?: number;
+};
+
+/**
+ * The PIC's own event assignments — profile-scoped, no dedicated permission.
+ *
+ * ── FILTERED AND COUNTED BY THE DATABASE, NOT BY THE PAGE ────────────────────────
+ * `assignmentStatus` and `eventStatuses` are `where` predicates, so the table, the row count
+ * and the pager all describe the SAME narrowed set. Filtering the already-fetched page in
+ * JavaScript would make the pager lie (page 1 of "Dicabut" showing four rows out of the two
+ * that survived a filter applied after the fetch), which is the defect this shape prevents.
+ *
+ * ── THE PER-EVENT SALES COLUMNS ─────────────────────────────────────────────────
+ * Each row carries the two figures the PIC dashboard's `Pesanan Atribusi` and `Tiket Terjual`
+ * KPIs are made of, for THAT event:
+ *
+ *   attributedOrders  `PICAttribution` rows for the event — one per attributed order, ALL
+ *                     statuses. Attribution is captured at checkout, before payment, so a
+ *                     pending order still counts as an attributed order (exactly the
+ *                     dashboard `attributedOrders` contract). It is also the SAME table the
+ *                     KPI counts, so the column cannot disagree with the tile above it.
+ *   paidTickets       Σ `EventOrderItem.quantity` over orders whose `paymentStatus` is `PAID`
+ *                     — the dashboard revenue contract, unchanged from the KPI. One order
+ *                     with three tickets is three tickets and ONE order, which is why the two
+ *                     columns are counted from two different tables rather than from one row
+ *                     count.
+ *
+ * The two sources describe the same set of orders because checkout writes them together: an
+ * order's `picProfileId` and its one `PICAttribution` row are created in the SAME transaction
+ * (`lib/ticketing/checkout.ts`), so "an attributed order" cannot be true of one table and false
+ * of the other.
+ *
+ * Both are fetched for the WHOLE page of events in two queries (a `groupBy`, and the narrow
+ * order-line projection the reports module also folds in JavaScript) instead of one query per
+ * row.
+ *
+ * Amounts are never recomputed here: `quantity` and the attribution rows are stored facts.
+ */
+export async function listMyPicAssignments(
+    userId: string,
+    filters: PicAssignmentFilters = {}
+) {
+    const { picProfileId } = await requireMyPic(userId, []);
+
+    const page = Math.max(1, Math.trunc(filters.page ?? 1));
+    const limit = Math.max(1, Math.trunc(filters.limit ?? PIC_ASSIGNMENT_PAGE_SIZE));
+
+    const assignmentStatus = filters.assignmentStatus ?? null;
+    const eventStatuses = filters.eventStatuses ?? [];
+
+    const where: Prisma.PICEventAssignmentWhereInput = {
+        picProfileId,
+        // `ACTIVE` is the read model's own definition (both columns), never just `isActive`:
+        // the same predicate `assignedEvents` and the referral links use.
+        ...(assignmentStatus === "ACTIVE"
+            ? { isActive: true, revokedAt: null }
+            : {}),
+        ...(assignmentStatus === "REVOKED" ? { isActive: false } : {}),
+        ...(eventStatuses.length > 0
+            ? { event: { status: { in: [...eventStatuses] } } }
+            : {}),
+    };
+
+    const [total, rows] = await Promise.all([
+        prisma.pICEventAssignment.count({ where }),
+        prisma.pICEventAssignment.findMany({
+            where,
+            select: {
+                id: true,
+                eventId: true,
+                feeRateBp: true,
+                isActive: true,
+                revokedAt: true,
+                assignedAt: true,
+                event: {
+                    select: { title: true, slug: true, status: true, startAt: true },
+                },
+            },
+            orderBy: [{ assignedAt: "desc" }, { createdAt: "desc" }],
+            skip: (page - 1) * limit,
+            take: limit,
+        }),
+    ]);
+
+    const eventIds = rows.map((row) => row.eventId);
+
+    const attributedByEvent = new Map<string, number>();
+    const ticketsByEvent = new Map<string, number>();
+
+    if (eventIds.length > 0) {
+        const [attributionGroups, paidItemRows] = await Promise.all([
+            prisma.pICAttribution.groupBy({
+                by: ["eventId"],
+                where: { picProfileId, eventId: { in: eventIds } },
+                _count: { _all: true },
+            }),
+            prisma.eventOrderItem.findMany({
+                where: {
+                    order: {
+                        picProfileId,
+                        paymentStatus: "PAID",
+                        eventId: { in: eventIds },
+                    },
+                },
+                select: { quantity: true, order: { select: { eventId: true } } },
+            }),
+        ]);
+
+        for (const group of attributionGroups) {
+            attributedByEvent.set(group.eventId, group._count._all);
+        }
+
+        for (const item of paidItemRows) {
+            const eventId = item.order.eventId;
+            ticketsByEvent.set(eventId, (ticketsByEvent.get(eventId) ?? 0) + item.quantity);
+        }
+    }
+
+    return {
+        items: rows.map((assignment) => ({
+            id: assignment.id,
+            eventId: assignment.eventId,
+            eventTitle: assignment.event.title,
+            eventSlug: assignment.event.slug,
+            eventStatus: assignment.event.status,
+            eventStartAt: assignment.event.startAt.toISOString(),
+            feeRateBp: assignment.feeRateBp,
+            isActive: assignment.isActive,
+            revokedAt: assignment.revokedAt?.toISOString() ?? null,
+            assignedAt: assignment.assignedAt.toISOString(),
+            attributedOrders: attributedByEvent.get(assignment.eventId) ?? 0,
+            paidTickets: ticketsByEvent.get(assignment.eventId) ?? 0,
+        })),
+        pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+    };
+}
+
+/**
+ * The most recent attributions on the PIC's own orders — `pic_attribution.read.own`.
+ *
+ * ── AN ORDER LIST, NOT A SALES REPORT ────────────────────────────────────────────
+ * This answers "which orders came through me?", so it deliberately spans EVERY payment state
+ * (attribution is captured at checkout, before payment). It is NOT the destination of the
+ * `Tiket Terjual` tile: that tile counts PAID tickets only, and it belongs to the dedicated
+ * ticket-sales section built by `getMyPicTicketSales` below. Keeping the two apart is the
+ * whole point — a PIC clicking "Tiket Terjual" must not land on a list of pending orders.
+ *
+ * `paymentStatus` narrows the list to the orders in ONE gateway payment state, and it is a
+ * `where` on the ORDER (attribution happens before payment, so the state lives there). The
+ * value is expected to be an already-validated `PaymentStatus` member: an unknown string is a
+ * Prisma enum comparison that would raise, so the page narrows it before calling (the same
+ * division of labour every other dashboard list uses).
+ *
+ * ── ONE QUANTITY PER ROW, WITHOUT AN N+1 ────────────────────────────────────────
+ * Each row carries `ticketQuantity` = Σ `EventOrderItem.quantity` for THAT order — the same
+ * stored fact the dashboard's `Tiket Terjual` KPI is built from, so "how many tickets did this
+ * order buy?" is answerable on the row instead of on another page. It is read for the whole
+ * page of orders in ONE grouped query, never one query per attribution. The figure is shown
+ * whatever the payment state says: a PENDING order did buy those tickets, it simply has not
+ * been paid for yet — which is exactly the distinction the status column exists to carry.
+ */
+export async function listMyAttributions(
+    userId: string,
+    filters: { paymentStatus?: PaymentStatus | null } = {}
+) {
     const { picProfileId } = await requireMyPic(userId, [
         PERMISSIONS.PIC_ATTRIBUTION_READ_OWN,
     ]);
 
     const rows = await prisma.pICAttribution.findMany({
-        where: { picProfileId },
+        where: {
+            picProfileId,
+            ...(filters.paymentStatus
+                ? { order: { paymentStatus: filters.paymentStatus } }
+                : {}),
+        },
         select: {
             id: true,
             orderId: true,
@@ -358,10 +629,26 @@ export async function listMyAttributions(userId: string) {
         take: 20,
     });
 
+    const orderIds = rows.map((attribution) => attribution.orderId);
+    const ticketsByOrder = new Map<string, number>();
+
+    if (orderIds.length > 0) {
+        const ticketGroups = await prisma.eventOrderItem.groupBy({
+            by: ["orderId"],
+            where: { orderId: { in: orderIds } },
+            _sum: { quantity: true },
+        });
+
+        for (const group of ticketGroups) {
+            ticketsByOrder.set(group.orderId, group._sum.quantity ?? 0);
+        }
+    }
+
     return rows.map((attribution) => ({
         id: attribution.id,
         orderId: attribution.orderId,
         orderNumber: attribution.order.orderNumber,
+        ticketQuantity: ticketsByOrder.get(attribution.orderId) ?? 0,
         orderTotal: attribution.order.total,
         orderStatus: attribution.order.status,
         paymentStatus: attribution.order.paymentStatus,
@@ -372,6 +659,129 @@ export async function listMyAttributions(userId: string) {
         selfReferral: attribution.selfReferral,
         capturedAt: attribution.capturedAt.toISOString(),
     }));
+}
+
+/**
+ * ============================================================================
+ * "TIKET TERJUAL" — the PAID sales performance, aggregated PER EVENT
+ * ============================================================================
+ *
+ * The companion of `listMyAttributions`, deliberately a different question and a different
+ * shape. Attributions answer "which orders came through me?" (order-level, all payment
+ * states). This answers "how many tickets have actually been SOLD?" — an event-level rollup
+ * of the PAID orders only, so a PIC can see where tickets are moving rather than re-reading
+ * a list of orders they already saw one section above.
+ *
+ * ── THE DEFINITIONS, UNCHANGED FROM THE KPI ─────────────────────────────────
+ * The dashboard's `Tiket Terjual` KPI is `Σ EventOrderItem.quantity` over the PIC's orders
+ * whose `paymentStatus = PAID` (`getMyPicOverview`), so that is exactly what this rolls up
+ * per event:
+ *
+ *   paidOrders   the COUNT of those PAID orders. One order with three tickets is ONE order
+ *                and THREE tickets, so the two columns are counted from two different tables
+ *                (a `groupBy` over orders and a folded sum over their lines) rather than
+ *                from a single row count that could only be one of the two numbers.
+ *   ticketsSold  Σ `EventOrderItem.quantity` for those orders.
+ *   sales        Σ `EventOrder.total` for those orders — the SAME stored column the fee
+ *                section already calls "Total Penjualan" (`overview.grossSales`), never a
+ *                recomputation from the current fee config, and never a new money formula.
+ *                An event whose sales are zero therefore renders `Rp 0`, not a hidden
+ *                column.
+ *
+ * Because the set is the KPI's own set, the table's totals equal the tile above it by
+ * construction; a test pins that (the two reads can never drift into describing two
+ * different populations).
+ *
+ * ── WHY ONLY EVENTS THAT HAVE SOLD ──────────────────────────────────────────
+ * The rows come from a `groupBy` over PAID orders, so an assigned event with no paid order
+ * simply has no row — this section is a sales summary, not a second copy of "Event Saya".
+ * The page's empty state covers the "nothing sold yet" case explicitly.
+ *
+ * ── QUERY SHAPE ─────────────────────────────────────────────────────────────
+ * Two aggregations plus one event-metadata lookup, whatever the number of events: the order
+ * totals are grouped in the database, the ticket quantities are folded from a narrow
+ * order-line projection (the same pattern `listMyPicAssignments` and the reports module
+ * use), and the titles come from a single `findMany` over the resulting event ids. No query
+ * per event and no query per order.
+ *
+ * Everything is scoped by `requireMyPic`, so another PIC's orders on the SAME event are
+ * invisible here exactly as they are in the KPI.
+ */
+export async function getMyPicTicketSales(userId: string) {
+    const { picProfileId } = await requireMyPic(userId, [
+        PERMISSIONS.PIC_ATTRIBUTION_READ_OWN,
+        PERMISSIONS.PIC_FEE_READ_OWN,
+    ]);
+
+    const [orderGroups, paidItemRows] = await Promise.all([
+        prisma.eventOrder.groupBy({
+            by: ["eventId"],
+            where: { picProfileId, paymentStatus: "PAID" },
+            _count: { _all: true },
+            _sum: { total: true },
+        }),
+        prisma.eventOrderItem.findMany({
+            where: { order: { picProfileId, paymentStatus: "PAID" } },
+            select: { quantity: true, order: { select: { eventId: true } } },
+        }),
+    ]);
+
+    const eventIds = orderGroups.map((group) => group.eventId);
+
+    if (eventIds.length === 0) {
+        return {
+            items: [] as {
+                eventId: string;
+                eventTitle: string;
+                eventSlug: string | null;
+                paidOrders: number;
+                ticketsSold: number;
+                sales: Prisma.Decimal;
+            }[],
+            totals: { paidOrders: 0, ticketsSold: 0, sales: ZERO },
+        };
+    }
+
+    const events = await prisma.event.findMany({
+        where: { id: { in: eventIds } },
+        select: { id: true, title: true, slug: true },
+    });
+
+    const eventById = new Map(events.map((event) => [event.id, event]));
+
+    const ticketsByEvent = new Map<string, number>();
+
+    for (const item of paidItemRows) {
+        const eventId = item.order.eventId;
+        ticketsByEvent.set(eventId, (ticketsByEvent.get(eventId) ?? 0) + item.quantity);
+    }
+
+    // Best sellers first; the sales figure breaks a ticket tie deterministically so the table
+    // does not reshuffle between two renders of unchanged data.
+    const items = orderGroups
+        .map((group) => ({
+            eventId: group.eventId,
+            eventTitle: eventById.get(group.eventId)?.title ?? "—",
+            eventSlug: eventById.get(group.eventId)?.slug ?? null,
+            paidOrders: group._count._all,
+            ticketsSold: ticketsByEvent.get(group.eventId) ?? 0,
+            sales: group._sum.total ?? ZERO,
+        }))
+        .sort(
+            (left, right) =>
+                right.ticketsSold - left.ticketsSold || right.sales.comparedTo(left.sales)
+        );
+
+    const totals = items.reduce(
+        (accumulator, item) => ({
+            paidOrders: accumulator.paidOrders + item.paidOrders,
+            ticketsSold: accumulator.ticketsSold + item.ticketsSold,
+            sales: accumulator.sales.add(item.sales),
+        }),
+        { paidOrders: 0, ticketsSold: 0, sales: ZERO }
+    );
+
+    return { items, totals };
 }
 
 /** The PIC's posted fee figures from the append-only ledger — `pic_fee.read.own`. */

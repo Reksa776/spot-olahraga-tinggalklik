@@ -93,3 +93,52 @@ export function parseEventStatusFilter(
         ? (value as EventStatusFilter)
         : null;
 }
+
+/**
+ * The product definition of "event aktif": `PUBLISHED` **or** `ONGOING`.
+ *
+ * Declared here rather than re-derived in the page so the dashboard's "Event aktif" tile and the
+ * events list filter cannot disagree about what "active" means. It mirrors the overview read
+ * model's own union exactly (no date, visibility or `startAt` inference).
+ */
+export const EVENT_ACTIVE_STATUSES = [
+    "PUBLISHED",
+    "ONGOING",
+] as const satisfies readonly EventStatus[];
+
+/**
+ * Normalise a repeated `?status=` into the subset the dashboard will actually query.
+ *
+ * Next delivers a repeated parameter as `string[]` and a single one as `string`; both are
+ * accepted. Every value is narrowed against `EVENT_STATUS_FILTERS`, so an unknown string can never
+ * reach Prisma — where it would raise on the enum instead of rendering a page. Order is preserved
+ * and duplicates are dropped.
+ */
+export function parseEventStatusFilters(
+    value: string | string[] | undefined
+): EventStatusFilter[] {
+    if (value === undefined) {
+        return [];
+    }
+
+    const values = Array.isArray(value) ? value : [value];
+    const seen = new Set<EventStatusFilter>();
+
+    for (const candidate of values) {
+        if ((EVENT_STATUS_FILTERS as readonly string[]).includes(candidate)) {
+            seen.add(candidate as EventStatusFilter);
+        }
+    }
+
+    return [...seen];
+}
+
+/** True when a filter is exactly the "event aktif" union (`PUBLISHED` + `ONGOING`). */
+export function isEventActiveStatusFilter(
+    statuses: readonly string[]
+): boolean {
+    return (
+        statuses.length === EVENT_ACTIVE_STATUSES.length &&
+        EVENT_ACTIVE_STATUSES.every((status) => statuses.includes(status))
+    );
+}

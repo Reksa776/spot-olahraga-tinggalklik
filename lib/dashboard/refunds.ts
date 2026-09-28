@@ -22,6 +22,20 @@ import { resolveOrganizerFilter } from "./scope";
  * re-implemented here.
  */
 
+/**
+ * "Perlu Ditangani" — the operator's refund worklist, and nothing else.
+ *
+ * `PENDING` (awaiting a decision) plus `PROCESSING` (money started but not evidenced). It is the
+ * SAME union the dashboard overview counts for its "Refund perlu ditangani" tile
+ * (`refundsPending + refundsProcessing`), so the tile and the board cannot disagree. `APPROVED`,
+ * `REFUNDED`, `REJECTED` and `FAILED` are deliberately excluded — none of them is a task the
+ * operator currently owes.
+ */
+export const REFUND_NEEDS_HANDLING_STATUSES = [
+    "PENDING",
+    "PROCESSING",
+] as const satisfies readonly RefundStatus[];
+
 export const DASHBOARD_REFUND_SELECT = {
     id: true,
     refundNumber: true,
@@ -74,6 +88,13 @@ export type DashboardRefundRow = Prisma.RefundGetPayload<{
 export type DashboardRefundListParams = {
     organizerId?: string | null;
     status?: RefundStatus | null;
+    /**
+     * A multi-value status filter, for the operator's "Perlu Ditangani" worklist
+     * (`PENDING` ∪ `PROCESSING`). Takes precedence over the single `status`; an empty array means
+     * "no status filter". Values are validated against `RefundStatus` by the caller before they
+     * arrive, so an unknown string can never reach Prisma.
+     */
+    statuses?: RefundStatus[] | null;
     q?: string | null;
     page?: number;
     limit?: number;
@@ -99,9 +120,16 @@ export async function listDashboardRefunds(
         };
     }
 
+    const statusWhere: Prisma.RefundWhereInput =
+        params.statuses && params.statuses.length > 0
+            ? { status: { in: params.statuses } }
+            : params.status
+              ? { status: params.status }
+              : {};
+
     const where: Prisma.RefundWhereInput = {
         organizerId: { in: organizerIds },
-        ...(params.status ? { status: params.status } : {}),
+        ...statusWhere,
         ...(params.q
             ? {
                   OR: [

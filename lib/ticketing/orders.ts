@@ -8,6 +8,7 @@ import { writeTicketingAudit } from "./audit-log";
 import { voidOpenPayments } from "./payment/void";
 import { PERMISSIONS, type AuthzScope } from "@/lib/authz/permissions";
 import { prisma } from "@/lib/prisma";
+import { publishOrderUpdated } from "@/lib/realtime/publishers";
 
 import {
     ORDER_PAYLOAD_SELECT,
@@ -57,8 +58,10 @@ async function findOwnOrderRow(orderNumber: string, actor: AuthzScope) {
         where: { orderNumber, userId: actor.userId },
         // `organizerId` is read for the AUDIT row's tenant column only (§32.2). It is
         // never projected into a customer payload — `ORDER_PAYLOAD_SELECT` deliberately
-        // omits it.
-        select: { id: true, status: true, organizerId: true },
+        // omits it. `picProfileId` is read for the same kind of reason: it addresses the
+        // realtime announcement to the PIC credited with the order, and it too is never
+        // projected into the customer payload.
+        select: { id: true, status: true, organizerId: true, picProfileId: true },
     });
 
     if (!order) {
@@ -333,6 +336,19 @@ export async function cancelOwnPendingOrder(
             reason: reason ?? "ORDER_CANCELLED",
         });
     }
+
+    /*
+     * REALTIME: the cancellation committed, so the order's own state and — when a provider session
+     * was voided above — its payment state both moved. One announcement covers both: the domains
+     * `ORDER_UPDATED` invalidates include `payments`, and every surface re-reads rather than
+     * trusting a pushed value.
+     */
+    publishOrderUpdated({
+        orderId: order.id,
+        organizerId: order.organizerId,
+        buyerUserId: actor.userId,
+        picProfileId: order.picProfileId,
+    });
 
     return buildOrderPayload(row);
 }
