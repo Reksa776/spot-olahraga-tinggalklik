@@ -36,8 +36,11 @@ jest.mock("@/lib/password", () => ({
 // Phase 27A: the route resolves its bucket with `clientRateLimitKey`, not `getClientIp`.
 // A server with no trustworthy peer address (a dev run without a reverse proxy) must not
 // collapse every client into the production "untrusted" sentinel — see lib/rate-limit.ts.
+// F-03: the route applies its bucket only when the key names a client, so the mock must
+// answer both questions. `true` keeps this suite on the rate-limited path it is about.
 jest.mock("@/lib/rate-limit", () => ({
     clientRateLimitKey: jest.fn(() => "test-client"),
+    hasTrustworthyClientKey: jest.fn(() => true),
     rateLimiters: {
         register: jest.fn(() => ({ allowed: true, retryAfterMs: 0 })),
     },

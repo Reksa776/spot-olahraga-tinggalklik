@@ -15,9 +15,9 @@
  *              `PAID` — so one order with three tickets is ONE order and THREE tickets, and a
  *              pending order counts as an order but never as a ticket;
  *   ticket Qty the ORDER list carries `ticketQuantity` per row (Σ of that order's items,
- *              shown whatever the payment state), while the dedicated `Tiket Terjual` rollup
- *              is per EVENT and PAID-only — the two surfaces answer different questions and
- *              the rollup's totals equal the KPI's ticket count by construction;
+ *              shown whatever the payment state), while the dedicated `Tiket Terjual` table is
+ *              one row per PAID order, filterable BY EVENT, with footer totals over the whole
+ *              filtered set — its ticket total equals the KPI's ticket count by construction;
  *   isolation  another PIC's orders on the SAME event, and an order with no PIC at all, are in
  *              nobody's numbers;
  *   fees       `Potensi Fee` is the ledger ENTITLEMENT (EARNED − REVERSAL, unaffected by
@@ -40,6 +40,7 @@ import type {
 } from "@prisma/client";
 
 import {
+    getMyPicOrder,
     getMyPicOverview,
     getMyPicTicketSales,
     listMyAttributions,
@@ -748,13 +749,13 @@ describe("Event Saya — per-event Pesanan and Tiket terjual", () => {
 });
 
 /* ==================================================================================
- * B2. THE TWO SURFACES — per-order quantity vs the per-event ticket rollup
+ * B2. THE TWO SURFACES — attributions (all payment states) vs sales (PAID only)
  * ==================================================================================
  * The reported UX defect was that `Tiket Terjual` landed on the order list. These tests pin the
- * separation that replaced it: the ORDER list answers "how many tickets did this order buy?"
- * per row (all payment states), and the ROLLUP answers "how many tickets actually sold?" per
- * event (PAID only). One order with several lines is the case that tells a quantity from a
- * line count.
+ * separation that replaced it: the ATTRIBUTION list answers "how many tickets did this order
+ * buy?" per row across every payment state, and the SALES table answers "which orders actually
+ * sold, and how much did each carry?" one row per PAID order. One order with several lines is
+ * the case that tells a quantity from a line count.
  */
 
 const ORDER_NUMBERS = {
@@ -819,76 +820,292 @@ describe("Atribusi Terbaru — the per-order Tiket column", () => {
     });
 });
 
-describe("Tiket Terjual — the per-event PAID rollup", () => {
-    test("groups by event, counts orders and tickets from two different tables", async () => {
+describe("Tiket Terjual — one row per PAID order, filterable by event", () => {
+    /*
+     * A. PIC SCOPE      every row and both totals belong to the session's own profile;
+     * B. PAID ONLY      a PENDING order is an attribution, not a sale;
+     * C. QUANTITY       Σ that order's own lines — never a line count, never an event rollup;
+     * D. EVENT FILTER   narrows rows, totals and the pager in ONE `where`;
+     * E. FOREIGN EVENT  cannot leak: it narrows this PIC's own set to nothing;
+     * F. FOOTER TOTALS  over the whole filtered set, not the current page;
+     * G. KPI            stays a TICKET count (Σ quantity), not an order count;
+     * H. PAGINATION     server-side, and the event filter survives a page change.
+     */
+
+    test("C+B: one row per order, its quantity summed from its own lines, PAID orders only", async () => {
         signInAs(picA.id);
         const sales = await getMyPicTicketSales(picA.id);
-        const bySlug = new Map(sales.items.map((item) => [item.eventSlug, item]));
+        const byNumber = new Map(sales.items.map((item) => [item.orderNumber, item]));
 
-        // evtPublished: two paid orders (3 + 2 tickets) and a pending one that is NOT here.
-        expect(bySlug.get(evtPublished.slug)).toMatchObject({ paidOrders: 2, ticketsSold: 5 });
-        expect(Number(bySlug.get(evtPublished.slug)!.sales)).toBe(250000);
+        // The multi-line order (1 + 2) is THREE tickets on ONE row …
+        expect(byNumber.get(ORDER_NUMBERS.aPublished1)).toMatchObject({
+            paymentStatus: PAID,
+            ticketQuantity: 3,
+        });
+        expect(Number(byNumber.get(ORDER_NUMBERS.aPublished1)!.orderTotal)).toBe(150000);
 
-        // evtOngoing: one order, three tickets — orders and tickets differ by design.
-        expect(bySlug.get(evtOngoing.slug)).toMatchObject({ paidOrders: 1, ticketsSold: 3 });
-        expect(Number(bySlug.get(evtOngoing.slug)!.sales)).toBe(150000);
+        // … and a single line of three reads the same way, from the same aggregate.
+        expect(byNumber.get(ORDER_NUMBERS.aOngoing)!.ticketQuantity).toBe(3);
 
-        // A revoked assignment keeps its historical sales.
-        expect(bySlug.get(evtCompleted.slug)).toMatchObject({ paidOrders: 1, ticketsSold: 5 });
+        // The PENDING order was attributed but never sold: no row, not a zero row.
+        expect(byNumber.has(ORDER_NUMBERS.aPublishedPending)).toBe(false);
 
-        // evtDraft only ever had a PENDING order: no row at all, not a zero row.
-        expect(bySlug.has(evtDraft.slug)).toBe(false);
-
-        // Best sellers first.
-        expect(sales.items.map((item) => item.ticketsSold)).toEqual([5, 5, 3]);
+        // Four PAID orders, four rows — and no row is an EVENT.
+        expect(sales.items).toHaveLength(4);
+        expect(sales.pagination.total).toBe(4);
+        expect(new Set(sales.items.map((item) => item.eventId)).size).toBeLessThan(
+            sales.items.length
+        );
     });
 
-    test("its totals are exactly the KPI, read independently", async () => {
+    test("F+G: the footer totals are the whole filtered set, and the KPI stays a ticket count", async () => {
         signInAs(picA.id);
         const [sales, overview] = await Promise.all([
             getMyPicTicketSales(picA.id),
             getMyPicOverview(picA.id),
         ]);
 
-        expect(sales.totals.ticketsSold).toBe(overview.ticketsSold);
+        expect(sales.totals.orders).toBe(4);
         expect(sales.totals.ticketsSold).toBe(13);
+        expect(Number(sales.totals.sales)).toBe(650000);
+
+        // G: 13 TICKETS over 4 ORDERS. If the table had quietly redefined "Tiket Terjual" as a
+        // count of orders, these two lines are what fails.
+        expect(sales.totals.ticketsSold).toBe(overview.ticketsSold);
+        expect(sales.totals.ticketsSold).not.toBe(sales.totals.orders);
+
+        // The sales figure is the SAME stored column the fee section already reports.
         expect(Number(sales.totals.sales)).toBe(Number(overview.grossSales));
-        expect(sales.totals.paidOrders).toBe(
-            sales.items.reduce((sum, item) => sum + item.paidOrders, 0)
+    });
+
+    test("F: a one-row page still reports the totals of every matching order", async () => {
+        signInAs(picA.id);
+        const page = await getMyPicTicketSales(picA.id, { limit: 1 });
+
+        expect(page.items).toHaveLength(1);
+        expect(page.totals).toMatchObject({ orders: 4, ticketsSold: 13 });
+        expect(Number(page.totals.sales)).toBe(650000);
+        expect(page.pagination).toEqual({ page: 1, limit: 1, total: 4, totalPages: 4 });
+    });
+
+    test("D: only the selected event's own orders, and the totals follow the filter", async () => {
+        signInAs(picA.id);
+
+        const published = await getMyPicTicketSales(picA.id, {
+            eventId: evtPublished.id,
+        });
+
+        expect(published.items).toHaveLength(2);
+        expect(published.items.every((item) => item.eventId === evtPublished.id)).toBe(true);
+        expect(published.totals).toMatchObject({ orders: 2, ticketsSold: 5 });
+        expect(Number(published.totals.sales)).toBe(250000);
+        expect(published.pagination.total).toBe(2);
+
+        const ongoing = await getMyPicTicketSales(picA.id, {
+            eventId: evtOngoing.id,
+        });
+
+        expect(ongoing.items).toHaveLength(1);
+        expect(ongoing.items[0].orderNumber).toBe(ORDER_NUMBERS.aOngoing);
+        expect(ongoing.totals).toMatchObject({ orders: 1, ticketsSold: 3 });
+    });
+
+    test("D: the event options are the sold events, and are NOT narrowed by the active filter", async () => {
+        signInAs(picA.id);
+
+        const unfiltered = await getMyPicTicketSales(picA.id);
+        expect([...unfiltered.eventOptions].map((event) => event.id).sort()).toEqual(
+            [evtPublished.id, evtOngoing.id, evtCompleted.id].sort()
+        );
+        // evtDraft only ever had a PENDING order: it is not offered, because choosing it could
+        // only ever render an empty table.
+        expect(unfiltered.eventOptions.map((event) => event.id)).not.toContain(evtDraft.id);
+
+        // Selecting one event must not hide the others from the selector.
+        const filtered = await getMyPicTicketSales(picA.id, {
+            eventId: evtPublished.id,
+        });
+        expect([...filtered.eventOptions].map((event) => event.id).sort()).toEqual(
+            [evtPublished.id, evtOngoing.id, evtCompleted.id].sort()
+        );
+
+        // A revoked assignment keeps its historical sales — and its option.
+        expect(filtered.eventOptions.map((event) => event.id)).toContain(evtCompleted.id);
+    });
+
+    test("E: a foreign/invented event id narrows to NOTHING instead of leaking", async () => {
+        signInAs(picA.id);
+
+        for (const eventId of ["picdash-not-an-event", evtDraft.id]) {
+            const sales = await getMyPicTicketSales(picA.id, { eventId });
+
+            expect({ eventId, items: sales.items }).toEqual({ eventId, items: [] });
+            expect(sales.totals).toMatchObject({ orders: 0, ticketsSold: 0 });
+            expect(Number(sales.totals.sales)).toBe(0);
+            expect(sales.pagination.total).toBe(0);
+        }
+    });
+
+    test("A: another PIC's order on the SAME event is in nobody else's table", async () => {
+        signInAs(picB.id);
+        const salesB = await getMyPicTicketSales(picB.id, { eventId: evtPublished.id });
+
+        expect(salesB.items.map((item) => item.orderNumber)).toEqual([
+            `ORD-${SUFFIX}-b-pub`,
+        ]);
+        expect(salesB.totals).toMatchObject({ orders: 1, ticketsSold: 1 });
+
+        // The SAME event id, read by A, returns A's two orders — 5 tickets, never B's 1, and
+        // never the unattributed order's 9 tickets, which appear in no PIC's table at all.
+        signInAs(picA.id);
+        const salesA = await getMyPicTicketSales(picA.id, { eventId: evtPublished.id });
+
+        expect(salesA.totals.ticketsSold).toBe(5);
+        expect(salesA.items.map((item) => item.orderNumber)).not.toContain(
+            `ORD-${SUFFIX}-b-pub`
+        );
+        expect(salesA.items.map((item) => item.orderNumber)).not.toContain(
+            `ORD-${SUFFIX}-nobody`
         );
     });
 
-    test("another PIC's orders on the SAME event are in nobody else's rollup", async () => {
-        signInAs(picB.id);
-        const salesB = await getMyPicTicketSales(picB.id);
-
-        expect(salesB.items).toHaveLength(1);
-        expect(salesB.items[0]).toMatchObject({ paidOrders: 1, ticketsSold: 1 });
-        expect(Number(salesB.items[0].sales)).toBe(50000);
-
+    test("H: pagination is server-side and the event filter survives a page change", async () => {
         signInAs(picA.id);
-        const salesA = await getMyPicTicketSales(picA.id);
-        const published = salesA.items.find((item) => item.eventSlug === evtPublished.slug)!;
 
-        // A sees 5 (its own), never B's 1, and never the unattributed order's 9 tickets — which
-        // appear in no PIC's rollup at all.
-        expect(published.ticketsSold).toBe(5);
-        expect(salesB.items.some((item) => item.eventSlug === evtPublished.slug)).toBe(true);
+        const first = await getMyPicTicketSales(picA.id, {
+            eventId: evtPublished.id,
+            limit: 1,
+        });
+        const second = await getMyPicTicketSales(picA.id, {
+            eventId: evtPublished.id,
+            limit: 1,
+            page: 2,
+        });
+
+        // Both pages are the FILTERED two orders, not two of the four…
+        expect(first.pagination).toEqual({ page: 1, limit: 1, total: 2, totalPages: 2 });
+        expect(second.pagination).toEqual({ page: 2, limit: 1, total: 2, totalPages: 2 });
+        expect(second.items.every((item) => item.eventId === evtPublished.id)).toBe(true);
+
+        // …they do not repeat or skip a row…
+        expect(new Set([...first.items, ...second.items].map((item) => item.orderNumber)).size).toBe(
+            2
+        );
+
+        // …and the totals still describe the filtered set (never just the page, never the four).
+        for (const page of [first, second]) {
+            expect(page.totals).toMatchObject({ orders: 2, ticketsSold: 5 });
+        }
+
+        // A page past the end is an empty page with the SAME totals, not a reset filter.
+        const third = await getMyPicTicketSales(picA.id, {
+            eventId: evtPublished.id,
+            limit: 1,
+            page: 3,
+        });
+        expect(third.items).toEqual([]);
+        expect(third.totals).toMatchObject({ orders: 2, ticketsSold: 5 });
     });
 
-    test("a PIC with no PAID orders gets an empty rollup and zeroed totals", async () => {
+    test("A: a PIC with no PAID orders gets an empty table and zeroed totals", async () => {
         signInAs(picC.id);
         const sales = await getMyPicTicketSales(picC.id);
 
         expect(sales.items).toEqual([]);
-        expect(sales.totals.paidOrders).toBe(0);
-        expect(sales.totals.ticketsSold).toBe(0);
+        expect(sales.eventOptions).toEqual([]);
+        expect(sales.totals).toMatchObject({ orders: 0, ticketsSold: 0 });
         expect(Number(sales.totals.sales)).toBe(0);
+        expect(sales.pagination).toEqual({ page: 1, limit: 10, total: 0, totalPages: 1 });
+
+        // A filter on an empty account is still an empty, well-formed page.
+        const filtered = await getMyPicTicketSales(picC.id, {
+            eventId: evtPublished.id,
+        });
+        expect(filtered.items).toEqual([]);
+        expect(filtered.pagination.total).toBe(0);
     });
 
-    test("a profile-scoped read never accepts another PIC's id", async () => {
+    test("A: a profile-scoped read never accepts another PIC's id", async () => {
         signInAs(picA.id);
         await expect(getMyPicTicketSales(picB.id)).rejects.toMatchObject({
+            code: "PIC_ACCESS_DENIED",
+        });
+    });
+});
+
+/* ==================================================================================
+ * B3. THE PIC'S OWN ORDER DETAIL — the destination of the order number
+ * ==================================================================================
+ * The ticket-sales table links each order number to the PIC's own read-only order page. Neither
+ * existing order route is reachable by a referrer (the operator page needs `order.read.tenant`,
+ * the buyer page needs ownership), so the scope is the difference that has to be pinned: the read
+ * is `picProfileId`-scoped, it carries no buyer identity, and a foreign order number is `null`
+ * rather than a page that confirms the order exists.
+ */
+
+describe("getMyPicOrder — one referred order, from the PIC's own scope", () => {
+    test("returns the order, its lines and the quantity summed from them", async () => {
+        signInAs(picA.id);
+        const order = await getMyPicOrder(picA.id, ORDER_NUMBERS.aPublished1);
+
+        expect(order).not.toBeNull();
+        expect(order!.orderNumber).toBe(ORDER_NUMBERS.aPublished1);
+        expect(order!.paymentStatus).toBe(PAID);
+        expect(order!.eventTitle).toBe(`PIC Dash Event published ${SUFFIX}`);
+        expect(order!.eventSlug).toBe(evtPublished.slug);
+
+        // Two lines (1 + 2) → three tickets, and the line list is what the quantity came from.
+        expect(order!.items).toHaveLength(2);
+        expect(order!.items.reduce((sum, item) => sum + item.quantity, 0)).toBe(3);
+        expect(order!.ticketQuantity).toBe(3);
+        expect(Number(order!.total)).toBe(150000);
+        expect(Number(order!.subtotal)).toBe(150000);
+    });
+
+    test("a PENDING attributed order is still readable — only the sales table is PAID-only", async () => {
+        signInAs(picA.id);
+        const order = await getMyPicOrder(picA.id, ORDER_NUMBERS.aPublishedPending);
+
+        expect(order).not.toBeNull();
+        expect(order!.paymentStatus).toBe(PENDING);
+        expect(order!.ticketQuantity).toBe(1);
+    });
+
+    test("a foreign or unattributed order number is NULL, not a page that confirms it exists", async () => {
+        signInAs(picA.id);
+
+        // Another PIC's order on the SAME event…
+        await expect(getMyPicOrder(picA.id, `ORD-${SUFFIX}-b-pub`)).resolves.toBeNull();
+        // …an order attributed to nobody…
+        await expect(getMyPicOrder(picA.id, `ORD-${SUFFIX}-nobody`)).resolves.toBeNull();
+        // …and a number that does not exist at all: the same answer for all three.
+        await expect(getMyPicOrder(picA.id, `ORD-${SUFFIX}-missing`)).resolves.toBeNull();
+
+        // The owner of the other order still reads it, so the refusal above is scope, not absence.
+        signInAs(picB.id);
+        await expect(getMyPicOrder(picB.id, `ORD-${SUFFIX}-b-pub`)).resolves.not.toBeNull();
+    });
+
+    test("carries no buyer identity and no payment/QR material", async () => {
+        signInAs(picA.id);
+        const order = await getMyPicOrder(picA.id, ORDER_NUMBERS.aPublished1);
+        const serialized = JSON.stringify(order);
+
+        expect(Object.keys(order!)).not.toContain("buyerName");
+        expect(Object.keys(order!)).not.toContain("buyerEmail");
+        expect(Object.keys(order!)).not.toContain("buyerPhone");
+        expect(serialized).not.toContain(`picdash-buyer-${SUFFIX}@example.test`);
+        expect(serialized).not.toContain(`Buyer a-pub-1`);
+        // No gateway instruction, no ticket codes, no organizer/platform money columns.
+        expect(Object.keys(order!)).not.toContain("payments");
+        expect(Object.keys(order!)).not.toContain("tickets");
+        expect(serialized).not.toContain("organizerNetAmount");
+        expect(serialized).not.toContain("platformFee");
+    });
+
+    test("a forged user id is a denial, and an inactive profile reads nothing", async () => {
+        signInAs(picA.id);
+        await expect(getMyPicOrder(picB.id, ORDER_NUMBERS.aPublished1)).rejects.toMatchObject({
             code: "PIC_ACCESS_DENIED",
         });
     });

@@ -31,10 +31,20 @@
  * `Tiket Terjual` used to link to `?attributionPaymentStatus=PAID#attributions`, i.e. a
  * FILTERED VIEW OF THE ORDER LIST the reader had already scrolled past — clicking the tile
  * looked like the dashboard was going in circles. The tile now targets its own
- * `#tickets-sold` section, an event-level rollup over the SAME PAID set the tile counts
- * (`getMyPicTicketSales`), while the attribution table keeps its payment filter and gains a
- * per-order `Tiket` column. The assertions below pin that separation: the tile's href, the
- * absence of the old destination, and the existence of the sections both tables need.
+ * `#tickets-sold` section over the SAME PAID set the tile counts (`getMyPicTicketSales`),
+ * while the attribution table keeps its payment filter and its per-order `Tiket` column. The
+ * assertions below pin that separation: the tile's href, the absence of the old destination,
+ * and the existence of the sections both tables need.
+ *
+ * ── V4: `Tiket Terjual` IS ONE ROW PER ORDER, AND FILTERABLE BY EVENT ────────────
+ * The section used to be an EVENT-level rollup, which answered "where are tickets moving?"
+ * but not "which order produced this sale?". It is now one row per PAID order
+ * (`No. Pesanan | Event | Jumlah Tiket | Total Pesanan | Status Pembayaran`), each order
+ * number linking to the PIC's OWN order detail, with an event filter
+ * (`?ticketSalesEventId=`) that runs in the read model. The KPI is unchanged: it still counts
+ * `Σ EventOrderItem.quantity`, not orders. What is pinned here is the SURFACE — the columns,
+ * the filter's param name and contract, the order link, and the footer's three totals; the
+ * read model's own scoping/aggregation contract lives in the integration suite.
  */
 
 // The filter vocabulary and the PIC read model both resolve their scope through `@/lib/authz`,
@@ -49,6 +59,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { SingleSelectFilter } from "@/components/dashboard/filters/SingleSelectFilter";
 import {
     applyFilterChange,
     buildFilterField,
@@ -63,7 +74,11 @@ import {
     EVENT_ACTIVE_STATUSES,
     EVENT_STATUS_FILTERS,
 } from "@/lib/events/status";
-import { PIC_ASSIGNMENT_STATUSES, parsePicAssignmentStatus } from "@/lib/pic/self-service";
+import {
+    PIC_ASSIGNMENT_STATUSES,
+    parsePicAssignmentStatus,
+    parseTicketSalesEventId,
+} from "@/lib/pic/self-service";
 
 const PIC_PAGE = "app/dashboard/pic/page.tsx";
 const PIC_SELF_SERVICE = "lib/pic/self-service.ts";
@@ -236,18 +251,51 @@ describe("every KPI fragment resolves to an anchor the page declares", () => {
     it("renders a distinct section per question, not one table twice", () => {
         const page = read(PIC_PAGE);
 
-        // Order-level table: one row per attributed order, with its payment filter…
+        // Attribution list: one row per attributed order, all payment states, with its filter…
         expect(page).toContain("Atribusi Terbaru");
         expect(page).toContain("attributions.map");
         expect(page).toContain('{ header: "Tiket", align: "right" }');
         expect(page).toContain("attribution.ticketQuantity");
 
-        // …and an event-level rollup fed by the dedicated read model.
-        expect(page).toContain("getMyPicTicketSales(userId)");
+        // …and the sales table: one row per PAID ORDER, fed by the dedicated read model. The
+        // five required columns, in order, and no event-level "Pesanan Lunas" rollup column.
+        expect(page).toContain("getMyPicTicketSales(userId, {");
         expect(page).toContain("ticketSales.items.map");
         expect(page).toContain("ticketSales.totals.ticketsSold");
-        expect(page).toContain('{ header: "Pesanan Lunas", align: "right" }');
-        expect(page).toContain('{ header: "Penjualan", align: "right" }');
+        expect(page).toContain('{ header: "No. Pesanan" }');
+        expect(page).toContain('{ header: "Jumlah Tiket", align: "right" }');
+        expect(page).toContain('{ header: "Total Pesanan", align: "right" }');
+        expect(page).toContain('{ header: "Status Pembayaran" }');
+        expect(page).not.toContain('{ header: "Pesanan Lunas", align: "right" }');
+
+        // The quantity is the ORDER's own line sum, never an event aggregate.
+        expect(page).toContain("sale.ticketQuantity");
+        expect(page).not.toContain("sale.ticketsSold");
+        expect(page).not.toContain("sale.paidOrders");
+    });
+
+    it("links each order number to the PIC's own order detail, not a tenant page", () => {
+        const page = code(PIC_PAGE);
+
+        expect(page).toContain("href={`/dashboard/pic/orders/${sale.orderNumber}`}");
+        // A referrer holds neither `order.read.tenant` nor the buyer's ownership, so the
+        // operator and buyer order routes would both be a 404 to them.
+        expect(page).not.toContain("href={`/dashboard/orders/");
+        expect(page).not.toContain("href={`/ticketing/orders/");
+    });
+
+    it("states all three footer totals, from the read model's aggregates", () => {
+        const page = code(PIC_PAGE);
+
+        // Orders, tickets and money — three labels, three aggregate fields.
+        expect(page).toContain("Total pesanan:");
+        expect(page).toContain("tiket terjual: {ticketSales.totals.ticketsSold}");
+        expect(page).toContain("Total penjualan:");
+        expect(page).toContain("ticketSales.totals.orders");
+        expect(page).toContain("ticketSales.totals.sales");
+
+        // The totals are the read model's, never a sum of the rendered page.
+        expect(page).not.toContain("ticketSales.items.reduce(");
     });
 
     it("links only to fragments the page declares", () => {
@@ -319,6 +367,9 @@ describe("the Event Saya filter dimensions come from the stored data", () => {
         expect(page).toContain(
             "parseAttributionPaymentStatus(\n        params.attributionPaymentStatus\n    )"
         );
+
+        expect(page).toContain("parseTicketSalesEventId(params.ticketSalesEventId)");
+        expect(page).toContain("parsePage(params.ticketSalesPage)");
 
         // The read model's own guards, so the filter is a `where` and not a post-filter.
         const selfService = code(PIC_SELF_SERVICE);
@@ -453,9 +504,17 @@ describe("the Event Saya filter row is a server-rendered row of pill links", () 
         expect(page).toContain("assignmentStatus: assignmentStatus ?? undefined");
         expect(page).toContain("eventStatus: eventStatuses.length > 0 ? eventStatuses : undefined");
         expect(page).toContain("attributionPaymentStatus: attributionPaymentStatus ?? undefined");
+        expect(page).toContain("ticketSalesEventId: ticketSalesEventId ?? undefined");
         expect(page).toContain("query={filterState}");
         expect(page).toContain("<LinkPagination");
+
+        // Both pagers hand over the SAME state, and each names its own page parameter so the two
+        // tables cannot page each other.
+        expect(page.match(/query=\{filterState\}/g)?.length).toBe(2);
+        expect(page).toContain('pageParam="ticketSalesPage"');
     });
+
+
 
     it("shows a filter-specific empty state instead of an empty table", () => {
         const page = code(PIC_PAGE);
@@ -463,6 +522,8 @@ describe("the Event Saya filter row is a server-rendered row of pill links", () 
         expect(page).toContain("Tidak ada event dengan filter tersebut.");
         expect(page).toContain("const hasEventFilter = Boolean(assignmentStatus) || eventStatuses.length > 0");
         expect(page).toContain("Tidak ada atribusi dengan status pembayaran tersebut.");
+        expect(page).toContain("Tidak ada tiket terjual untuk event tersebut.");
+        expect(page).toContain("Belum ada tiket terjual.");
     });
 
     it("reads the filters from searchParams and passes them to the scoped service", () => {
@@ -473,6 +534,130 @@ describe("the Event Saya filter row is a server-rendered row of pill links", () 
         expect(page).toContain("listMyAttributions(userId, { paymentStatus: attributionPaymentStatus })");
         expect(page).not.toContain("params.picProfileId");
         expect(page).not.toContain("params.organizerId");
+    });
+});
+
+/* ==================================================================================
+ * D2. THE `Tiket Terjual` EVENT FILTER
+ * ==================================================================================
+ * A PIC's event list is DATA, not a small enum, so the filter is a single-select `<select>` in a
+ * server-rendered GET form — the same control the dashboard's other event filter uses
+ * (`ReportFilterBar`). What is pinned here is the contract: the parameter name, the honest
+ * "all" option, the preserved sibling filters, and the fact that the value only ever narrows a
+ * query that is ALREADY scoped to the caller.
+ */
+
+describe("the Tiket Terjual event filter is a single-select GET form", () => {
+    const OPTIONS = [
+        { value: "evt_1", label: "Liga Basket Belanda" },
+        { value: "evt_2", label: "Turnamen Futsal" },
+    ];
+
+    function render(value: string, preserve: Record<string, string | string[]> = {}) {
+        return renderToStaticMarkup(
+            createElement(SingleSelectFilter, {
+                action: "/dashboard/pic",
+                name: "ticketSalesEventId",
+                label: "Event",
+                allLabel: "Semua event",
+                value,
+                options: OPTIONS,
+                preserve,
+            })
+        );
+    }
+
+    it("is a plain GET form a server component can render completely", () => {
+        const markup = render("", {
+            assignmentStatus: "ACTIVE",
+            eventStatus: ["PUBLISHED", "ONGOING"],
+        });
+
+        expect(markup).toContain('method="get"');
+        expect(markup).toContain('action="/dashboard/pic"');
+        expect(markup).toContain('name="ticketSalesEventId"');
+        expect(markup).toContain("Semua event");
+        expect(markup).toContain("Turnamen Futsal");
+        expect(markup).toContain("Terapkan");
+
+        // The page's other filters ride along as hidden fields, so applying this one cannot
+        // clear them — including the repeated union parameter.
+        expect(markup).toContain('name="assignmentStatus"');
+        expect(markup).toContain('value="ACTIVE"');
+        expect(markup.match(/name="eventStatus"/g)?.length).toBe(2);
+
+        // No page number is carried, so a filter change returns to page 1.
+        expect(markup).not.toContain('name="page"');
+        expect(markup).not.toContain('name="ticketSalesPage"');
+
+        // No client boundary and no imperative navigation: the URL is the state.
+        expect(markup).not.toContain("onClick");
+    });
+
+    it("offers a reset only while a filter is applied", () => {
+        expect(render("")).not.toContain("Reset filter");
+
+        const filtered = render("evt_2");
+        expect(filtered).toContain("Reset filter");
+        expect(filtered).toContain('href="/dashboard/pic"');
+    });
+
+    it("never claims 'no filter' while a value the options cannot name is applied", () => {
+        // Only reachable by hand-editing the URL — and the table below it is empty, so a control
+        // that showed "Semua event" would be describing a set it did not query.
+        const markup = render("evt_foreign");
+
+        expect(markup).toContain("Event tidak dikenal");
+        expect(markup).toContain('value="evt_foreign"');
+        expect(markup).toContain("Reset filter");
+    });
+
+    it("the page wires it to the validated parameter, not to raw input", () => {
+        const page = code(PIC_PAGE);
+
+        expect(page).toContain('name="ticketSalesEventId"');
+        expect(page).toContain("value={ticketSalesEventId ?? \"\"}");
+        expect(page).toContain("options={ticketSales.eventOptions.map((event) => ({");
+        expect(page).toContain("preserve={ticketSalesPreservedFilters}");
+    });
+});
+
+describe("the event parameter is shape-validated before it reaches a query", () => {
+    it("accepts exactly one trimmed, length-bounded id", () => {
+        expect(parseTicketSalesEventId("evt_1")).toBe("evt_1");
+        expect(parseTicketSalesEventId("  evt_1  ")).toBe("evt_1");
+        expect(parseTicketSalesEventId(["evt_1", "evt_2"])).toBe("evt_1");
+
+        expect(parseTicketSalesEventId("")).toBeNull();
+        expect(parseTicketSalesEventId("   ")).toBeNull();
+        expect(parseTicketSalesEventId(undefined)).toBeNull();
+        expect(parseTicketSalesEventId([])).toBeNull();
+        expect(parseTicketSalesEventId("x".repeat(65))).toBeNull();
+        expect(parseTicketSalesEventId("x".repeat(64))).toBe("x".repeat(64));
+    });
+
+    it("existence is never asserted — the id only ever narrows the caller's own set", () => {
+        const selfService = code(PIC_SELF_SERVICE);
+
+        expect(selfService).toMatch(
+            /const where: Prisma\.EventOrderWhereInput = \{\s*picProfileId,\s*paymentStatus: "PAID",\s*\.\.\.\(eventId \? \{ eventId \} : \{\}\),\s*\};/
+        );
+        // The scoped `where` is the ONLY thing the filter joins: no event lookup happens before
+        // the read, so a foreign id cannot become a query key of its own.
+        expect(selfService).toContain("export async function getMyPicTicketSales(");
+    });
+
+    it("keeps the footer totals, the pager and the rows on ONE `where`", () => {
+        const selfService = code(PIC_SELF_SERVICE);
+
+        expect(selfService).toContain('orderBy: [{ createdAt: "desc" }, { orderNumber: "desc" }]');
+        expect(selfService).toContain("_count: { _all: true }");
+        expect(selfService).toContain("where: { order: where }");
+        expect(selfService).toContain("skip: (page - 1) * limit");
+        expect(selfService).toContain("PIC_TICKET_SALES_PAGE_SIZE = 10");
+
+        // The order-detail read applies the same scope to the order number.
+        expect(selfService).toContain("where: { orderNumber, picProfileId }");
     });
 });
 

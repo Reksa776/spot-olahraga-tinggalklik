@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
 import { registerSchema } from "@/lib/validations/register";
-import { clientRateLimitKey, rateLimiters } from "@/lib/rate-limit";
+import {
+    clientRateLimitKey,
+    hasTrustworthyClientKey,
+    rateLimiters,
+} from "@/lib/rate-limit";
 import { requireSameOrigin } from "@/lib/csrf";
 import { ERROR_CODES, statusForCode } from "@/lib/api/errors";
 
@@ -130,21 +134,36 @@ export async function POST(req: Request) {
     }
 
     try {
-        // Rate limiting. `clientRateLimitKey` rather than `getClientIp` for the same
-        // reason as the login limiter (see lib/rate-limit.ts): a dev server has no
-        // trustworthy peer address, so its bucket is labelled instead of collapsing
-        // into the production "untrusted" sentinel. Production is unchanged.
+        /*
+         * Rate limiting. `clientRateLimitKey` rather than `getClientIp` for the same
+         * reason as the login limiter (see lib/rate-limit.ts): a dev server has no
+         * trustworthy peer address, so its bucket is labelled instead of collapsing
+         * into the production "untrusted" sentinel.
+         *
+         * F-03 — THE REFUSAL NEEDS A CLIENT. In production with no valid TRUSTED_PROXY
+         * (F-02) every visitor shares the "untrusted" key, so a hard refusal on it is a
+         * platform-wide limit that happens to be read as a per-client one: three
+         * registrations from one stranger would stop the world from signing up. The
+         * bucket is therefore applied only when `hasTrustworthyClientKey` says the key
+         * names an actual client — which is the behaviour a correctly configured
+         * deployment already had. Without an identity this endpoint keeps its existing
+         * validation, same-origin check and duplicate handling; it simply does not claim
+         * to rate limit per client on a key that is not one.
+         */
         const clientKey = clientRateLimitKey(req);
-        const rateLimit = rateLimiters.register(clientKey);
-        if (!rateLimit.allowed) {
-            return NextResponse.json(
-                {
-                    success: false,
-                    code: "RATE_LIMITED",
-                    message: "Terlalu banyak permintaan. Coba lagi nanti.",
-                },
-                { status: 429 }
-            );
+
+        if (hasTrustworthyClientKey(req)) {
+            const rateLimit = rateLimiters.register(clientKey);
+            if (!rateLimit.allowed) {
+                return NextResponse.json(
+                    {
+                        success: false,
+                        code: "RATE_LIMITED",
+                        message: "Terlalu banyak permintaan. Coba lagi nanti.",
+                    },
+                    { status: 429 }
+                );
+            }
         }
 
         const body = await req.json();

@@ -9,6 +9,7 @@ import {
     picStandingNotice,
 } from "@/components/dashboard/AccountStandingNotice";
 import { FilterBar } from "@/components/dashboard/filters/FilterBar";
+import { SingleSelectFilter } from "@/components/dashboard/filters/SingleSelectFilter";
 import { buildFilterField } from "@/components/dashboard/filters/filter-types";
 import {
     AccessDeniedPanel,
@@ -54,6 +55,7 @@ import {
     listMyPicAssignments,
     listMyReferralLinks,
     parsePicAssignmentStatus,
+    parseTicketSalesEventId,
 } from "@/lib/pic/self-service";
 import {
     listMyPicPayoutRequests,
@@ -193,7 +195,17 @@ type PicSearchParams = {
     assignmentStatus?: string | string[];
     eventStatus?: string | string[];
     attributionPaymentStatus?: string | string[];
+    /** The ticket-sales event filter — a PIC's OWN event id, shape-validated then scoped. */
+    ticketSalesEventId?: string | string[];
+    /** `Event Saya`'s page. */
     page?: string;
+    /**
+     * The ticket-sales table's page, deliberately its own key.
+     *
+     * The two tables paginate independently and a single shared `page` would move them both at
+     * once — clicking page 2 of the sales table must not page "Event Saya" as a side effect.
+     */
+    ticketSalesPage?: string;
 };
 
 /** `page` is user input; anything that is not a positive integer is page 1. */
@@ -417,11 +429,12 @@ async function OrganizerPicSection() {
  * ── "TIKET TERJUAL" IS ITS OWN SECTION, NOT A FILTERED ATTRIBUTION LIST ──────────
  * The tile used to link to `?attributionPaymentStatus=PAID#attributions`, which dropped the
  * reader on the SAME order list they had just scrolled past — the dashboard appeared to loop.
- * The two questions are genuinely different ("which orders came through me?" vs "how many
- * tickets have actually sold?"), so the tile now points at `#tickets-sold`, an event-level
- * sales rollup built from the identical PAID-only set the tile counts. The attribution list
- * keeps its payment-status filter and gains a per-order `Tiket` column, so the ticket count
- * is readable where the orders are too — but it is no longer the ticket tile's destination.
+ * The two questions are genuinely different ("which orders came through me?" vs "which orders
+ * have actually SOLD?"), so the tile points at `#tickets-sold`, an order-level table built
+ * from the identical PAID-only set the tile counts and filterable BY EVENT
+ * (`?ticketSalesEventId=`) — the filter runs in the read model, not after the fetch. The
+ * attribution list keeps its payment-status filter and its per-order `Tiket` column, so the
+ * ticket count is readable where the orders are too — but it is no longer the tile's target.
  */
 async function PicSelfServiceSection({
     userId,
@@ -435,7 +448,11 @@ async function PicSelfServiceSection({
     const attributionPaymentStatus = parseAttributionPaymentStatus(
         params.attributionPaymentStatus
     );
+    // Shape-validated here, existence deliberately not: the read model AND-s this with the
+    // caller's own `picProfileId`, so a foreign event id is an empty result, never a leak.
+    const ticketSalesEventId = parseTicketSalesEventId(params.ticketSalesEventId);
     const page = parsePage(params.page);
+    const ticketSalesPage = parsePage(params.ticketSalesPage);
 
     type SelfServiceView = {
         profile: Awaited<ReturnType<typeof getMyPicProfile>>;
@@ -471,7 +488,10 @@ async function PicSelfServiceSection({
                 page,
             }),
             listMyAttributions(userId, { paymentStatus: attributionPaymentStatus }),
-            getMyPicTicketSales(userId),
+            getMyPicTicketSales(userId, {
+                eventId: ticketSalesEventId,
+                page: ticketSalesPage,
+            }),
             listMyFeeLedger(userId),
             listMyPicPayoutRequests(userId),
             listMyPicSettleableOrganizers(userId),
@@ -559,6 +579,17 @@ async function PicSelfServiceSection({
     /* Every filter row is built from this ONE state, so a selection in any of them preserves the
      * other two (and `page` is dropped by `applyFilterChange`, which returns to page 1). */
     const filterState = {
+        assignmentStatus: assignmentStatus ?? undefined,
+        eventStatus: eventStatuses.length > 0 ? eventStatuses : undefined,
+        attributionPaymentStatus: attributionPaymentStatus ?? undefined,
+        // Carried by every other control and by both pagers, so choosing an event here — or
+        // paging either table — never silently drops a filter the reader set somewhere else.
+        ticketSalesEventId: ticketSalesEventId ?? undefined,
+    };
+
+    /* The event selector's OWN hidden state: the page's other filters, minus the parameter the
+     * selector writes and minus both page numbers (a filter change returns to page 1). */
+    const ticketSalesPreservedFilters = {
         assignmentStatus: assignmentStatus ?? undefined,
         eventStatus: eventStatuses.length > 0 ? eventStatuses : undefined,
         attributionPaymentStatus: attributionPaymentStatus ?? undefined,
@@ -847,75 +878,112 @@ async function PicSelfServiceSection({
                 </div>
 
                 {/*
-                 * The section the `Tiket Terjual` tile points at. It is a SALES ROLLUP (one row
-                 * per selling event), not a second order list — the reader sees where tickets
-                 * moved, which is the question the KPI actually asks.
+                 * The section the `Tiket Terjual` tile points at: ONE ROW PER PAID ORDER, so the
+                 * figure on the tile can be traced to the orders that produced it and from there
+                 * to the order detail behind each one. The event selector narrows the SAME `where`
+                 * the rows, the footer totals and the pager all read, so the three cannot describe
+                 * different sets.
                  */}
                 <div id="tickets-sold" className="scroll-mt-16">
                     <SectionCard
                         title="Tiket Terjual"
-                        description="Penjualan yang sudah lunas, diringkas per event dengan definisi yang sama seperti kartu Tiket Terjual di atas: tiket pada pesanan berstatus lunas. Pesanan lunas dan tiket dihitung terpisah karena satu pesanan bisa berisi beberapa tiket."
+                        description="Pesanan yang sudah lunas atas namamu, satu baris per pesanan, dengan definisi yang sama seperti kartu Tiket Terjual di atas: tiket pada pesanan berstatus lunas. Jumlah tiket diambil dari baris tiket pesanan itu, bukan dari rekap event, sehingga nilai satu pesanan bisa ditelusuri sampai detailnya."
                     >
+                        {/* The selector is offered only where there is something to filter (or a
+                            filter is already applied and must be clearable). */}
+                        {ticketSales.eventOptions.length > 0 || ticketSalesEventId ? (
+                            <SingleSelectFilter
+                                action="/dashboard/pic"
+                                name="ticketSalesEventId"
+                                label="Event"
+                                allLabel="Semua event"
+                                value={ticketSalesEventId ?? ""}
+                                options={ticketSales.eventOptions.map((event) => ({
+                                    value: event.id,
+                                    label: event.title,
+                                }))}
+                                preserve={ticketSalesPreservedFilters}
+                            />
+                        ) : null}
+
                         {ticketSales.items.length === 0 ? (
                             <EmptyBlock
                                 icon={<Ticket size={22} />}
-                                title="Belum ada tiket terjual."
-                                description="Tiket baru dihitung setelah pembayaran pesanan atas namamu lunas. Pesanan yang masih menunggu tampil di Atribusi Terbaru."
+                                title={
+                                    ticketSalesEventId
+                                        ? "Tidak ada tiket terjual untuk event tersebut."
+                                        : "Belum ada tiket terjual."
+                                }
+                                description={
+                                    ticketSalesEventId
+                                        ? "Hanya pesanan lunas yang dihitung, dan pilihan event di atas hanya mencakup event yang sudah pernah menghasilkan penjualan atas namamu. Pilih Semua event untuk melihat seluruh penjualan."
+                                        : "Tiket baru dihitung setelah pembayaran pesanan atas namamu lunas. Pesanan yang masih menunggu tampil di Atribusi Terbaru."
+                                }
                             />
                         ) : (
                             <DataTable
-                                minWidth={760}
+                                minWidth={820}
                                 columns={[
+                                    { header: "No. Pesanan" },
                                     { header: "Event" },
-                                    { header: "Pesanan Lunas", align: "right" },
-                                    { header: "Tiket Terjual", align: "right" },
-                                    { header: "Penjualan", align: "right" },
+                                    { header: "Jumlah Tiket", align: "right" },
+                                    { header: "Total Pesanan", align: "right" },
+                                    { header: "Status Pembayaran" },
                                 ]}
                                 rows={ticketSales.items.map((sale) => ({
-                                    key: sale.eventId,
+                                    key: sale.orderId,
                                     cells: [
-                                        <div key="title" className="min-w-0">
-                                            {sale.eventSlug ? (
-                                                <TextLink href={`/e/${sale.eventSlug}`}>
-                                                    <span className="text-sm font-semibold">
-                                                        {sale.eventTitle}
-                                                    </span>
-                                                </TextLink>
-                                            ) : (
-                                                <span className="text-sm font-semibold">
-                                                    {sale.eventTitle}
-                                                </span>
-                                            )}
-                                            {sale.eventSlug ? (
-                                                <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                                                    {sale.eventSlug}
-                                                </p>
-                                            ) : null}
-                                        </div>,
-                                        <span
-                                            key="orders"
-                                            className="text-sm tabular-nums"
+                                        <TextLink
+                                            key="order"
+                                            href={`/dashboard/pic/orders/${sale.orderNumber}`}
                                         >
-                                            {sale.paidOrders}
+                                            <span className="text-sm font-semibold tabular-nums">
+                                                {sale.orderNumber}
+                                            </span>
+                                        </TextLink>,
+                                        <span key="event" className="text-sm">
+                                            {sale.eventTitle}
                                         </span>,
                                         <span
                                             key="tickets"
                                             className="text-sm font-semibold tabular-nums"
                                         >
-                                            {sale.ticketsSold}
+                                            {sale.ticketQuantity}
                                         </span>,
                                         <Money
-                                            key="sales"
-                                            value={formatIdr(Number(sale.sales))}
+                                            key="total"
+                                            value={formatIdr(Number(sale.orderTotal))}
                                         />,
+                                        <StatusBadge
+                                            key="payment"
+                                            tone={
+                                                PAYMENT_TONE[sale.paymentStatus] ?? "neutral"
+                                            }
+                                        >
+                                            {PAYMENT_STATUS_LABELS[sale.paymentStatus] ??
+                                                sale.paymentStatus}
+                                        </StatusBadge>,
                                     ],
                                 }))}
                                 footer={
-                                    <p className="text-xs text-muted-foreground">
-                                        Total {ticketSales.totals.paidOrders} pesanan lunas ·{" "}
-                                        {ticketSales.totals.ticketsSold} tiket ·{" "}
-                                        {formatIdr(Number(ticketSales.totals.sales))}
-                                    </p>
+                                    <div className="flex flex-col gap-2">
+                                        {/* Totals over the WHOLE filtered set, from the read
+                                            model's own aggregate — never a sum of this page. */}
+                                        <p className="text-xs text-muted-foreground">
+                                            Total pesanan: {ticketSales.totals.orders} · Total
+                                            tiket terjual: {ticketSales.totals.ticketsSold} ·
+                                            Total penjualan:{" "}
+                                            {formatIdr(Number(ticketSales.totals.sales))}
+                                        </p>
+                                        <LinkPagination
+                                            page={ticketSales.pagination.page}
+                                            totalPages={ticketSales.pagination.totalPages}
+                                            basePath="/dashboard/pic"
+                                            query={filterState}
+                                            pageParam="ticketSalesPage"
+                                            label="Halaman"
+                                        />
+                                    </div>
                                 }
                             />
                         )}

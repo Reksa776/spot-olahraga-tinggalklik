@@ -72,6 +72,13 @@ module.exports = {
                 NODE_ENV: "production",
                 // :3000 belongs to another application on this host — TinggalKlik is :3003.
                 PORT: "3003",
+                /*
+                 * TRUSTED_PROXY is deliberately absent here (see the header: secrets and
+                 * host facts belong to the host environment, not to a repository file).
+                 * Set it there to the reverse proxy's ADDRESS or CIDR — it is not a switch,
+                 * and an unparseable value now fails closed with a warning rather than
+                 * silently enabling proxy trust (F-02). See DEPLOYMENT_RUNBOOK.md §4.
+                 */
             },
             autorestart: true,
             // Give in-flight requests (a payment callback, a checkout) time to finish before

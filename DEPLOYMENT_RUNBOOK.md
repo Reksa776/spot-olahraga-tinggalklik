@@ -206,15 +206,23 @@ the login throttle.
 
 ### 4.1 What the code does
 
-**CONTRACT** (`lib/rate-limit.ts#getClientIp`, pinned by `__tests__/security/m2-ip-spoofing.test.ts`):
+**CONTRACT** (`lib/rate-limit.ts#parseTrustedProxy`, `#getClientIp`,
+`#hasTrustworthyClientKey`; pinned by `__tests__/security/m2-ip-spoofing.test.ts`, and by
+`__tests__/security/login-abuse-control.test.ts` for F-02/F-03):
 
-- `TRUSTED_PROXY` unset → forwarding headers are ignored; **every** client is
-  `"untrusted"` and shares one bucket. The login bucket is 5 attempts / 15 minutes, so this
-  makes it a **platform-wide** throttle: one attacker can lock every user out.
-- `TRUSTED_PROXY` set to **any non-empty value** → the **first** entry of
-  `x-forwarded-for` is the client; failing that, `x-real-ip`.
-- `TRUSTED_PROXY` is a **boolean switch, not an address check**. The code never compares the
-  peer address to the configured value.
+- `TRUSTED_PROXY` set to a **real IPv4/IPv6 address or CIDR** (comma-separated for several)
+  → the **first** entry of `x-forwarded-for` is the client; failing that, `x-real-ip`. A
+  forwarding value that is not an IP is discarded rather than used as a bucket key.
+- `TRUSTED_PROXY` unset, empty, or **anything that is not an address/CIDR** → forwarding
+  headers are ignored and every client shares the `"untrusted"` key. F-02/F-03 changed what
+  happens *next*: a shared key no longer produces a per-client refusal, so this is no longer
+  a platform-wide login lockout. Logins are protected by the per-account and platform-wide
+  throttles instead, and the process logs one warning per distinct invalid value.
+- Invalid values — `true`, `false`, `yes`, `no`, `0`, `off`, `nginx`, `*`, `0.0.0.0/0`,
+  `::/0` — **fail closed**. This variable is not a switch, and it is never read by
+  truthiness (that was F-02: `false` used to turn proxy trust ON).
+- The configured value is validated, not compared against the peer address: there is no peer
+  address on this code path to compare it with (see §4.2).
 
 ### 4.2 Why that is still safe — and the condition it depends on
 
@@ -222,11 +230,20 @@ Because the application is bound to **loopback** (`ecosystem.config.cjs` → `ne
 127.0.0.1`), the only client that can reach it is the reverse proxy on the same host. So the
 forwarding headers can only have been written by something trusted.
 
-**REQUIRED:** set `TRUSTED_PROXY` **and** keep the loopback binding. Setting one without the
-other is a regression:
-- loopback + no `TRUSTED_PROXY` → everyone shares one login bucket (BLOCK-2).
+The configured address is therefore the deployment's **declaration** that such a proxy
+exists, and the code cannot verify it: Next fills `x-forwarded-for` from the socket only when
+the client sent none (`next/dist/server/base-server.js:612`), and `NextRequest` exposes no
+peer address in Next 16 (`next/dist/server/web/spec-extension/request.d.ts`). F-02 is the
+difference between that declaration being *well formed and deliberate* and merely being
+non-empty.
+
+**REQUIRED:** set `TRUSTED_PROXY` to the proxy's address **and** keep the loopback binding.
+Setting one without the other is a regression:
+- loopback + no (valid) `TRUSTED_PROXY` → no per-client buckets. Logins stay available to
+  everyone (per-account + global throttles), but a distributed attacker is limited only by
+  those throttles rather than by a five-per-fifteen-minutes bucket per address.
 - `TRUSTED_PROXY` + `0.0.0.0` → any client can forge `x-forwarded-for` and get a fresh bucket
-  per request, i.e. no throttle at all.
+  per request, i.e. no per-client throttle at all.
 
 ### 4.3 The reverse proxy must OVERWRITE `x-forwarded-for`, not append
 

@@ -70,11 +70,12 @@ describe("P10-1. the inventory covers the whole application", () => {
         expect(INVENTORY_ROUTES).toEqual(PAGES_ON_DISK);
     });
 
-    it("is 39 pages, and says so", () => {
+    it("is 40 pages, and says so", () => {
         // 33 before PHASE 32 (+4: the three application-control pages and /maintenance);
         // PHASE 33 added the ADMIN-only /dashboard/users surface; PHASE 20B added the
-        // customer's own /ticketing/orders list.
-        expect(ROUTE_INVENTORY.length).toBe(39);
+        // customer's own /ticketing/orders list; PIC DASHBOARD V4 added the PIC's own
+        // /dashboard/pic/orders/[orderNumber] detail behind the Tiket Terjual table.
+        expect(ROUTE_INVENTORY.length).toBe(40);
     });
 
     it("lists each route exactly once", () => {
@@ -137,11 +138,11 @@ describe("P10-3. the inventory describes reality, not intent", () => {
         );
 
         // Overview + events (list/new/detail/check-in) + venues + orders (list/detail) +
-        // customers + payments + refunds + PIC (list/detail) + settlements (list/detail) +
-        // reports + settings (hub/sports/venues) + check-in hub = 20, plus PHASE 32's three
-        // application-control pages (application, branding, maintenance) = 23, plus PHASE
-        // 33's ADMIN-only users page = 24.
-        expect(dashboardRoutes.length).toBe(24);
+        // customers + payments + refunds + PIC (list/detail + the PIC's own order detail) +
+        // settlements (list/detail) + reports + settings (hub/sports/venues) + check-in hub
+        // = 21, plus PHASE 32's three application-control pages (application, branding,
+        // maintenance) = 24, plus PHASE 33's ADMIN-only users page = 25.
+        expect(dashboardRoutes.length).toBe(25);
     });
 
     it("contains no retail route", () => {

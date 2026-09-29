@@ -6,7 +6,7 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 
 import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/password";
-import { clientRateLimitKey, rateLimiters } from "@/lib/rate-limit";
+import { clientRateLimitKey, hasTrustworthyClientKey, rateLimiters } from "@/lib/rate-limit";
 import { LOGIN_RATE_LIMITED_CODE } from "@/lib/auth/sign-in-failure";
 import { isScopeStale, resolveAuthzScope } from "@/lib/authz/scope";
 
@@ -138,9 +138,29 @@ export const {
                  * original request — and therefore the client key — is reachable
                  * here without wrapping the route.
                  */
+                /*
+                 * F-03 — THE PER-CLIENT REFUSAL IS APPLIED ONLY WHEN THERE IS A CLIENT.
+                 *
+                 * `clientRateLimitKey` returns the shared sentinel "untrusted" in production
+                 * when no valid TRUSTED_PROXY (F-02) produced a client address, and in that
+                 * case every visitor shares ONE key. Refusing on that key is not a per-client
+                 * limit at all — it is a platform-wide lockout that five wrong passwords from
+                 * one stranger can trigger, which was F-03.
+                 *
+                 * So the refusal requires `hasTrustworthyClientKey`: a real address (or
+                 * development's labelled bucket) keeps the five-per-fifteen-minutes refusal
+                 * exactly as it was, byte for byte. Without one, the per-account and global
+                 * throttles below are the protection — neither of which can lock anybody out —
+                 * and `getClientIp` has already warned the operator, once per value, that
+                 * TRUSTED_PROXY is not doing its job.
+                 */
                 const loginKey = clientRateLimitKey(request);
+                const hasClientIdentity = hasTrustworthyClientKey(request);
 
-                if (!rateLimiters.login.check(loginKey).allowed) {
+                if (
+                    hasClientIdentity &&
+                    !rateLimiters.login.check(loginKey).allowed
+                ) {
                     console.warn(
                         `[auth] login rate limit exceeded (bucket: login:${loginKey})`
                     );
@@ -174,6 +194,54 @@ export const {
                     String(
                         credentials.password
                     );
+
+                /*
+                 * F-03 — THE PER-ACCOUNT FAILURE BUCKET.
+                 *
+                 * Keyed by an HMAC of the submitted identifier (never the identifier
+                 * itself), so the same account always lands in the same bucket whether or
+                 * not it exists, and so nothing in memory names an account. See
+                 * `lib/rate-limit.ts` for why this control can never lock an account and
+                 * why its bucket is unreadable across processes.
+                 */
+                const accountKey = rateLimiters.login.accountKey(identifier);
+
+                /*
+                 * F-03 — THE THROTTLE, BEFORE ANY VERIFICATION.
+                 *
+                 * Two bounded delays, summed and capped by each control: the identifier's
+                 * own accumulated failures, plus the platform-wide safeguard. Neither can
+                 * refuse the request, so a correct password always signs in — it may only
+                 * wait. Placed before the user lookup so a guess costs the attacker the
+                 * delay as well as the bcrypt comparison.
+                 */
+                const throttleMs =
+                    rateLimiters.login.accountThrottleMs(accountKey) +
+                    rateLimiters.loginGlobal.throttleMs();
+
+                if (throttleMs > 0) {
+                    await new Promise((resolve) =>
+                        setTimeout(resolve, throttleMs)
+                    );
+                }
+
+                /*
+                 * ONE PLACE CHARGES A FAILED CREDENTIAL, so no refusal branch can forget
+                 * one of the counters — and the two branches that must NOT charge (a
+                 * malformed request, a success) cannot charge by accident either.
+                 *
+                 * The per-client bucket is charged only when there is a client identity to
+                 * charge it to; the account and global counters are always charged, because
+                 * they are what protects the endpoint when there is no identity.
+                 */
+                const chargeLoginFailure = () => {
+                    if (hasClientIdentity) {
+                        rateLimiters.login.recordFailure(loginKey);
+                    }
+
+                    rateLimiters.login.recordAccountFailure(accountKey);
+                    rateLimiters.loginGlobal.recordFailure();
+                };
 
                 /*
                  * Cari user berdasarkan:
@@ -213,7 +281,7 @@ export const {
                     await verifyPassword(password, TIMING_EQUALISATION_HASH);
 
                     /* PHASE 27A — an unknown identifier IS a credential failure. */
-                    rateLimiters.login.recordFailure(loginKey);
+                    chargeLoginFailure();
 
                     return null;
                 }
@@ -231,7 +299,7 @@ export const {
                 if (user.disabledAt) {
                     await verifyPassword(password, TIMING_EQUALISATION_HASH);
 
-                    rateLimiters.login.recordFailure(loginKey);
+                    chargeLoginFailure();
 
                     return null;
                 }
@@ -252,7 +320,7 @@ export const {
                     /* PHASE 27A — an account with no password cannot be signed into
                      * by a password, so this is a credential failure too. The count
                      * is what protects the endpoint, not the outcome's name. */
-                    rateLimiters.login.recordFailure(loginKey);
+                    chargeLoginFailure();
 
                     return null;
                 }
@@ -268,7 +336,7 @@ export const {
 
                 if (!valid) {
                     /* PHASE 27A — the canonical credential failure. */
-                    rateLimiters.login.recordFailure(loginKey);
+                    chargeLoginFailure();
 
                     return null;
                 }
@@ -279,6 +347,16 @@ export const {
                  * Role ikut dikirim supaya nanti
                  * bisa dimasukkan ke JWT/session.
                  */
+                /*
+                 * F-03 — A SUCCESSFUL VERIFICATION CLEARS THE IDENTIFIER'S FAILURES.
+                 *
+                 * The person who knows the password is not the attacker, so the delay an
+                 * attacker's guesses built up ends here. This is also the second reason the
+                 * account control can never lock an account out: the correct password always
+                 * clears it. Note what this path does NOT do — it charges no counter at all.
+                 */
+                rateLimiters.login.clearAccountFailures(accountKey);
+
                 return {
                     id: user.id,
                     name: user.name,

@@ -228,6 +228,14 @@ describe("the page dependency map", () => {
         );
     });
 
+    test("covers the PIC's own order detail, which reads the ORDER families", () => {
+        // Deeper than `/dashboard/pic/`, and it must be: this page renders one EventOrder with
+        // its lines, so an order/ticket change has to refresh it.
+        expect(domainsForPath("/dashboard/pic/orders/ORD-1")).toEqual(
+            expect.arrayContaining(["orders", "tickets", "pic", "attribution"])
+        );
+    });
+
     test("the deepest prefix wins, so a detail page never inherits a list's set blindly", () => {
         // Both are `/dashboard/events...`, and the deeper entry is what applies.
         expect(domainsForPath("/dashboard/events/new")).toEqual(["events"]);

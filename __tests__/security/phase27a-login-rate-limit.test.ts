@@ -11,9 +11,16 @@
  * This suite pins the two halves of the fix that are testable without a browser:
  *
  *   1. `clientRateLimitKey` — the bucket key. Production must be unchanged to the byte
- *      (a trusted reverse proxy yields the real client IP, a missing TRUSTED_PROXY still
- *      fails closed into the shared sentinel), while a server with no trustworthy peer
- *      address gets a labelled bucket of its own instead of sharing production's.
+ *      (a VALID trusted-proxy configuration yields the real client IP, a missing or
+ *      unparseable TRUSTED_PROXY still fails closed into the shared sentinel), while a
+ *      server with no trustworthy peer address gets a labelled bucket of its own instead
+ *      of sharing production's.
+ *
+ * F-02/F-03 UPDATED TWO THINGS THIS SUITE ASSERTS, and the changes are deliberate: the
+ * configuration is now PARSED (`TRUSTED_PROXY="1"` used to enable proxy trust and no
+ * longer does — name a real address), and the shared sentinel no longer produces a
+ * per-client REFUSAL. The full contract, including why a refusing global cap was
+ * rejected, lives in `__tests__/security/login-abuse-control.test.ts`.
  *   2. the failed-credential allowance — a read-only probe plus an explicit failure
  *      recorder, so only a failed verification can spend it.
  *
@@ -106,7 +113,7 @@ describe("the login bucket key (F3)", () => {
         });
 
         it("uses the forwarded client IP when a trusted proxy is configured", () => {
-            setEnv("TRUSTED_PROXY", "1");
+            setEnv("TRUSTED_PROXY", "10.0.0.1");
 
             expect(
                 clientRateLimitKey(
@@ -118,7 +125,7 @@ describe("the login bucket key (F3)", () => {
         });
 
         it("falls back to x-real-ip for a proxy that sends only that header", () => {
-            setEnv("TRUSTED_PROXY", "1");
+            setEnv("TRUSTED_PROXY", "10.0.0.1");
 
             expect(
                 clientRateLimitKey(
@@ -157,9 +164,37 @@ describe("the login bucket key (F3)", () => {
         });
 
         it("fails closed when a trusted proxy is configured but sent no header", () => {
-            setEnv("TRUSTED_PROXY", "1");
+            setEnv("TRUSTED_PROXY", "10.0.0.1");
 
             expect(clientRateLimitKey(credentialsRequest())).toBe("untrusted");
+        });
+
+        it("does not enable trust for a truthy value that is not an address (F-02)", () => {
+            /*
+             * The pre-F-02 contract was `if (process.env.TRUSTED_PROXY)` — a truthiness
+             * test, so every value an operator might write to switch the feature OFF
+             * switched it ON. Each of these was therefore a full proxy-trust grant, and
+             * the spoofed header below became the rate-limit bucket key.
+             */
+            for (const value of [
+                "true",
+                "false",
+                "yes",
+                "no",
+                "0",
+                "off",
+                "nginx",
+                "*",
+                "0.0.0.0/0",
+            ]) {
+                setEnv("TRUSTED_PROXY", value);
+
+                expect(
+                    clientRateLimitKey(
+                        credentialsRequest({ "x-forwarded-for": "1.2.3.4" })
+                    )
+                ).toBe("untrusted");
+            }
         });
     });
 
@@ -345,18 +380,32 @@ describe("auth.ts charges the right event and no other", () => {
         expect(code).not.toMatch(/rateLimiters\.login\(/);
     });
 
-    it("records exactly four failures — unknown user, deactivated account, no password, wrong password", () => {
+    it("charges exactly four failures — unknown user, deactivated account, no password, wrong password", () => {
         // PHASE 33 added the deactivated-account refusal (`User.disabledAt` set): a login
         // against a disabled account is a credential failure by the same contract, costs
-        // the same timing-equalisation dummy verify, and charges the same bucket. It is the
+        // the same timing-equalisation dummy verify, and is charged the same way. It is the
         // ONLY addition; every other refusal path and the success path are unchanged.
-        const recordings = code.match(/rateLimiters\.login\.recordFailure\(/g) ?? [];
+        //
+        // F-03 then moved the charge into ONE helper, so all three counters (per-client,
+        // per-identifier, platform-wide) are charged together and no branch can charge one
+        // and forget another. The count that matters is unchanged: four branches, four
+        // charges.
+        const charges = code.match(/chargeLoginFailure\(\);/g) ?? [];
 
-        expect(recordings.length).toBe(4);
+        expect(charges.length).toBe(4);
         expect(code).toContain("if (!user) {");
         expect(code).toContain("if (user.disabledAt) {");
         expect(code).toContain("if (!user.password) {");
         expect(code).toContain("if (!valid) {");
+
+        // …and the helper is the only writer of any of the three buckets.
+        const recordings = code.match(/rateLimiters\.login\.recordFailure\(/g) ?? [];
+
+        expect(recordings.length).toBe(1);
+        expect(code).toContain(
+            "rateLimiters.login.recordAccountFailure(accountKey)"
+        );
+        expect(code).toContain("rateLimiters.loginGlobal.recordFailure()");
     });
 
     it("returns null — without charging the allowance — for missing credentials", () => {
@@ -369,18 +418,22 @@ describe("auth.ts charges the right event and no other", () => {
         expect(missing).not.toContain("recordFailure");
     });
 
-    it("does not charge the allowance on the success path", () => {
+    it("does not charge any counter on the success path", () => {
         const tail = code.slice(code.indexOf("if (!valid) {"));
 
-        const recordedAt = tail.indexOf("recordFailure");
+        const chargedAt = tail.indexOf("chargeLoginFailure");
         const successAt = tail.indexOf("return {");
 
-        // Only the failure branch records, and the `return {` that authorizes a session
-        // comes after it with no recorder between the two or beyond it. (No newline is
+        // Only the failure branch charges, and the `return {` that authorizes a session
+        // comes after it with no charge between the two or beyond it. (No newline is
         // matched here: this file is CRLF.)
-        expect(recordedAt).toBeGreaterThan(-1);
-        expect(successAt).toBeGreaterThan(recordedAt);
-        expect(tail.slice(successAt)).not.toContain("recordFailure");
+        expect(chargedAt).toBeGreaterThan(-1);
+        expect(successAt).toBeGreaterThan(chargedAt);
+        expect(tail.slice(successAt)).not.toContain("chargeLoginFailure");
+
+        // …and the success path CLEARS the identifier's throttle instead, which is the
+        // documented reason the per-account control cannot lock an account out (F-03).
+        expect(tail).toContain("clearAccountFailures");
     });
 
     it("refuses a throttled sign-in with a code the browser can read", () => {
@@ -394,16 +447,37 @@ describe("auth.ts charges the right event and no other", () => {
         expect(LOGIN_RATE_LIMITED_CODE).toBe("rate_limited");
     });
 
-    it("does not spend the allowance for the new refusal itself", () => {
+    it("does not spend the allowance for the refusal itself", () => {
+        /*
+         * F-03 — the refusal is now guarded by `hasClientIdentity`, so the slice starts at
+         * the shared-bucket CALL rather than at a one-line `if (`. The property under test
+         * is unchanged: refusing must not count as another failure, or a fixed window
+         * becomes a self-extending one.
+         */
         const refusal = code.slice(
-            code.indexOf("if (!rateLimiters.login.check(loginKey).allowed)"),
+            code.indexOf("!rateLimiters.login.check(loginKey).allowed"),
             code.indexOf("credentials?.identifier")
         );
 
-        // A refusal must not count as another failure: that would turn a fixed window into
-        // a self-extending one.
         expect(refusal).toContain("throw new LoginRateLimited()");
+        expect(refusal).not.toContain("chargeLoginFailure");
         expect(refusal).not.toContain("recordFailure");
+    });
+
+    it("applies the per-client refusal only when the key names a client (F-03)", () => {
+        const guard = code.slice(
+            code.indexOf("const hasClientIdentity"),
+            code.indexOf("credentials?.identifier")
+        );
+
+        /*
+         * Without a trustworthy key every visitor shares the "untrusted" sentinel, so a
+         * refusal on it is a platform-wide lockout that five wrong passwords from one
+         * stranger can trigger — F-03 itself. The guard is what makes the per-client limit
+         * a per-CLIENT limit.
+         */
+        expect(guard).toContain("hasTrustworthyClientKey(request)");
+        expect(guard).toContain("hasClientIdentity &&");
     });
 });
 

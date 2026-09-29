@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from "crypto";
+
 /**
  * ==========================================
  * RATE LIMITER (In-Memory)
@@ -40,15 +42,63 @@ type RateLimitEntry = {
 
 const store = new Map<string, RateLimitEntry>();
 
+/**
+ * Upper bound on the number of live windows.
+ *
+ * The cleanup below runs every five minutes, which is long enough for a client that
+ * controls its own bucket key to insert a very large number of windows in between two
+ * sweeps. That key is attacker-controlled on exactly one path — the F-03 login account
+ * bucket, keyed by an HMAC of the submitted identifier, where every invented identifier
+ * is a new key. A `Map` of a few hundred thousand entries is tens of megabytes of
+ * process-lifetime memory for no benefit, so the store is capped.
+ *
+ * THE EVICTION IS SAFE IN THE DIRECTION THAT MATTERS: evicting the OLDEST window can
+ * only ever FORGET failures, which loosens a limit. It can never invent one. Under a
+ * flood of distinct keys the oldest windows are the ones closest to expiry anyway.
+ */
+const MAX_STORE_ENTRIES = 50_000;
+
+/** Drop every expired window. Shared by the sweeper, the cap and the probes. */
+function sweepExpired(now: number): void {
+    for (const [key, entry] of store) {
+        if (now > entry.resetAt) {
+            store.delete(key);
+        }
+    }
+}
+
+/**
+ * Insert one window, keeping the store bounded.
+ *
+ * At the cap the OLDEST insertion is evicted. `Map` iterates in insertion order, so
+ * `keys().next()` is the oldest key and the whole operation is O(1).
+ *
+ * ── WHY THE EVICTION DOES NOT SWEEP FIRST ─────────────────────────────────────
+ * Sweeping expired windows here would be the obvious first move, and it is the wrong one:
+ * `sweepExpired` is O(n), and the cap exists precisely for the case where an attacker is
+ * inserting faster than windows expire — so a sweep per insert would turn the defence into
+ * 50,000 iterations of CPU per attacker request, which is a worse denial of service than
+ * the memory it prevents. Expiry is already handled by the interval sweeper below; the
+ * hottest path stays O(1).
+ */
+function setEntry(key: string, entry: RateLimitEntry): void {
+    // `store.has` first: an UPDATE to a key that is already stored costs no memory, so at
+    // the cap it must not pay with somebody else's window.
+    if (store.size >= MAX_STORE_ENTRIES && !store.has(key)) {
+        const oldest = store.keys().next();
+
+        if (!oldest.done) {
+            store.delete(oldest.value);
+        }
+    }
+
+    store.set(key, entry);
+}
+
 // Cleanup expired entries every 5 minutes
 if (typeof setInterval !== "undefined") {
     setInterval(() => {
-        const now = Date.now();
-        for (const [key, entry] of store) {
-            if (now > entry.resetAt) {
-                store.delete(key);
-            }
-        }
+        sweepExpired(Date.now());
     }, 5 * 60 * 1000);
 }
 
@@ -103,7 +153,7 @@ export function checkRateLimit(
 
     if (!entry) {
         // New window
-        store.set(key, {
+        setEntry(key, {
             count: 1,
             resetAt: now + windowMs,
         });
@@ -128,6 +178,19 @@ export function checkRateLimit(
         remaining: maxRequests - entry.count,
         retryAfterMs: 0,
     };
+}
+
+/**
+ * The number of live windows this process is holding.
+ *
+ * Observability for the one property of an in-memory limiter that cannot be seen from the
+ * outside: its memory. `MAX_STORE_ENTRIES` bounds it, and this is how a test (or an
+ * operator's debug endpoint, if one is ever added) can prove the bound holds under a flood
+ * of distinct keys — which is exactly the shape of the F-03 account bucket, where the key
+ * is derived from an attacker-supplied identifier.
+ */
+export function rateLimitStoreSize(): number {
+    return store.size;
 }
 
 /**
@@ -196,7 +259,7 @@ export function recordRateLimitFailure(
 
     const count = (entry?.count ?? 0) + 1;
 
-    store.set(key, {
+    setEntry(key, {
         count,
         resetAt: entry?.resetAt ?? now + windowMs,
     });
@@ -212,37 +275,268 @@ export function recordRateLimitFailure(
  * headers. They MUST NOT be trusted unless the application
  * is behind a known trusted reverse proxy.
  *
- * When TRUSTED_PROXY env var is NOT set (default):
+ * When TRUSTED_PROXY is NOT configured — which is now a question of whether it parses
+ * (see `parseTrustedProxy`), not of whether it is a non-empty string (F-02):
  *   Forwarding headers are ignored.
  *   Returns "untrusted" — all clients share this bucket.
  *   This is safe: rate limiting still works, it just groups
  *   all untrusted clients together.
  *
- * When TRUSTED_PROXY env var IS set:
+ * When TRUSTED_PROXY IS configured with a real address or CIDR:
  *   Forwarding headers from the trusted proxy are used.
- *   The first IP in x-forwarded-for is treated as client IP.
+ *   The first IP in x-forwarded-for is treated as client IP, and a value that is not an
+ *   IP at all is discarded rather than used as a bucket key.
  *
  * This prevents an attacker from spoofing x-forwarded-for
  * to obtain a unique rate-limit bucket per request.
  */
 export function getClientIp(request: Request): string {
-    const trustedProxy = process.env.TRUSTED_PROXY;
+    const raw = process.env.TRUSTED_PROXY;
+    const trustedProxy = parseTrustedProxy(raw);
 
     if (trustedProxy) {
         // Only trust forwarding headers when behind a known proxy
-        const forwarded = request.headers.get("x-forwarded-for");
+        const forwarded = firstClientAddress(
+            request.headers.get("x-forwarded-for")
+        );
+
         if (forwarded) {
-            return forwarded.split(",")[0].trim();
+            return forwarded;
         }
 
-        const realIp = request.headers.get("x-real-ip");
+        const realIp = firstClientAddress(request.headers.get("x-real-ip"));
+
         if (realIp) {
             return realIp;
         }
+    } else if (raw?.trim()) {
+        /*
+         * A value is present and did NOT parse. It is not silently ignored, because that
+         * is how this trap was first set: an operator who writes TRUSTED_PROXY=false to
+         * turn proxy trust OFF must be told that the variable is not a switch. The
+         * warning is emitted once per distinct value so a request loop cannot flood the
+         * log.
+         */
+        warnInvalidTrustedProxy(raw.trim());
     }
 
     // No trusted proxy — forwarding headers are NOT trustworthy
-    return "untrusted";
+    return UNTRUSTED_CLIENT_KEY;
+}
+
+/* ============================================================================
+ * TRUSTED_PROXY — AN EXPLICIT ADDRESS ALLOW-LIST, NEVER A TRUTHINESS TEST (F-02)
+ * ============================================================================
+ *
+ * WHAT WAS WRONG
+ * --------------
+ * Proxy trust was decided by `if (process.env.TRUSTED_PROXY)`. Every string that is not
+ * empty is truthy, so the values an operator is most likely to reach for when trying to
+ * switch the feature off — `false`, `no`, `0`, `off` — turned it ON, as did junk like
+ * `nginx` or `yes`. The result was the exact hole the M2 fix closed: the first
+ * client-supplied `x-forwarded-for` value became the rate-limit bucket key, so an
+ * attacker who rotated that header got a fresh login allowance per request.
+ *
+ * WHAT REPLACES IT
+ * --------------
+ * The variable must NAME the reverse proxy: one IPv4 address, one IPv6 address, or a
+ * CIDR block, comma-separated for several. Anything else — including the truthy strings
+ * above, a wildcard, and `0.0.0.0/0`/`::/0` (which would assert trust in every source
+ * and therefore validate nothing) — fails to parse and leaves trust OFF.
+ *
+ * ── WHAT THIS CONFIGURATION DOES AND DOES NOT PROVE ─────────────────────────
+ * It proves that trust was GRANTED DELIBERATELY and in a format that names a host: the
+ * silent coercion is gone. It CANNOT prove that the request actually arrived from that
+ * host, because there is no peer address on this code path to compare against — Next
+ * fills `x-forwarded-for` from the socket ONLY when the client did not send one
+ * (`next/dist/server/base-server.js:612`), so a socket value and a spoofed one are
+ * indistinguishable by the time a handler reads the headers, and `NextRequest` declares
+ * no `ip` in Next 16. That is why the header is read only after a valid configuration,
+ * and why the interface contract (.env.example, DEPLOYMENT_RUNBOOK.md) states that the
+ * process must be reachable only through the proxy: nginx binding the public port is
+ * what makes the header trustworthy, and the configuration is the operator telling this
+ * process that such a proxy exists.
+ */
+
+/** IPv4 with four numeric octets. Range-checked by `isIpv4`, not by the expression. */
+const IPV4_ENTRY = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
+/** Hexadecimal groups and colons only — every character an IPv6 literal can contain. */
+const IPV6_ENTRY = /^[0-9a-fA-F:]{2,45}$/;
+
+function isIpv4(value: string): boolean {
+    const match = IPV4_ENTRY.exec(value);
+
+    if (!match) {
+        return false;
+    }
+
+    return match.slice(1).every((octet) => Number(octet) <= 255);
+}
+
+/**
+ * A deliberately conservative IPv6 check: the character set, a colon, at most one `::`,
+ * groups of at most four hex digits, and a GROUP COUNT that a real address can have —
+ * eight explicit groups, or seven or fewer alongside a `::` (which stands in for the
+ * rest).
+ *
+ * It is not a full RFC 4291 parser and does not need to be: the value is never used to
+ * ROUTE anything, it is only the operator's declaration that a proxy exists. What it must
+ * not do is accept `false`, `nginx`, `*`, an empty string, or a nine-group address.
+ */
+function isIpv6(value: string): boolean {
+    if (!IPV6_ENTRY.test(value) || !value.includes(":")) {
+        return false;
+    }
+
+    if (value.includes(":::")) {
+        return false;
+    }
+
+    const withElision = value.split("::");
+
+    if (withElision.length > 2) {
+        return false;
+    }
+
+    const explicitGroups = value.split(":").filter((group) => group.length > 0);
+
+    if (!explicitGroups.every((group) => group.length <= 4)) {
+        return false;
+    }
+
+    return withElision.length === 2
+        ? explicitGroups.length <= 7
+        : explicitGroups.length === 8;
+}
+
+/**
+ * Normalise one configured entry, or `null` when it is not an address/CIDR.
+ *
+ * Accepted: `10.0.0.1`, `203.0.113.9`, `10.0.0.0/8`, `::1`, `[::1]`, `2001:db8::/32`.
+ * Rejected: everything else, including `*`, `true`, `false`, `yes`, `no`, `off`,
+ * `nginx`, `0.0.0.0/0`, `::/0`, a prefix outside the family's width, and a bare hostname.
+ */
+export function normaliseProxyEntry(entry: string): string | null {
+    const parts = entry.split("/");
+
+    if (parts.length > 2 || parts[0].length === 0) {
+        return null;
+    }
+
+    const rawHost = parts[0];
+    const host =
+        rawHost.startsWith("[") && rawHost.endsWith("]")
+            ? rawHost.slice(1, -1)
+            : rawHost;
+
+    const ipv4 = isIpv4(host);
+
+    if (!ipv4 && !isIpv6(host)) {
+        return null;
+    }
+
+    if (parts.length === 1) {
+        return host;
+    }
+
+    const prefix = parts[1];
+
+    if (!/^\d{1,3}$/.test(prefix)) {
+        return null;
+    }
+
+    const bits = Number(prefix);
+    const width = ipv4 ? 32 : 128;
+
+    // `/0` names every possible source, so it is not a restriction at all.
+    if (bits === 0 || bits > width) {
+        return null;
+    }
+
+    return `${host}/${bits}`;
+}
+
+/**
+ * Parse the whole variable: a comma-separated list of addresses/CIDRs.
+ *
+ * Returns `null` — "no usable configuration, do not trust headers" — for an unset,
+ * empty, or ANY-invalid value. One malformed member invalidates the whole list rather
+ * than being skipped: a typo must not quietly reduce the set the operator believes they
+ * configured.
+ */
+export function parseTrustedProxy(
+    raw: string | undefined | null
+): readonly string[] | null {
+    const value = raw?.trim();
+
+    if (!value) {
+        return null;
+    }
+
+    const entries = value
+        .split(",")
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+
+    if (entries.length === 0) {
+        return null;
+    }
+
+    const normalised: string[] = [];
+
+    for (const entry of entries) {
+        const parsed = normaliseProxyEntry(entry);
+
+        if (!parsed) {
+            return null;
+        }
+
+        normalised.push(parsed);
+    }
+
+    return normalised;
+}
+
+/** The first forwarding value, but only when it actually is an IP address. */
+function firstClientAddress(header: string | null): string | null {
+    if (!header) {
+        return null;
+    }
+
+    const first = header.split(",")[0]?.trim();
+
+    if (!first) {
+        return null;
+    }
+
+    const bare =
+        first.startsWith("[") && first.endsWith("]")
+            ? first.slice(1, -1)
+            : first;
+
+    return isIpv4(bare) || isIpv6(bare) ? bare : null;
+}
+
+/** Distinct invalid values already reported, so a request loop cannot flood the log. */
+const warnedProxyValues = new Set<string>();
+
+function warnInvalidTrustedProxy(raw: string): void {
+    const shown = raw.length > 48 ? `${raw.slice(0, 48)}…` : raw;
+
+    if (warnedProxyValues.has(shown)) {
+        return;
+    }
+
+    warnedProxyValues.add(shown);
+
+    console.warn(
+        `[RATE_LIMIT] TRUSTED_PROXY is not a valid address/CIDR list (got "${shown}"). ` +
+            "Proxy trust stays OFF and forwarded headers are ignored. TRUSTED_PROXY is " +
+            "not a switch: name the reverse proxy's address, e.g. 10.0.0.1 or " +
+            "172.16.0.0/12 (comma-separate several). Values such as true, false, yes, no " +
+            "and nginx are invalid and never enable trust."
+    );
 }
 
 /** The production sentinel: every client that cannot be distinguished shares it. */
@@ -314,6 +608,29 @@ export function clientRateLimitKey(request: Request): string {
 }
 
 /**
+ * Is the key `clientRateLimitKey` returned a PER-CLIENT identity, or the shared sentinel?
+ *
+ * ── WHY A CALLER MUST ASK THIS (F-03) ──────────────────────────────────────────
+ * In production with no valid `TRUSTED_PROXY`, EVERY client shares one key. A bucket
+ * built on that key is not a per-client limit at all — it is a platform-wide counter,
+ * and a HARD refusal on it means five wrong passwords from one stranger stop every
+ * other person from signing in. That was F-03.
+ *
+ * So the login limiter (and the register limiter, which had the same shape) now asks
+ * this first: with a real identity the five-per-fifteen-minutes refusal applies exactly
+ * as before, and without one the refusal is NOT applied, because the only thing it could
+ * bound is the whole platform. What protects the endpoint when there is no identity is
+ * the per-account and global throttles in `rateLimiters.login` / `rateLimiters.loginGlobal`,
+ * neither of which can lock a person out.
+ *
+ * Development returns `true` (its bucket is the labelled `dev-local`), which preserves
+ * the existing development behaviour to the byte.
+ */
+export function hasTrustworthyClientKey(request: Request): boolean {
+    return clientRateLimitKey(request) !== UNTRUSTED_CLIENT_KEY;
+}
+
+/**
  * Pre-configured rate limiters for sensitive endpoints.
  */
 /**
@@ -338,6 +655,172 @@ export function clientRateLimitKey(request: Request): string {
 const LOGIN_BUCKET = "login";
 const LOGIN_MAX_FAILURES = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
+/* ============================================================================
+ * LOGIN ABUSE CONTROL WHEN NO CLIENT IDENTITY CAN BE BELIEVED (F-03)
+ * ============================================================================
+ *
+ * F-03 was an availability defect with two halves that had to be fixed together:
+ *
+ *   1. no valid TRUSTED_PROXY (or a truthy-but-invalid one, F-02) meant every anonymous
+ *      client shared `login:untrusted`, so five failures anywhere locked out everywhere;
+ *   2. nothing bounded guessing against ONE account from many addresses, so "just raise
+ *      the shared bucket" would have traded a lockout for a brute-force window.
+ *
+ * The two controls below are what replace it. NEITHER OF THEM REFUSES A REQUEST, and that
+ * is the point: any hard threshold keyed on something an attacker can drive is a lockout
+ * primitive (that is precisely what F-03 was, one identity wider), and the brief is
+ * explicit that an attacker must not be able to lock an account. A bounded DELAY is the
+ * one control that keeps working while nobody can be denied service with it — the
+ * legitimate owner waits at most a second and then signs in normally.
+ *
+ * PER-ACCOUNT (the brute-force control)
+ * -------------------------------------
+ * Failures are counted per IDENTIFIER — price of a wrong password against one account —
+ * under a key that is an HMAC-SHA256 of the normalised identifier:
+ *
+ *   • the identifier itself is never stored, so the bucket cannot be read as "who is
+ *     being attacked" (the HMAC key is a per-process random value, so the digests are
+ *     also not comparable across restarts or processes — an unsalted hash of an email
+ *     would be reversible by anyone who could read the map);
+ *   • unknown identifiers accumulate a bucket exactly like real ones, so no observation
+ *     of this counter — timing included, since the delay is derived from it — can tell
+ *     whether an account exists;
+ *   • the first LOGIN_ACCOUNT_FREE_FAILURES attempts cost nothing, and each failure
+ *     beyond that adds LOGIN_ACCOUNT_STEP_MS, capped at LOGIN_ACCOUNT_MAX_DELAY_MS.
+ *     Bounded, monotone, and identical for a real and an invented account.
+ *
+ * GLOBAL (the availability safeguard)
+ * -----------------------------------
+ * A coarse platform-wide failure counter. Above LOGIN_GLOBAL_ALERT_FAILURES in a short
+ * window every sign-in attempt — correct password included — is delayed by a bounded
+ * amount and the operator is warned in the log. It cannot lock anyone out; it exists so
+ * a distributed credential-stuffing flood buys a slower platform instead of unbounded
+ * bcrypt work. A REFUSING global cap was considered and rejected: at any threshold it is
+ * the same global lockout as F-03, merely more expensive to reach.
+ */
+
+/** Bucket namespace for the per-identifier login window. */
+const LOGIN_ACCOUNT_LABEL = "login-account";
+
+/** Same window as the per-client allowance, so one failure accounting story holds. */
+const LOGIN_ACCOUNT_WINDOW_MS = LOGIN_WINDOW_MS;
+
+/** Failures that cost nothing, matching the per-client allowance's shape. */
+const LOGIN_ACCOUNT_FREE_FAILURES = 5;
+
+/** Added per failure beyond the free allowance. 150 ms x 10 = the cap below. */
+const LOGIN_ACCOUNT_STEP_MS = 150;
+
+/** Ceiling on the per-identifier delay: slow enough to hurt guessing, short enough to live with. */
+const LOGIN_ACCOUNT_MAX_DELAY_MS = 1500;
+
+/** Bucket namespace for the platform-wide failure counter. */
+const LOGIN_GLOBAL_LABEL = "login-global";
+
+/** Short window: the safeguard must decay quickly once a flood stops. */
+const LOGIN_GLOBAL_WINDOW_MS = 5 * 60 * 1000;
+
+/** Failures in the window before the platform-wide delay starts. */
+const LOGIN_GLOBAL_ALERT_FAILURES = 200;
+
+/** Added per further LOGIN_GLOBAL_ALERT_FAILURES failures. */
+const LOGIN_GLOBAL_STEP_MS = 250;
+
+/** Ceiling on the platform-wide delay. */
+const LOGIN_GLOBAL_MAX_DELAY_MS = 1000;
+
+/**
+ * The per-process HMAC key for account buckets.
+ *
+ * Generated at module load and never persisted: the digest is only ever compared with
+ * itself inside this process's `Map`, so a stable key would add nothing — while a key
+ * that leaves the process (an env var, a hardcoded constant) would turn the digests into
+ * an offline-testable fingerprint of an identifier. Rotating on every start is the point.
+ */
+const LOGIN_ACCOUNT_KEY_SECRET = randomBytes(32);
+
+/**
+ * The bucket key for one identifier: HMAC-SHA256, truncated to 96 bits.
+ *
+ * Normalised (trimmed, lower-cased) so `User@Example.com` and `user@example.com` are the
+ * same bucket — otherwise case alone would multiply an attacker's allowance. Truncation
+ * is safe: this is a bucket label, not a MAC that anybody verifies.
+ */
+export function loginAccountKey(identifier: string): string {
+    return createHmac("sha256", LOGIN_ACCOUNT_KEY_SECRET)
+        .update(identifier.trim().toLowerCase())
+        .digest("hex")
+        .slice(0, 24);
+}
+
+/**
+ * How long this attempt should wait before verification, based on the account's failures
+ * in the current window. `0` for a fresh or successful account.
+ */
+export function loginAccountThrottleMs(accountKey: string): number {
+    const entry = openWindow(`${LOGIN_ACCOUNT_LABEL}:${accountKey}`);
+    const failures = entry?.count ?? 0;
+    const beyond = Math.max(0, failures - LOGIN_ACCOUNT_FREE_FAILURES);
+
+    return Math.min(beyond * LOGIN_ACCOUNT_STEP_MS, LOGIN_ACCOUNT_MAX_DELAY_MS);
+}
+
+/** Charge ONE failed verification to the identifier's window. Returns the new count. */
+export function recordLoginAccountFailure(accountKey: string): number {
+    return recordRateLimitFailure(
+        `${LOGIN_ACCOUNT_LABEL}:${accountKey}`,
+        LOGIN_ACCOUNT_WINDOW_MS
+    );
+}
+
+/**
+ * Forget an identifier's failures — called after a SUCCESSFUL verification.
+ *
+ * The person who knows the password is not the attacker, so the throttle they inherited
+ * from the attacker's guesses ends here. This is also the second reason the account
+ * control can never lock an account: the correct password always clears it.
+ */
+export function clearLoginAccountFailures(accountKey: string): void {
+    store.delete(`${LOGIN_ACCOUNT_LABEL}:${accountKey}`);
+}
+
+/** Timestamp of the last platform-wide warning, so the log cannot be flooded. */
+let lastGlobalLoginWarningAt = 0;
+
+/**
+ * How long EVERY sign-in should wait while the platform-wide failure counter is elevated.
+ * Never refuses: it is a throughput cap, not a gate.
+ */
+export function loginGlobalThrottleMs(): number {
+    const entry = openWindow(LOGIN_GLOBAL_LABEL);
+    const failures = entry?.count ?? 0;
+
+    if (failures < LOGIN_GLOBAL_ALERT_FAILURES) {
+        return 0;
+    }
+
+    const now = Date.now();
+
+    if (now - lastGlobalLoginWarningAt > 60_000) {
+        lastGlobalLoginWarningAt = now;
+
+        console.warn(
+            `[RATE_LIMIT] login failures across the platform are elevated ` +
+                `(${failures} in ${Math.round(LOGIN_GLOBAL_WINDOW_MS / 60_000)} min); ` +
+                "sign-ins are being slowed. Check TRUSTED_PROXY and the auth logs."
+        );
+    }
+
+    const steps = Math.floor(failures / LOGIN_GLOBAL_ALERT_FAILURES);
+
+    return Math.min(steps * LOGIN_GLOBAL_STEP_MS, LOGIN_GLOBAL_MAX_DELAY_MS);
+}
+
+/** Charge ONE failed verification to the platform-wide window. Returns the new count. */
+export function recordLoginGlobalFailure(): number {
+    return recordRateLimitFailure(LOGIN_GLOBAL_LABEL, LOGIN_GLOBAL_WINDOW_MS);
+}
 
 export const rateLimiters = {
     /**
@@ -366,6 +849,29 @@ export const rateLimiters = {
             ),
         maxFailures: LOGIN_MAX_FAILURES,
         windowMs: LOGIN_WINDOW_MS,
+
+        /*
+         * F-03 — the per-identifier control. Deliberately NOT a `check`/`recordFailure`
+         * pair like the bucket above: there is no refusal to make, so the API is a delay
+         * to apply and a failure to charge. A caller cannot ask "is this account over the
+         * limit?", because that question has no safe answer.
+         */
+        accountKey: (identifier: string) => loginAccountKey(identifier),
+        accountThrottleMs: (accountKey: string) =>
+            loginAccountThrottleMs(accountKey),
+        recordAccountFailure: (accountKey: string) =>
+            recordLoginAccountFailure(accountKey),
+        clearAccountFailures: (accountKey: string) =>
+            clearLoginAccountFailures(accountKey),
+    },
+
+    /**
+     * F-03 — the platform-wide availability safeguard. Same shape as the account control
+     * and for the same reason: it slows, it never refuses.
+     */
+    loginGlobal: {
+        throttleMs: () => loginGlobalThrottleMs(),
+        recordFailure: () => recordLoginGlobalFailure(),
     },
 
     register: (clientKey: string) =>

@@ -760,6 +760,7 @@ export function LinkPagination({
     basePath,
     query = {},
     label = "Halaman",
+    pageParam = "page",
 }: {
     page: number;
     totalPages: number;
@@ -774,6 +775,15 @@ export function LinkPagination({
         string | number | undefined | null | (string | number)[]
     >;
     label?: string;
+    /**
+     * The query parameter this pager writes — `page` by default.
+     *
+     * A page may carry TWO independent pagers (the PIC dashboard pages `Event Saya` and its
+     * ticket-sales table separately), and two pagers sharing one parameter would move together:
+     * clicking page 2 of the second table would also jump the first. Naming the parameter per
+     * pager keeps each one's position its own, and each read model keeps parsing its own key.
+     */
+    pageParam?: string;
 }) {
     if (totalPages <= 1) {
         return null;
@@ -799,7 +809,7 @@ export function LinkPagination({
         }
 
         if (target > 1) {
-            params.set("page", String(target));
+            params.set(pageParam, String(target));
         }
 
         const qs = params.toString();

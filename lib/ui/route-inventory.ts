@@ -28,7 +28,12 @@
  * PHASE 20B added one: the customer's own `/ticketing/orders` list ("Pesanan saya"), the
  * index over the order-detail page that already existed.
  *
- * The total is 39 pages.
+ * PIC DASHBOARD V4 added one: the PIC's own read-only order detail
+ * (`/dashboard/pic/orders/[orderNumber]`), the destination of the order number in the
+ * `Tiket Terjual` table — reachable from the PIC dashboard because the operator and buyer
+ * order-detail routes are scoped to authorities a referrer does not hold.
+ *
+ * The total is 40 pages.
  *
  * `referencedBy` is produced mechanically — matching each route as a complete URL token — and the
  * test re-derives each route from its own file path, so a row cannot drift from the tree.
@@ -132,6 +137,12 @@ export const ROUTE_INVENTORY: RouteEntry[] = [
         file: "app/dashboard/pic/page.tsx",
         status: "KEEP",
         referencedBy: "components/dashboard/DashboardAppShell.tsx, app/dashboard/pic/[id]/page.tsx",
+    },
+    {
+        route: "/dashboard/pic/orders/[orderNumber]",
+        file: "app/dashboard/pic/orders/[orderNumber]/page.tsx",
+        status: "KEEP",
+        referencedBy: "app/dashboard/pic/page.tsx (the Tiket Terjual order number)",
     },
     {
         route: "/dashboard/reports",

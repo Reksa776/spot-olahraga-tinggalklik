@@ -663,125 +663,298 @@ export async function listMyAttributions(
 
 /**
  * ============================================================================
- * "TIKET TERJUAL" — the PAID sales performance, aggregated PER EVENT
+ * "TIKET TERJUAL" — the PAID sales performance, ONE ROW PER ORDER
  * ============================================================================
  *
  * The companion of `listMyAttributions`, deliberately a different question and a different
- * shape. Attributions answer "which orders came through me?" (order-level, all payment
- * states). This answers "how many tickets have actually been SOLD?" — an event-level rollup
- * of the PAID orders only, so a PIC can see where tickets are moving rather than re-reading
- * a list of orders they already saw one section above.
+ * shape. Attributions answer "which orders came through me?" (order-level, ALL payment
+ * states, newest first, capped). This answers "which orders have actually SOLD, and how much
+ * did each of them carry?" — one row per PAID order, so the PIC can point at the order a
+ * ticket came from instead of only knowing that some event sold.
  *
  * ── THE DEFINITIONS, UNCHANGED FROM THE KPI ─────────────────────────────────
  * The dashboard's `Tiket Terjual` KPI is `Σ EventOrderItem.quantity` over the PIC's orders
- * whose `paymentStatus = PAID` (`getMyPicOverview`), so that is exactly what this rolls up
- * per event:
+ * whose `paymentStatus = PAID` (`getMyPicOverview`). This section reads the SAME set — the
+ * KPI stays a ticket count and never becomes an order count:
  *
- *   paidOrders   the COUNT of those PAID orders. One order with three tickets is ONE order
- *                and THREE tickets, so the two columns are counted from two different tables
- *                (a `groupBy` over orders and a folded sum over their lines) rather than
- *                from a single row count that could only be one of the two numbers.
- *   ticketsSold  Σ `EventOrderItem.quantity` for those orders.
- *   sales        Σ `EventOrder.total` for those orders — the SAME stored column the fee
- *                section already calls "Total Penjualan" (`overview.grossSales`), never a
- *                recomputation from the current fee config, and never a new money formula.
- *                An event whose sales are zero therefore renders `Rp 0`, not a hidden
- *                column.
+ *   ticketQuantity  Σ `EventOrderItem.quantity` for THAT order (one grouped query for the
+ *                   whole page, never one query per row). One order with three tickets is
+ *                   ONE row and THREE tickets.
+ *   orderTotal      `EventOrder.total`, the stored column the fee section already reports as
+ *                   "Total Penjualan" (`overview.grossSales`) — never recomputed from the
+ *                   current fee config and never a second money formula.
+ *   totals          the FOOTER: order count, ticket count and sales over the WHOLE filtered
+ *                   set, read from `aggregate` — not summed from the page, which would make
+ *                   the footer shrink as the reader paged and disagree with the tile above.
  *
- * Because the set is the KPI's own set, the table's totals equal the tile above it by
- * construction; a test pins that (the two reads can never drift into describing two
- * different populations).
+ * ── THE EVENT FILTER IS A `where` KEY, NOT A POST-FILTER ─────────────────────
+ * `eventId` is an optional extra predicate on the same already-scoped query. Two consequences
+ * that matter:
  *
- * ── WHY ONLY EVENTS THAT HAVE SOLD ──────────────────────────────────────────
- * The rows come from a `groupBy` over PAID orders, so an assigned event with no paid order
- * simply has no row — this section is a sales summary, not a second copy of "Event Saya".
- * The page's empty state covers the "nothing sold yet" case explicitly.
+ *   * the row count, the pager, the footer totals and the rows all describe ONE narrowed set,
+ *     because they are all derived from the same `where`;
+ *   * a FOREIGN (or invented) event id cannot leak: the query is still scoped to the caller's
+ *     own `picProfileId`, so an event belonging to another PIC, another tenant, or nobody at
+ *     all narrows this PIC's own set to nothing. Isolation is by construction, not by a
+ *     lookup that has to remember to check.
  *
- * ── QUERY SHAPE ─────────────────────────────────────────────────────────────
- * Two aggregations plus one event-metadata lookup, whatever the number of events: the order
- * totals are grouped in the database, the ticket quantities are folded from a narrow
- * order-line projection (the same pattern `listMyPicAssignments` and the reports module
- * use), and the titles come from a single `findMany` over the resulting event ids. No query
- * per event and no query per order.
+ * What `parseTicketSalesEventId` validates is therefore only the value's SHAPE (single,
+ * trimmed, non-empty, length-bounded), never its existence — existence is not the caller's to
+ * assert.
  *
- * Everything is scoped by `requireMyPic`, so another PIC's orders on the SAME event are
- * invisible here exactly as they are in the KPI.
+ * ── THE EVENT SELECTOR OFFERS ONLY EVENTS THAT HAVE SOLD TO THIS PIC ─────────
+ * `eventOptions` comes from a separate `groupBy` over the PIC's PAID orders WITHOUT the
+ * active event filter, so the control keeps offering the other events after one is chosen.
+ * Only events with a PAID order are listed, which means every option is guaranteed to have
+ * rows — an option that could only ever render an empty table is not offered.
+ *
+ * ── PAGINATION IS SERVER-SIDE ───────────────────────────────────────────────
+ * `skip`/`take` on the order query and `total` counted by the database, so the page is a
+ * window over the filtered set rather than a slice of a set that was fetched whole. The
+ * caller's page size is clamped like every other PIC list.
+ *
+ * ── QUERY SHAPE: SIX QUERIES, WHATEVER THE NUMBER OF ORDERS ─────────────────
+ * Wave 1: the page of orders, one `aggregate` for the footer's orders+sales, one `aggregate`
+ * for the footer's tickets, and the option `groupBy`. Wave 2 (both need ids from wave 1): the
+ * per-order ticket quantities and the option event titles. Bounded by construction — no query
+ * per order and no query per option, and the read model never loads a set it then filters in
+ * JavaScript.
+ *
+ * Everything is scoped by `requireMyPic`, so another PIC's orders are invisible here exactly
+ * as they are in the KPI.
  */
-export async function getMyPicTicketSales(userId: string) {
+export const PIC_TICKET_SALES_PAGE_SIZE = 10;
+
+/**
+ * Narrow a query-string value to an event id, or `null` for "no filter".
+ *
+ * An event id is a `cuid`, not an enum member, so it cannot be narrowed against a static
+ * vocabulary the way `assignmentStatus` is. What is validated here is the SHAPE only — one
+ * value, trimmed, non-empty and inside the id column's length — so a hand-edited 10 KB
+ * "id" never reaches Prisma. Whether the event EXISTS is deliberately not asked: the id is
+ * only ever an extra `where` key on a query already scoped to the caller's own profile, so a
+ * foreign id is an empty result, not a lookup that could leak another PIC's event.
+ */
+export function parseTicketSalesEventId(
+    value: string | string[] | undefined
+): string | null {
+    const raw = Array.isArray(value) ? value[0] : value;
+    const trimmed = raw?.trim();
+
+    return trimmed && trimmed.length <= 64 ? trimmed : null;
+}
+
+export type PicTicketSalesFilters = {
+    /** One of the PIC's OWN events. `null` = every event it has sold in. */
+    eventId?: string | null;
+    page?: number;
+    limit?: number;
+};
+
+export async function getMyPicTicketSales(
+    userId: string,
+    filters: PicTicketSalesFilters = {}
+) {
     const { picProfileId } = await requireMyPic(userId, [
         PERMISSIONS.PIC_ATTRIBUTION_READ_OWN,
         PERMISSIONS.PIC_FEE_READ_OWN,
     ]);
 
-    const [orderGroups, paidItemRows] = await Promise.all([
-        prisma.eventOrder.groupBy({
-            by: ["eventId"],
-            where: { picProfileId, paymentStatus: "PAID" },
+    const page = Math.max(1, Math.trunc(filters.page ?? 1));
+    const limit = Math.max(
+        1,
+        Math.trunc(filters.limit ?? PIC_TICKET_SALES_PAGE_SIZE)
+    );
+    const eventId = filters.eventId ?? null;
+
+    /* ONE `where` for the rows, the count, the totals and the option set's complement: the
+     * table cannot show a row the footer did not count. */
+    const where: Prisma.EventOrderWhereInput = {
+        picProfileId,
+        paymentStatus: "PAID",
+        ...(eventId ? { eventId } : {}),
+    };
+
+    const [orders, orderTotals, ticketTotals, optionGroups] = await Promise.all([
+        prisma.eventOrder.findMany({
+            where,
+            select: {
+                id: true,
+                orderNumber: true,
+                eventId: true,
+                total: true,
+                status: true,
+                paymentStatus: true,
+                createdAt: true,
+                event: { select: { title: true, slug: true } },
+            },
+            // Newest sale first, with the order number breaking a timestamp tie so a page
+            // boundary cannot repeat or skip a row between two renders of unchanged data.
+            orderBy: [{ createdAt: "desc" }, { orderNumber: "desc" }],
+            skip: (page - 1) * limit,
+            take: limit,
+        }),
+        // Footer orders + sales in ONE query: the count and the money sum describe the same
+        // filtered set the rows were drawn from, not the current page.
+        prisma.eventOrder.aggregate({
+            where,
             _count: { _all: true },
             _sum: { total: true },
         }),
-        prisma.eventOrderItem.findMany({
-            where: { order: { picProfileId, paymentStatus: "PAID" } },
-            select: { quantity: true, order: { select: { eventId: true } } },
+        // Footer tickets: `Σ EventOrderItem.quantity` over the SAME filtered orders — the KPI's
+        // own definition, so the footer and the tile agree by construction.
+        prisma.eventOrderItem.aggregate({
+            _sum: { quantity: true },
+            where: { order: where },
+        }),
+        // The selector's options: every event this PIC has actually SOLD in, deliberately NOT
+        // narrowed by the active event filter, so choosing one does not hide the others.
+        prisma.eventOrder.groupBy({
+            by: ["eventId"],
+            where: { picProfileId, paymentStatus: "PAID" },
         }),
     ]);
 
-    const eventIds = orderGroups.map((group) => group.eventId);
+    const orderIds = orders.map((order) => order.id);
+    const optionEventIds = optionGroups.map((group) => group.eventId);
 
-    if (eventIds.length === 0) {
-        return {
-            items: [] as {
-                eventId: string;
-                eventTitle: string;
-                eventSlug: string | null;
-                paidOrders: number;
-                ticketsSold: number;
-                sales: Prisma.Decimal;
-            }[],
-            totals: { paidOrders: 0, ticketsSold: 0, sales: ZERO },
-        };
+    const [ticketGroups, optionEvents] = await Promise.all([
+        // One grouped query for the whole page of orders — never one query per row. It is
+        // asked ONLY for the ids on this page, which is why it is bounded by the page size.
+        prisma.eventOrderItem.groupBy({
+            by: ["orderId"],
+            where: { orderId: { in: orderIds } },
+            _sum: { quantity: true },
+        }),
+        prisma.event.findMany({
+            where: { id: { in: optionEventIds } },
+            select: { id: true, title: true },
+            orderBy: { title: "asc" },
+        }),
+    ]);
+
+    const ticketsByOrder = new Map<string, number>();
+
+    for (const group of ticketGroups) {
+        ticketsByOrder.set(group.orderId, group._sum.quantity ?? 0);
     }
 
-    const events = await prisma.event.findMany({
-        where: { id: { in: eventIds } },
-        select: { id: true, title: true, slug: true },
+    const total = orderTotals._count._all;
+
+    return {
+        items: orders.map((order) => ({
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            eventId: order.eventId,
+            eventTitle: order.event.title,
+            eventSlug: order.event.slug,
+            orderStatus: order.status,
+            paymentStatus: order.paymentStatus,
+            ticketQuantity: ticketsByOrder.get(order.id) ?? 0,
+            orderTotal: order.total,
+            createdAt: order.createdAt.toISOString(),
+        })),
+        totals: {
+            orders: total,
+            ticketsSold: ticketTotals._sum.quantity ?? 0,
+            sales: orderTotals._sum.total ?? ZERO,
+        },
+        eventOptions: optionEvents,
+        pagination: {
+            page,
+            limit,
+            total,
+            totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+    };
+}
+
+/**
+ * ONE order the PIC is credited with — the read behind the PIC's own order detail.
+ *
+ * ── WHY THIS IS A PIC-SIDE READ, NOT A SECOND VIEW OF `/dashboard/orders` ───────
+ * The operator order page resolves orders through `order.read.tenant`, and the buyer's
+ * `/ticketing/orders/{n}` resolves them through order OWNERSHIP. A referrer holds neither for
+ * an order somebody else bought, so both are (correctly) a 404 to them — which is why the
+ * ticket-sales table cannot link there. This read answers the same question from the PIC's own
+ * authority: `picProfileId = the caller's profile`, with the order number as a lookup key.
+ *
+ * The order number is an argument, never an authority: it is AND-ed with `picProfileId`, so an
+ * order that exists but was not attributed to this PIC, belongs to another tenant, or belongs
+ * to nobody resolves to `null` — the caller renders the not-found boundary, exactly like the
+ * operator and buyer detail pages do for a row the caller may not read. There is no separate
+ * "may I see this?" check to forget, because a foreign row was never in the result set.
+ *
+ * ── WHAT IT DELIBERATELY DOES NOT SELECT ────────────────────────────────────
+ * No buyer identity (name, e-mail, phone), no payment instruction, no QR material, no ticket
+ * codes, no organizer/platform money columns and no PIC fee rows. The referrer needs to
+ * recognise the SALE — its number, event, lines and amounts — and that is all this payload
+ * carries. Buyer data belongs to the buyer; the fee belongs to `#fees`/the ledger reads.
+ */
+export async function getMyPicOrder(userId: string, orderNumber: string) {
+    const { picProfileId } = await requireMyPic(userId, [
+        PERMISSIONS.PIC_ATTRIBUTION_READ_OWN,
+    ]);
+
+    const order = await prisma.eventOrder.findFirst({
+        // `orderNumber` is unique, so this is ONE row; `picProfileId` is the scope. A guessed
+        // number that was not attributed to this PIC is `null`, not another PIC's order.
+        where: { orderNumber, picProfileId },
+        select: {
+            orderNumber: true,
+            status: true,
+            paymentStatus: true,
+            currency: true,
+            subtotal: true,
+            discount: true,
+            total: true,
+            paidAt: true,
+            createdAt: true,
+            event: { select: { title: true, slug: true, startAt: true } },
+            items: {
+                select: {
+                    id: true,
+                    nameSnapshot: true,
+                    priceSnapshot: true,
+                    quantity: true,
+                    subtotal: true,
+                },
+                orderBy: { createdAt: "asc" },
+            },
+        },
     });
 
-    const eventById = new Map(events.map((event) => [event.id, event]));
-
-    const ticketsByEvent = new Map<string, number>();
-
-    for (const item of paidItemRows) {
-        const eventId = item.order.eventId;
-        ticketsByEvent.set(eventId, (ticketsByEvent.get(eventId) ?? 0) + item.quantity);
+    if (!order) {
+        return null;
     }
 
-    // Best sellers first; the sales figure breaks a ticket tie deterministically so the table
-    // does not reshuffle between two renders of unchanged data.
-    const items = orderGroups
-        .map((group) => ({
-            eventId: group.eventId,
-            eventTitle: eventById.get(group.eventId)?.title ?? "—",
-            eventSlug: eventById.get(group.eventId)?.slug ?? null,
-            paidOrders: group._count._all,
-            ticketsSold: ticketsByEvent.get(group.eventId) ?? 0,
-            sales: group._sum.total ?? ZERO,
-        }))
-        .sort(
-            (left, right) =>
-                right.ticketsSold - left.ticketsSold || right.sales.comparedTo(left.sales)
-        );
-
-    const totals = items.reduce(
-        (accumulator, item) => ({
-            paidOrders: accumulator.paidOrders + item.paidOrders,
-            ticketsSold: accumulator.ticketsSold + item.ticketsSold,
-            sales: accumulator.sales.add(item.sales),
-        }),
-        { paidOrders: 0, ticketsSold: 0, sales: ZERO }
-    );
-
-    return { items, totals };
+    return {
+        orderNumber: order.orderNumber,
+        status: order.status,
+        paymentStatus: order.paymentStatus,
+        currency: order.currency,
+        subtotal: order.subtotal,
+        discount: order.discount,
+        total: order.total,
+        paidAt: order.paidAt?.toISOString() ?? null,
+        createdAt: order.createdAt.toISOString(),
+        eventTitle: order.event.title,
+        eventSlug: order.event.slug,
+        eventStartAt: order.event.startAt.toISOString(),
+        // The row count and the ticket count come from the SAME lines, so the header cannot
+        // claim a different order size than the table below it.
+        ticketQuantity: order.items.reduce(
+            (sum, item) => sum + item.quantity,
+            0
+        ),
+        items: order.items.map((item) => ({
+            id: item.id,
+            name: item.nameSnapshot,
+            price: item.priceSnapshot,
+            quantity: item.quantity,
+            subtotal: item.subtotal,
+        })),
+    };
 }
 
 /** The PIC's posted fee figures from the append-only ledger — `pic_fee.read.own`. */

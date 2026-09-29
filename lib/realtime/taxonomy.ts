@@ -287,6 +287,15 @@ export const PAGE_DOMAIN_MAP: readonly PageDomainEntry[] = [
     },
     { prefix: "/dashboard/orders/", domains: ["orders", "payments", "refunds", "tickets"] },
     { prefix: "/dashboard/settlements/", domains: ["settlements", "ledger", "pic"] },
+    /*
+     * The PIC's own order detail reads the ORDER families (the order row and its ticket lines),
+     * not only the PIC ones — an order/payment/ticket event must refresh the page it is shown on,
+     * while the ledger domains stay on the dashboard's own prefix above.
+     */
+    {
+        prefix: "/dashboard/pic/orders/",
+        domains: ["orders", "tickets", "pic", "attribution"],
+    },
     { prefix: "/dashboard/pic/", domains: ["pic", "attribution", "ledger", "settlements", "events"] },
     { prefix: "/dashboard/settings/application", domains: [] },
     { prefix: "/dashboard/settings/branding", domains: [] },
