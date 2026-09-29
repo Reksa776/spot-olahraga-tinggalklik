@@ -883,6 +883,11 @@ async function PicSelfServiceSection({
                  * to the order detail behind each one. The event selector narrows the SAME `where`
                  * the rows, the footer totals and the pager all read, so the three cannot describe
                  * different sets.
+                 *
+                 * The row granularity is not an implementation detail here, it is the contract, so
+                 * it is visible in the header: `Event | Nomor Pesanan | Jumlah Tiket | Penjualan`.
+                 * Two PAID orders on ONE event are TWO rows — never one row whose ticket count is
+                 * the event's. `Jumlah Tiket` and `Penjualan` are that ORDER's own figures.
                  */}
                 <div id="tickets-sold" className="scroll-mt-16">
                     <SectionCard
@@ -924,15 +929,18 @@ async function PicSelfServiceSection({
                             <DataTable
                                 minWidth={820}
                                 columns={[
-                                    { header: "No. Pesanan" },
                                     { header: "Event" },
+                                    { header: "Nomor Pesanan" },
                                     { header: "Jumlah Tiket", align: "right" },
-                                    { header: "Total Pesanan", align: "right" },
+                                    { header: "Penjualan", align: "right" },
                                     { header: "Status Pembayaran" },
                                 ]}
                                 rows={ticketSales.items.map((sale) => ({
                                     key: sale.orderId,
                                     cells: [
+                                        <span key="event" className="text-sm">
+                                            {sale.eventTitle}
+                                        </span>,
                                         <TextLink
                                             key="order"
                                             href={`/dashboard/pic/orders/${sale.orderNumber}`}
@@ -941,9 +949,6 @@ async function PicSelfServiceSection({
                                                 {sale.orderNumber}
                                             </span>
                                         </TextLink>,
-                                        <span key="event" className="text-sm">
-                                            {sale.eventTitle}
-                                        </span>,
                                         <span
                                             key="tickets"
                                             className="text-sm font-semibold tabular-nums"

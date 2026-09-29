@@ -39,7 +39,7 @@
  * ── V4: `Tiket Terjual` IS ONE ROW PER ORDER, AND FILTERABLE BY EVENT ────────────
  * The section used to be an EVENT-level rollup, which answered "where are tickets moving?"
  * but not "which order produced this sale?". It is now one row per PAID order
- * (`No. Pesanan | Event | Jumlah Tiket | Total Pesanan | Status Pembayaran`), each order
+ * (`Event | Nomor Pesanan | Jumlah Tiket | Penjualan | Status Pembayaran`), each order
  * number linking to the PIC's OWN order detail, with an event filter
  * (`?ticketSalesEventId=`) that runs in the read model. The KPI is unchanged: it still counts
  * `Σ EventOrderItem.quantity`, not orders. What is pinned here is the SURFACE — the columns,
@@ -258,20 +258,64 @@ describe("every KPI fragment resolves to an anchor the page declares", () => {
         expect(page).toContain("attribution.ticketQuantity");
 
         // …and the sales table: one row per PAID ORDER, fed by the dedicated read model. The
-        // five required columns, in order, and no event-level "Pesanan Lunas" rollup column.
+        // four required columns in the requested order — Event, Nomor Pesanan, Jumlah Tiket,
+        // Penjualan — plus the payment state, and no event-level "Pesanan Lunas" rollup column.
         expect(page).toContain("getMyPicTicketSales(userId, {");
         expect(page).toContain("ticketSales.items.map");
         expect(page).toContain("ticketSales.totals.ticketsSold");
-        expect(page).toContain('{ header: "No. Pesanan" }');
+        expect(page).toContain('{ header: "Event" }');
+        expect(page).toContain('{ header: "Nomor Pesanan" }');
         expect(page).toContain('{ header: "Jumlah Tiket", align: "right" }');
-        expect(page).toContain('{ header: "Total Pesanan", align: "right" }');
+        expect(page).toContain('{ header: "Penjualan", align: "right" }');
         expect(page).toContain('{ header: "Status Pembayaran" }');
         expect(page).not.toContain('{ header: "Pesanan Lunas", align: "right" }');
+
+        // The columns are declared in that ORDER, so the row cannot be read as an event rollup
+        // with a leading order number. Read off the source rather than asserted per header, so
+        // a reordering of the `columns` array fails here instead of passing on five members.
+        const salesSection = page.slice(page.indexOf('id="tickets-sold"'));
+        const columnBlock = salesSection.slice(
+            salesSection.indexOf("columns={["),
+            salesSection.indexOf("rows={ticketSales.items.map")
+        );
+        const headers = [...columnBlock.matchAll(/header: "([^"]+)"/g)].map(
+            (match) => match[1]
+        );
+        expect(headers).toEqual([
+            "Event",
+            "Nomor Pesanan",
+            "Jumlah Tiket",
+            "Penjualan",
+            "Status Pembayaran",
+        ]);
 
         // The quantity is the ORDER's own line sum, never an event aggregate.
         expect(page).toContain("sale.ticketQuantity");
         expect(page).not.toContain("sale.ticketsSold");
         expect(page).not.toContain("sale.paidOrders");
+    });
+
+    it("renders every cell under the header it belongs to", () => {
+        const page = read(PIC_PAGE);
+        const salesSection = page.slice(page.indexOf('id="tickets-sold"'));
+        const rowsBlock = salesSection.slice(
+            salesSection.indexOf("cells: ["),
+            salesSection.indexOf("footer={")
+        );
+        const keys = [...rowsBlock.matchAll(/key="([^"]+)"/g)].map((match) => match[1]);
+
+        // `cells` is positional, so a header moved without its cell would silently relabel the
+        // table — the money under `Jumlah Tiket`, say. The two lists are read in source order and
+        // must describe the same table.
+        expect(keys).toEqual(["event", "order", "tickets", "total", "payment"]);
+        expect(keys).toHaveLength(5);
+
+        // And each one really carries its own value.
+        expect(rowsBlock).toContain("{sale.eventTitle}");
+        expect(rowsBlock).toContain("{sale.orderNumber}");
+        expect(rowsBlock).toContain("{sale.ticketQuantity}");
+        expect(rowsBlock).toContain("value={formatIdr(Number(sale.orderTotal))}");
+        expect(rowsBlock).toContain("PAYMENT_STATUS_LABELS[sale.paymentStatus]");
     });
 
     it("links each order number to the PIC's own order detail, not a tenant page", () => {
