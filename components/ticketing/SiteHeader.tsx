@@ -10,7 +10,11 @@ import Brand from "./Brand";
 import MobileMenuLinks from "./MobileMenuLinks";
 import SearchBar from "./SearchBar";
 import SiteSignOut from "./SiteSignOut";
-import { HEADER_NAV_VARIANT, type HeaderNavVariant } from "./header-nav";
+import {
+    HEADER_NAV_DISABLED,
+    HEADER_NAV_VARIANT,
+    type HeaderNavVariant,
+} from "./header-nav";
 
 /**
  * ==========================================
@@ -54,8 +58,27 @@ const MOBILE_NAV = NAV.filter((item) => item.mobile);
  */
 const DASHBOARD_NAV_LABEL = "Dashboard";
 
-/** The organiser call to action, as one definition shared by the desktop link and the drawer. */
-const BUAT_EVENT_ITEM = { href: "/dashboard/events", label: "Buat event" } as const;
+/**
+ * ==========================================
+ * THE ORGANISER CALL TO ACTION — VISIBLE, DISABLED, AND UNROUTABLE
+ * ==========================================
+ *
+ * It is ONE definition, shared by the desktop control and the drawer row, and it is deliberately
+ * a definition with NO `href`. That is the difference between a disabled item and a clickable
+ * one that merely pretends: a route in scope is a route some later edit can wire up, and an `<a>`
+ * carrying an `href` navigates on click, on Enter, on middle-click and on "open in new tab" —
+ * none of which a `preventDefault` handler reliably covers. With no target to point at, the two
+ * renderings both have to draw a NON-interactive control, and the disabled state is structural
+ * rather than a behaviour that could drift back.
+ *
+ * `disabled: true` is what the drawer row reads to pick that non-interactive rendering; the label
+ * stays here so the surfaces cannot disagree about what the CTA says.
+ *
+ * NOTHING WAS REMOVED FROM THE PRODUCT: `/dashboard/events` (the create-event page) still exists
+ * and is still reached from the dashboard's own navigation and from the public `/events` empty
+ * state. Only this header entry point is switched off.
+ */
+const BUAT_EVENT_ITEM = { label: "Buat event", disabled: true } as const;
 
 /** One link rendered by the desktop row and pushed into the mobile drawer. */
 export type HeaderNavItem = {
@@ -144,6 +167,36 @@ export function DesktopNavLinks({ items }: { items: HeaderNavItem[] }) {
                 </Link>
             ))}
         </>
+    );
+}
+
+/**
+ * THE DESKTOP CTA — "Buat event", present and switched off.
+ *
+ * A `<button type="button" disabled>` rather than a styled `<span>`, and rather than an `<a>`
+ * with a handler: `disabled` is the one mechanism the browser, the keyboard and assistive
+ * technology all agree on. It takes the control out of the tab order, suppresses every click
+ * path at the source — plain click, middle-click, "open in new tab", Enter and Space — and is
+ * announced as unavailable. There is no `href` in scope to render and no handler that could
+ * fire, so there is nothing left that could navigate.
+ *
+ * Exported and pure, exactly like `DesktopNavLinks` and for the same reason: a test can render
+ * the REAL control and assert the markup a browser would receive, so "no navigation" is proven
+ * against output rather than against the source text.
+ */
+export function BuatEventAction() {
+    return (
+        <button
+            type="button"
+            disabled
+            className={cn(
+                HEADER_NAV_VARIANT.primary,
+                HEADER_NAV_DISABLED,
+                "hidden xl:inline-flex"
+            )}
+        >
+            {BUAT_EVENT_ITEM.label}
+        </button>
     );
 }
 
@@ -254,12 +307,17 @@ export default async function SiteHeader() {
                             {/*
                              * THE SIGNED-IN ROW. "Dashboard" and "Pesanan saya" are quiet nav
                              * links, "Tiket saya" and "Keluar" are bordered secondary controls,
-                             * and "Buat event" beside them is the ONE primary action — all four
-                             * drawn on the shared nav geometry so the row reads as one system
-                             * rather than as buttons of four different sizes.
+                             * and "Buat event" beside them keeps the primary CTA's geometry —
+                             * dimmed, because that one is DISABLED. Every item is drawn on the
+                             * shared nav geometry so the row reads as one system rather than as
+                             * buttons of four different sizes.
                              *
                              * The Dashboard row's href comes from `signedInNavItems`, i.e. from
                              * the account's platform role. It is NOT a constant.
+                             *
+                             * `BuatEventAction` sits OUTSIDE this ternary, so the disabled CTA
+                             * shows for guests and signed-in visitors alike — the entry point is
+                             * hidden from everyone, not conditionally.
                              */}
                             <DesktopNavLinks items={navItems} />
                             <SiteSignOut />
@@ -276,15 +334,7 @@ export default async function SiteHeader() {
                         </Link>
                     )}
 
-                    <Link
-                        href={BUAT_EVENT_ITEM.href}
-                        className={cn(
-                            HEADER_NAV_VARIANT.primary,
-                            "hidden xl:inline-flex"
-                        )}
-                    >
-                        {BUAT_EVENT_ITEM.label}
-                    </Link>
+                    <BuatEventAction />
 
                     <MobileMenu signedIn={signedIn} navItems={navItems} />
                 </div>
@@ -320,7 +370,9 @@ function MobileMenu({
     /*
      * THE DRAWER'S ROWS, TOP TO BOTTOM: the search field above this list, then the public rows
      * the MOBILE surface declares (`MOBILE_NAV` — "Event"), then the session-dependent rows
-     * (the signed-in item list, or "Masuk" for a guest), then the organiser call to action.
+     * (the signed-in item list, or "Masuk" for a guest), then the organiser call to action —
+     * `BUAT_EVENT_ITEM`, which carries `disabled: true` and no `href`, so `MobileMenuLinks`
+     * renders its row as a native disabled `<button>` instead of an anchor.
      *
      * The old third row — a second `{ /events, "Semua event" }` entry — is gone. It pointed at
      * the SAME destination as "Event", so it was never a second entry point, only a duplicate

@@ -60,4 +60,26 @@ export const HEADER_NAV_VARIANT = {
     primary: cn(HEADER_NAV_ITEM, "bg-ink-900 text-white hover:bg-ink-800"),
 } as const;
 
+/**
+ * ==========================================
+ * THE DISABLED OVERRIDE — ONE TREATMENT, LAYERED ONTO A VARIANT
+ * ==========================================
+ *
+ * Disabled is a STATE, not a fourth colour role, so it is not a key in `HEADER_NAV_VARIANT`: the
+ * item keeps the variant it always had (`primary`) and this is merged on top of it. That keeps
+ * `HeaderNavVariant` meaning "the semantic roles an item can be assigned" and keeps the disabled
+ * control unmistakably the SAME control as before, merely switched off.
+ *
+ * `cursor-not-allowed` tells a pointer user WHY the click does nothing, and `opacity-40` dims the
+ * item without changing a single colour token, so it still reads as the primary CTA.
+ *
+ * `hover:bg-ink-900` is not decoration. The element carries `primary` too, and `cn` is
+ * `tailwind-merge`: this restates the BASE colour for the hover state and therefore DROPS
+ * `primary`'s `hover:bg-ink-800`. Without it the item would still brighten under the pointer —
+ * the one cue that says "clickable" — on an item that is not. Styling only: nothing here needs
+ * hydration, so the control looks the same before and after it.
+ */
+export const HEADER_NAV_DISABLED =
+    "cursor-not-allowed opacity-40 hover:bg-ink-900";
+
 export type HeaderNavVariant = keyof typeof HEADER_NAV_VARIANT;
