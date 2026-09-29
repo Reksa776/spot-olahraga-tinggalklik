@@ -1251,6 +1251,19 @@ model CheckIn {
 model Payment {
   id                  String             @id @default(cuid())
   orderId             String
+  /// ── THE ACTIVE-ATTEMPT INVARIANT (BUG-01 / BUG-02) ────────────────────────────
+  /// Equals `orderId` while this attempt is NON-TERMINAL (`UNPAID`/`PENDING`), and is
+  /// cleared to NULL the moment the attempt reaches a terminal status. The UNIQUE index
+  /// below therefore admits AT MOST ONE active attempt per order — while letting any
+  /// number of terminal attempts accumulate as history — as a structural guarantee that
+  /// does not depend on any read-then-write check in application code. MySQL/MariaDB
+  /// treat multiple NULLs as distinct in a unique index, so terminal rows never collide.
+  ///
+  /// The atomic half of the fix is the transactional claim in
+  /// `lib/ticketing/payment/service.ts`, which serializes on the `eventorder` row; this
+  /// column is the durable half, so even a caller that bypassed the claim cannot create a
+  /// second active attempt for one order.
+  activeOrderId       String?
   organizerId         String
   provider            String             @default("ipaymu")
   providerEnvironment PaymentEnvironment
@@ -1315,6 +1328,7 @@ model Payment {
   transactions  PaymentTransaction[]
   webhookEvents WebhookEvent[]
 
+  @@unique([activeOrderId])
   @@index([orderId, status])
   @@index([organizerId, status])
   @@index([status, expiresAt])

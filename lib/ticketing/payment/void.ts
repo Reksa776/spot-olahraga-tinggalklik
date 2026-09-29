@@ -52,7 +52,10 @@ export async function voidOpenPayments(
             orderId,
             status: { in: [...VOIDABLE_PAYMENT_STATUSES] },
         },
-        data: { status: to },
+        // `activeOrderId` is released in the SAME write as the terminal status, so the
+        // durable "one active attempt" index (BUG-01 / BUG-02) never holds a dead attempt:
+        // a voided session must not block a later, legitimate attempt.
+        data: { status: to, activeOrderId: null },
     });
 
     return updated.count;

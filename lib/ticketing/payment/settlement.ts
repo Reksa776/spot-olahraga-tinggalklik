@@ -244,7 +244,9 @@ async function settlePaymentRow(
             id: input.paymentId,
             status: { in: ["UNPAID", "PENDING"] },
         },
-        data: { status: "PAID" },
+        // `activeOrderId` is released together with the terminal status so the durable
+        // one-active-attempt index (BUG-01 / BUG-02) only ever covers live attempts.
+        data: { status: "PAID", activeOrderId: null },
     });
 
     if (cas.count === 0) {
@@ -780,7 +782,8 @@ export async function failVerifiedPayment(input: {
                             id: input.paymentId,
                             status: { in: ["UNPAID", "PENDING"] },
                         },
-                        data: { status: "FAILED" },
+                        // A failed attempt releases the active slot so a retry is possible.
+                        data: { status: "FAILED", activeOrderId: null },
                     });
                 }
 

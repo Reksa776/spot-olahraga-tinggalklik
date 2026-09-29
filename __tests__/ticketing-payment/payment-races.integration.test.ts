@@ -232,6 +232,29 @@ describe("H. concurrent payment creation", () => {
 
         const winner = created[0];
 
+        // ── BUG-01 / BUG-02 INVARIANTS ───────────────────────────────────────────
+        // Exactly ONE active attempt exists for this order, and no second payable
+        // reference (`…#2`) was minted. This is the durable half of the fix: even if the
+        // row lock were bypassed, the unique `activeOrderId` index admits only one.
+        const activeRows = await prisma.payment.findMany({
+            where: {
+                orderId: order.orderId,
+                status: { in: ["UNPAID", "PENDING"] },
+            },
+            select: { paymentReference: true },
+        });
+
+        expect(activeRows).toHaveLength(1);
+        expect(activeRows[0].paymentReference).toBe(winner.paymentReference);
+
+        const everyRow = await prisma.payment.findMany({
+            where: { orderId: order.orderId },
+            select: { paymentReference: true },
+        });
+
+        expect(everyRow).toHaveLength(1);
+        expect(everyRow.some((r) => r.paymentReference.includes("#"))).toBe(false);
+
         // Every other attempt is either a safe resume of that session or a refusal — never
         // a second gateway payment.
         for (const attempt of attempts) {

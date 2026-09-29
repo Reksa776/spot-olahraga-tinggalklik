@@ -12,10 +12,39 @@ import SearchBar from "./SearchBar";
 import SiteSignOut from "./SiteSignOut";
 import { HEADER_NAV_VARIANT, type HeaderNavVariant } from "./header-nav";
 
+/**
+ * ==========================================
+ * THE PUBLIC NAV — ONE LIST, TWO SURFACES, TWO SUBSETS
+ * ==========================================
+ *
+ * The public links of the discovery header, declared ONCE. The desktop row renders all of them;
+ * the mobile drawer renders the subset whose `mobile` flag is set.
+ *
+ * ── WHY THE FLAG IS ON THE ITEM, NOT IN A SECOND ARRAY ──────────────────────────
+ * A separate `MOBILE_NAV` array would be a second hand-maintained copy of `href` + `label`, and
+ * the two copies would eventually disagree about one of them — the exact drift this file's
+ * "ONE list" argument exists to prevent (see `signedInNavItems`). One list plus a per-surface
+ * inclusion flag keeps ONE definition of each item, so order, `href` and `label` cannot diverge
+ * between the surfaces; only membership is decided per surface.
+ *
+ * ── WHY "Cabang olahraga" IS DESKTOP-ONLY ───────────────────────────────────────
+ * At 375px the drawer is a compact, session-dependent menu — [Search event] [Event] [signed-in
+ * items | Masuk] [Buat event] — and that is the row set this surface is specified to show.
+ * "Cabang olahraga" is a deep link into the homepage section (`/events#cabang-olahraga`).
+ * NOTHING IS REMOVED FROM THE PRODUCT BY DROPPING IT HERE: the section still renders on `/`, and
+ * the link is still offered by the desktop row, by the footer's `EXPLORE` list (`SiteFooter`) and
+ * by the homepage section header's own action. No route changed.
+ */
 const NAV = [
-    { href: "/events", label: "Event" },
-    { href: "/events#cabang-olahraga", label: "Cabang olahraga" },
+    { href: "/events", label: "Event", mobile: true },
+    { href: "/events#cabang-olahraga", label: "Cabang olahraga", mobile: false },
 ];
+
+/**
+ * The drawer's share of `NAV` — the public rows the MOBILE surface shows. Derived, never
+ * hand-written, so it cannot fall behind `NAV`. See the flag's docblock above.
+ */
+const MOBILE_NAV = NAV.filter((item) => item.mobile);
 
 /**
  * The label of the back-office entrance, in ONE place so the desktop link and the mobile
@@ -288,9 +317,18 @@ function MobileMenu({
     /** Built once by `SiteHeader` from the session's platform role. */
     navItems: HeaderNavItem[];
 }) {
+    /*
+     * THE DRAWER'S ROWS, TOP TO BOTTOM: the search field above this list, then the public rows
+     * the MOBILE surface declares (`MOBILE_NAV` — "Event"), then the session-dependent rows
+     * (the signed-in item list, or "Masuk" for a guest), then the organiser call to action.
+     *
+     * The old third row — a second `{ /events, "Semua event" }` entry — is gone. It pointed at
+     * the SAME destination as "Event", so it was never a second entry point, only a duplicate
+     * row in a 375px menu. The label itself is untouched everywhere it means something: the
+     * footer's `EXPLORE` list and the homepage section header's action.
+     */
     const items = [
-        ...NAV,
-        { href: "/events", label: "Semua event" },
+        ...MOBILE_NAV,
         ...(signedIn ? navItems : [{ href: "/login", label: "Masuk" }]),
         BUAT_EVENT_ITEM,
     ];

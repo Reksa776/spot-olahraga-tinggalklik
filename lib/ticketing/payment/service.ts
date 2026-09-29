@@ -1,4 +1,9 @@
-import { Prisma, type Payment, type PaymentMethod } from "@prisma/client";
+import {
+    Prisma,
+    type Payment,
+    type PaymentEnvironment,
+    type PaymentMethod,
+} from "@prisma/client";
 
 import type { NextRequest } from "next/server";
 
@@ -10,6 +15,11 @@ import { prisma } from "@/lib/prisma";
 import { publishPaymentCreated, publishPaymentUpdated } from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
+import {
+    withContentionRetry,
+    type ContentionRetryResult,
+} from "../db-contention";
+import { lockEventOrderRow } from "../order-lock";
 import { moneyString } from "../order-payload";
 import { countHeldReservations } from "../reservations";
 import {
@@ -195,6 +205,28 @@ function isLive(status: string): boolean {
     return (ACTIVE_PAYMENT_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * Does this attempt carry something the buyer can actually pay with?
+ *
+ * ── WHY THIS IS NOT THE "IS THERE AN ATTEMPT?" TEST (BUG-01 / BUG-02) ────────────
+ * ACTIVITY is decided by `status` alone (`UNPAID`/`PENDING`). This predicate only
+ * distinguishes a session that is USABLE from one whose provider call is still IN FLIGHT,
+ * which is the difference between "resume this" and "PAYMENT_CREATION_IN_PROGRESS".
+ * Using it to decide whether an attempt EXISTS was the original defect: a committed claim
+ * row with no instrument yet looked like "no attempt", so a second one was created.
+ */
+function hasProviderInstrument(payment: {
+    paymentUrl: string | null;
+    qrString: string | null;
+    paymentNumber: string | null;
+}): boolean {
+    return (
+        payment.paymentUrl !== null ||
+        payment.qrString !== null ||
+        payment.paymentNumber !== null
+    );
+}
+
 /** The order fields this module needs, all loaded through the ownership predicate. */
 type PayableOrder = {
     id: string;
@@ -255,16 +287,18 @@ async function requireOwnOrderForPayment(
 }
 
 /**
- * Everything that must be true before a provider session may be opened (brief §7).
+ * The status / already-paid / expiry half of the payable gate.
  *
- * Ordered so the cheapest and most specific refusal comes first, and each one carries a
- * machine-readable `reason` so a UI can explain the state without parsing prose.
- *
- * `now` is passed in rather than read, so the whole gate is testable with a frozen clock
- * — which is what lets the expiry-race tests run deterministically.
+ * Extracted so the SAME three checks run twice: once against the pre-read snapshot (a fast,
+ * specific refusal before any write) and once against the order row read INSIDE the locked
+ * claim transaction. The second run is what makes the claim correct under concurrency — a
+ * settlement or cancellation that won the order row between the two reads is caught.
  */
-async function assertOrderPayable(order: PayableOrder, now: Date): Promise<void> {
-    if (order.status !== "PENDING_PAYMENT") {
+function assertOrderStatePayable(
+    state: { status: string; paymentStatus: string; expiresAt: Date | null },
+    now: Date
+): void {
+    if (state.status !== "PENDING_PAYMENT") {
         // Covers PAID (already settled), CANCELLED (buyer cancelled) and EXPIRED (TTL
         // elapsed). Design §12.3: none of these may be resurrected into a payable state,
         // and restarting an expired or cancelled order is a *repayment*, which is
@@ -272,24 +306,24 @@ async function assertOrderPayable(order: PayableOrder, now: Date): Promise<void>
         throw new AppError(ERROR_CODES.ORDER_NOT_PAYABLE, {
             message: "Pesanan ini tidak dapat dibayar.",
             details: {
-                status: order.status,
+                status: state.status,
                 reason:
-                    order.status === "PAID"
+                    state.status === "PAID"
                         ? "ALREADY_PAID"
-                        : order.status === "CANCELLED"
+                        : state.status === "CANCELLED"
                           ? "ORDER_CANCELLED"
                           : "ORDER_EXPIRED",
                 /** Points at the open decision rather than implying a missing feature. */
                 decision:
-                    order.status === "PAID" ? null : "D-09_REPAYMENT_PRICING",
+                    state.status === "PAID" ? null : "D-09_REPAYMENT_PRICING",
             },
         });
     }
 
-    if (order.paymentStatus === "PAID") {
+    if (state.paymentStatus === "PAID") {
         throw new AppError(ERROR_CODES.ORDER_NOT_PAYABLE, {
             message: "Pesanan ini sudah dibayar.",
-            details: { paymentStatus: order.paymentStatus, reason: "ALREADY_PAID" },
+            details: { paymentStatus: state.paymentStatus, reason: "ALREADY_PAID" },
         });
     }
 
@@ -301,15 +335,28 @@ async function assertOrderPayable(order: PayableOrder, now: Date): Promise<void>
     // is never asked to open a session for an order the platform already considers
     // expired — which is the customer-money hazard D-16 exists to prevent, closed here
     // independently of whether the provider's own window agrees.
-    if (order.expiresAt !== null && order.expiresAt.getTime() <= now.getTime()) {
+    if (state.expiresAt !== null && state.expiresAt.getTime() <= now.getTime()) {
         throw new AppError(ERROR_CODES.ORDER_NOT_PAYABLE, {
             message: "Waktu pembayaran pesanan ini sudah habis.",
             details: {
-                expiresAt: order.expiresAt.toISOString(),
+                expiresAt: state.expiresAt.toISOString(),
                 reason: "PAYMENT_WINDOW_ELAPSED",
             },
         });
     }
+}
+
+/**
+ * Everything that must be true before a provider session may be opened (brief §7).
+ *
+ * Ordered so the cheapest and most specific refusal comes first, and each one carries a
+ * machine-readable `reason` so a UI can explain the state without parsing prose.
+ *
+ * `now` is passed in rather than read, so the whole gate is testable with a frozen clock
+ * — which is what lets the expiry-race tests run deterministically.
+ */
+async function assertOrderPayable(order: PayableOrder, now: Date): Promise<void> {
+    assertOrderStatePayable(order, now);
 
     // ── Reservations must still be held (brief §7 item 5) ────────────────────────
     // Settlement converts `HELD` rows into sales. Paying an order whose holds are gone
@@ -355,11 +402,13 @@ async function assertOrderPayable(order: PayableOrder, now: Date): Promise<void>
  * "`Payment.(orderId)` where `status IN (PENDING, UNPAID)` ... Returns the existing
  * `paymentUrl` rather than creating a second session."
  *
- * A row WITHOUT a `paymentUrl` is deliberately not "live": it is either a claim whose
- * provider call is still in flight, or one whose process died between the claim and the
- * response. Neither can be resumed, and neither blocks a fresh attempt, because attempt
- * numbering never re-uses a reference. That is what keeps this correct without a
- * staleness heuristic or a scheduled cleaner.
+ * ── LIVE IS NOT THE SAME AS ACTIVE (BUG-01 / BUG-02) ─────────────────────────────
+ * "ACTIVE" is a STATUS question (`UNPAID`/`PENDING`) and is what the transactional claim
+ * below decides. "LIVE" additionally requires a payable instrument: an ACTIVE row with no
+ * URL, QR payload or payment number is an attempt whose provider call is IN FLIGHT (or one
+ * whose process died between the claim and the response). It is therefore surfaced as
+ * `PAYMENT_CREATION_IN_PROGRESS` — never dismissed as "no attempt exists", which is the
+ * hole that used to let a second attempt be created.
  */
 async function findLivePayment(orderId: string) {
     return prisma.payment.findFirst({
@@ -380,6 +429,201 @@ async function findLivePayment(orderId: string) {
         },
         orderBy: { createdAt: "desc" },
     });
+}
+
+/** What the serialized claim decided, and the attempt it decided about. */
+type PaymentClaim = {
+    kind: "created" | "live" | "in_progress";
+    payment: Payment;
+};
+
+/**
+ * The ONE refusal a concurrent/contended claim produces: "someone is creating this order's
+ * payment; try again shortly". Centralised so the direct `in_progress` branch and the
+ * contention-exhaustion branch cannot drift apart.
+ */
+function paymentCreationInProgress(): AppError {
+    return new AppError(ERROR_CODES.CONFLICT, {
+        message: "Pembayaran untuk pesanan ini sedang dibuat. Coba lagi sebentar lagi.",
+        details: { reason: "PAYMENT_CREATION_IN_PROGRESS" },
+    });
+}
+
+/**
+ * Atomically claim the ONE active payment attempt for an order (BUG-01 / BUG-02).
+ *
+ * ── WHY THIS IS A SERIALIZED CLAIM, NOT A CHECK ────────────────────────────────
+ * The pre-fix code read `Payment.count()` (or a liveness query) and then created, which is
+ * §30.3's time-of-check/time-of-use race: a second caller that read AFTER the winner's
+ * insert committed computed attempt number `n + 1`, produced a DIFFERENT
+ * `paymentReference`, and therefore did not collide with the unique index at all — it
+ * opened a second payable provider session for the same order.
+ *
+ * The fix has two halves, and both are database-side:
+ *
+ *   1. **One row lock, named explicitly.** `SELECT … FOR UPDATE` on the `eventorder` row
+ *      serializes every claim for that order, exactly as the cancel, settlement and reaper
+ *      paths already serialize on it (brief §16/§17 — same lock ORDER, so no deadlock).
+ *      Only the lock holder may read the active attempt and create a new one.
+ *   2. **A durable unique index** on `Payment.activeOrderId`, which is set to the order id
+ *      while the attempt is non-terminal and NULL once it is terminal. That is the
+ *      structural invariant: two active attempts for one order cannot exist, whatever code
+ *      path tries to create them.
+ *
+ * ── WHAT "ACTIVE" MEANS HERE (spec §3 / §5) ────────────────────────────────────
+ * A committed `UNPAID`/`PENDING` row with NO instrument is ACTIVE and is reported as
+ * `in_progress`. It is deliberately NOT treated as "safe to create another payment".
+ * Terminal rows (`PAID`/`FAILED`/`EXPIRED`/`REFUNDED`/`PARTIALLY_REFUNDED`) are history and
+ * never block a new attempt.
+ */
+async function claimActivePayment(params: {
+    order: PayableOrder;
+    orderNumber: string;
+    now: Date;
+    environment: PaymentEnvironment;
+    method: PaymentMethod;
+    channel: string;
+    expiresAt: Date | null;
+    actorUserId: string;
+}): Promise<PaymentClaim> {
+    // Re-run the whole claim on a TRANSIENT InnoDB serialization failure (`P2034`, a
+    // deadlock or a lock-wait timeout) — the same bounded, jittered retry the settlement
+    // path uses. Every attempt re-evaluates the guards against the post-rollback state, so
+    // a retry can only ever observe the active attempt and answer `in_progress`; it can
+    // never create a second one.
+    let result: ContentionRetryResult<PaymentClaim>;
+
+    try {
+        result = await withContentionRetry(async () =>
+            prisma.$transaction(
+                async (tx): Promise<PaymentClaim> => {
+                    // 1. THE SERIALIZATION POINT. Every claim for this order queues here, and
+                    //    the lock is ordered before the payment rows (both are written after
+                    //    the order row), matching the cancel/settlement/reaper lock order.
+                    //    The raw statement lives in a named primitive so the payment layer
+                    //    stays free of raw SQL (enforced by the payment-wiring guard).
+                    await lockEventOrderRow(tx, params.order.id);
+
+                    // 2. RE-VALIDATE against the now-locked row. A settlement or a cancel
+                    //    may have won the order between the pre-read snapshot and this lock;
+                    //    the snapshot's verdict is no longer authoritative.
+                    const locked = await tx.eventOrder.findUniqueOrThrow({
+                        where: { id: params.order.id },
+                        select: {
+                            status: true,
+                            paymentStatus: true,
+                            expiresAt: true,
+                        },
+                    });
+
+                    assertOrderStatePayable(locked, params.now);
+
+                    // 3. SELF-HEAL. A terminal attempt must never hold the active slot.
+                    //    Every terminal writer clears it too, but a stale pointer must not be
+                    //    able to wedge a legitimate retry.
+                    await tx.payment.updateMany({
+                        where: {
+                            orderId: params.order.id,
+                            activeOrderId: { not: null },
+                            status: { notIn: [...ACTIVE_PAYMENT_STATUSES] },
+                        },
+                        data: { activeOrderId: null },
+                    });
+
+                    // 4. THE ONE ACTIVE ATTEMPT — decided by STATUS alone, never by whether
+                    //    an instrument has landed yet.
+                    const active = await tx.payment.findFirst({
+                        where: {
+                            orderId: params.order.id,
+                            status: { in: [...ACTIVE_PAYMENT_STATUSES] },
+                        },
+                        orderBy: { createdAt: "desc" },
+                    });
+
+                    if (active) {
+                        return {
+                            kind: hasProviderInstrument(active)
+                                ? "live"
+                                : "in_progress",
+                            payment: active,
+                        };
+                    }
+
+                    // 5. CLAIM. Only the lock holder reaches this point, so the attempt
+                    //    number is computed against a stable set of rows and cannot race.
+                    const attemptNumber =
+                        (await tx.payment.count({
+                            where: { orderId: params.order.id },
+                        })) + 1;
+                    const paymentReference = buildPaymentReference(
+                        params.orderNumber,
+                        attemptNumber
+                    );
+
+                    const payment = await tx.payment.create({
+                        data: {
+                            orderId: params.order.id,
+                            // The tenant the money belongs to, taken from the ORDER, never
+                            // from the request (brief §13: `organizerId` is DATA, never
+                            // authority).
+                            organizerId: params.order.organizerId,
+                            provider: "ipaymu",
+                            providerEnvironment: params.environment,
+                            method: params.method,
+                            channel: params.channel,
+                            amount: params.order.total,
+                            currency: params.order.currency,
+                            // `PaymentStatus.UNPAID` — the schema default, stated explicitly
+                            // because this row is a claim that has not yet produced a
+                            // session.
+                            status: "UNPAID",
+                            paymentReference,
+                            expiresAt: params.expiresAt,
+                            createdByUserId: params.actorUserId,
+                            // The durable invariant: this order now has exactly one active
+                            // attempt, and the database will reject a second.
+                            activeOrderId: params.order.id,
+                        },
+                    });
+
+                    return { kind: "created", payment };
+                },
+                { timeout: 20_000 }
+            )
+        );
+    } catch (error) {
+        if (!isUniqueViolation(error)) {
+            throw error;
+        }
+
+        // The unique `activeOrderId` index rejected a second active attempt. That should be
+        // unreachable behind the row lock; if it happens, a concurrent claim won, so report
+        // it as in-progress rather than as a 500. Re-read outside the (aborted) transaction.
+        const winner = await prisma.payment.findFirst({
+            where: {
+                orderId: params.order.id,
+                status: { in: [...ACTIVE_PAYMENT_STATUSES] },
+            },
+            orderBy: { createdAt: "desc" },
+        });
+
+        if (!winner) {
+            throw error;
+        }
+
+        return {
+            kind: hasProviderInstrument(winner) ? "live" : "in_progress",
+            payment: winner,
+        };
+    }
+
+    if (!result.ok) {
+        // Contention exhausted: another claim is racing this one, so the buyer receives the
+        // same retryable conflict they would receive if that request already owned creation.
+        throw paymentCreationInProgress();
+    }
+
+    return result.value;
 }
 
 export async function createOrderPayment(params: {
@@ -482,57 +726,42 @@ export async function createOrderPayment(params: {
     const ttlMinutes = await resolveTtlMinutes();
     const expiresAt = order.expiresAt;
 
-    const attemptNumber = (await prisma.payment.count({ where: { orderId: order.id } })) + 1;
-    const paymentReference = buildPaymentReference(orderNumber, attemptNumber);
+    // ── THE CLAIM (BUG-01 / BUG-02): at most ONE active attempt per order ─────────
+    // The resume-or-claim decision is serialized on the ORDER ROW, in one transaction, and
+    // ACTIVITY is decided by STATUS alone. Three outcomes are possible:
+    //
+    //   created      → this caller owns provider creation;
+    //   live         → an existing attempt already carries an instrument, so resume it;
+    //   in_progress  → an existing attempt is committed but has no instrument yet, so
+    //                  another request owns provider creation and this one must not open a
+    //                  second session.
+    const claim = await claimActivePayment({
+        order,
+        orderNumber,
+        now,
+        environment,
+        method: selection.method,
+        channel: selection.channel,
+        expiresAt,
+        actorUserId: actor.userId,
+    });
 
-    // ── The claim (design §30.1 row 2 / §30.3) ───────────────────────────────────
-    // The row is inserted BEFORE the network call, in `UNPAID` with no session, because
-    // this INSERT is the concurrency guard: `paymentReference` is `@unique`, so two
-    // simultaneous "Pay" clicks compute the same attempt number, and the loser's insert
-    // is rejected by the database — §30.3's "the database rejecting the second write ...
-    // the only correct approach under concurrency". A gateway session is therefore opened
-    // at most once per attempt.
-    let payment: Payment;
-
-    try {
-        payment = await prisma.payment.create({
-            data: {
-                orderId: order.id,
-                // The tenant the money belongs to, taken from the ORDER, never from the
-                // request (brief §13: `organizerId` is DATA, never authority).
-                organizerId: order.organizerId,
-                provider: "ipaymu",
-                providerEnvironment: environment,
-                method: selection.method,
-                channel: selection.channel,
-                amount: order.total,
-                currency: order.currency,
-                // `PaymentStatus.UNPAID` — the schema default, stated explicitly because
-                // this row is a claim that has not yet produced a session.
-                status: "UNPAID",
-                paymentReference,
-                expiresAt,
-                createdByUserId: actor.userId,
-            },
-        });
-    } catch (error) {
-        if (!isUniqueViolation(error)) {
-            throw error;
-        }
-
-        // Lost the claim race. If the winner already recorded a session, resume it;
-        // otherwise the winner is still mid-flight and there is nothing to hand back yet.
-        const winner = await findLivePayment(order.id);
-
-        if (winner) {
-            return toPayload({ order, payment: winner, resumed: true });
-        }
-
-        throw new AppError(ERROR_CODES.CONFLICT, {
-            message: "Pembayaran untuk pesanan ini sedang dibuat. Coba lagi sebentar lagi.",
-            details: { reason: "PAYMENT_CREATION_IN_PROGRESS" },
-        });
+    if (claim.kind === "in_progress") {
+        throw paymentCreationInProgress();
     }
+
+    if (claim.kind === "live") {
+        // Built from the COMMITTED order, so a claim that resumed an already-recorded
+        // session reports the order's real payment status rather than the pre-claim read.
+        const currentOrder = await prisma.eventOrder.findUniqueOrThrow({
+            where: { id: order.id },
+            select: { orderNumber: true, status: true, paymentStatus: true },
+        });
+
+        return toPayload({ order: currentOrder, payment: claim.payment, resumed: true });
+    }
+
+    const payment: Payment = claim.payment;
 
     // ── The provider call, OUTSIDE any transaction (design §13.3) ────────────────
     // "External calls are banned inside it" — a slow provider must never hold row locks,
@@ -558,6 +787,9 @@ export async function createOrderPayment(params: {
             data: {
                 status: "FAILED",
                 channel: selection.channel,
+                // Release the active slot so an abandoned attempt can never wedge the
+                // buyer's legitimate retry (BUG-01 / BUG-02, spec §8).
+                activeOrderId: null,
             },
         });
 
@@ -588,7 +820,7 @@ export async function createOrderPayment(params: {
         // here derives, formats or invents those values — an empty instruction is a failed
         // attempt, answered as such, because a rendered placeholder QR would be a fake.
         const created = await createDirectSession({
-            referenceId: paymentReference,
+            referenceId: payment.paymentReference,
             amount: order.total,
             buyerName,
             buyerEmail,
@@ -663,7 +895,7 @@ export async function createOrderPayment(params: {
 
     // ── The hosted page (credit card today) ─────────────────────────────────────
     const created = await createSession({
-        referenceId: paymentReference,
+        referenceId: payment.paymentReference,
         amount: order.total,
         currency: order.currency,
         buyerName: order.buyerName,
@@ -745,6 +977,36 @@ export async function createOrderPayment(params: {
 }
 
 /**
+ * A conditional write to ONE `Payment` row, retried on transient InnoDB contention.
+ *
+ * The provider call runs OUTSIDE any transaction (design §13.3), so the statement that
+ * records its result is its own write — and under a burst of concurrent "Pay" clicks it can
+ * be chosen as a deadlock victim (`P2034`). The write is guarded (`paymentUrl: null`), so
+ * re-running it is idempotent and can only lose to a writer that stored the same session
+ * first. Contention exhaustion is surfaced as a retryable provider-unavailable refusal, not
+ * as a 500: nothing is corrupted and the buyer can simply try again.
+ */
+async function writePaymentRow(
+    where: Prisma.PaymentWhereInput,
+    data: Prisma.PaymentUpdateManyMutationInput
+): Promise<number> {
+    const result = await withContentionRetry(async () => {
+        const updated = await prisma.payment.updateMany({ where, data });
+
+        return updated.count;
+    });
+
+    if (!result.ok) {
+        throw new AppError(ERROR_CODES.PROVIDER_UNAVAILABLE, {
+            message: "Gagal menyimpan sesi pembayaran. Silakan coba lagi.",
+            details: { reason: "PAYMENT_ROW_CONTENTION" },
+        });
+    }
+
+    return result.value;
+}
+
+/**
  * Write the provider's session onto the claimed row.
  *
  * Guarded by `paymentUrl: null` so a concurrent second write can never overwrite a URL
@@ -756,9 +1018,9 @@ async function recordSession(
     paymentId: string,
     session: GatewaySession
 ): Promise<Payment> {
-    const updated = await prisma.payment.updateMany({
-        where: { id: paymentId, paymentUrl: null },
-        data: {
+    const updatedCount = await writePaymentRow(
+        { id: paymentId, paymentUrl: null },
+        {
             status: "PENDING",
             paymentUrl: session.paymentUrl,
             externalSessionId: session.providerSessionId,
@@ -766,14 +1028,14 @@ async function recordSession(
             channel: session.channel,
             providerEnvironment: session.environment,
             providerFlow: "REDIRECT",
-        },
-    });
+        }
+    );
 
     const row = await prisma.payment.findUniqueOrThrow({
         where: { id: paymentId },
     });
 
-    if (updated.count === 0 && row.paymentUrl === null) {
+    if (updatedCount === 0 && row.paymentUrl === null) {
         // Defensive: the guard failed but no URL is stored, which would leave the buyer
         // with a session they cannot reach. Surfaced rather than swallowed.
         throw new AppError(ERROR_CODES.INTERNAL_ERROR, {
@@ -813,9 +1075,14 @@ async function recordInstruction(
     paymentId: string,
     instruction: GatewayInstruction
 ): Promise<Payment> {
-    const updated = await prisma.payment.updateMany({
-        where: { id: paymentId, paymentUrl: null, paymentNumber: null, qrString: null },
-        data: {
+    const updatedCount = await writePaymentRow(
+        {
+            id: paymentId,
+            paymentUrl: null,
+            paymentNumber: null,
+            qrString: null,
+        },
+        {
             status: "PENDING",
             providerFlow: "DIRECT",
             externalSessionId: instruction.providerSessionId,
@@ -831,14 +1098,14 @@ async function recordInstruction(
             ...(instruction.providerExpiredAt
                 ? { expiresAt: instruction.providerExpiredAt }
                 : {}),
-        },
-    });
+        }
+    );
 
     const row = await prisma.payment.findUniqueOrThrow({
         where: { id: paymentId },
     });
 
-    if (updated.count === 0 && !row.qrString && !row.paymentNumber) {
+    if (updatedCount === 0 && !row.qrString && !row.paymentNumber) {
         // Defensive, and the same reasoning as `recordSession`: a lost guard with nothing
         // stored means the buyer was handed a payment page backed by no instruction.
         throw new AppError(ERROR_CODES.INTERNAL_ERROR, {
