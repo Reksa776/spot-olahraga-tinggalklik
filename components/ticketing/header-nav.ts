@@ -14,11 +14,19 @@ import { cn } from "@/lib/utils";
  * one system.
  *
  * ── WHAT THE GEOMETRY FIXES ─────────────────────────────────────────────────────
- *   `inline-flex h-10 items-center justify-center` — one height, centred content, so an item
- *   with an icon (Keluar) and an item with none sit on the same baseline.
+ *   `h-10 items-center justify-center` — one height, centred content, so an item with an icon
+ *   (Keluar) and an item with none sit on the same baseline.
  *   `whitespace-nowrap` — a two-word label can never wrap and change the row's height.
  *   `rounded-xl px-4 text-sm font-semibold leading-none` — one radius, one horizontal padding,
  *   one type scale.
+ *
+ * ── WHY THERE IS DELIBERATELY NO `display` UTILITY HERE ─────────────────────────
+ * The box sets no `display`; each call site does, because the two responsibilities are
+ * different and conflating them broke the responsive gates. Tailwind emits `.hidden` BEFORE
+ * `.inline-flex`, so an element carrying both resolves to `display:inline-flex` at EVERY width
+ * — the `hidden` is dead. Any item that must be hidden below a breakpoint (`hidden
+ * xl:inline-flex`) therefore cannot also inherit an unconditional `inline-flex`. Call sites
+ * pass exactly one display utility; the box only describes the box.
  *
  * ── WHY IT LIVES IN ITS OWN MODULE ──────────────────────────────────────────────
  * `SiteHeader` is a SERVER component (it calls `auth()`), and the sign-out control is a CLIENT
@@ -35,9 +43,9 @@ import { cn } from "@/lib/utils";
  * alignment are shared, so no variant can look like a different-sized component.
  */
 
-/** The shared box every header item is drawn in. */
+/** The shared box every header item is drawn in. Carries NO display utility — see above. */
 export const HEADER_NAV_ITEM =
-    "inline-flex h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-semibold leading-none transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900";
+    "h-10 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl px-4 text-sm font-semibold leading-none transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900";
 
 /** The semantic colour treatments, all over the SAME geometry above. */
 export const HEADER_NAV_VARIANT = {

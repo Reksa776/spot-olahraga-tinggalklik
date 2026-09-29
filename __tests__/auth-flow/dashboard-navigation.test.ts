@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { PlatformRole } from "@prisma/client";
 
+import Brand from "@/components/Brand";
 import {
     DesktopNavLinks,
     signedInNavItems,
@@ -320,7 +321,6 @@ describe("every header item shares one geometry", () => {
 
     it("defines one box with a fixed height and no wrapping", () => {
         for (const token of [
-            "inline-flex",
             "h-10",
             "items-center",
             "justify-center",
@@ -330,6 +330,21 @@ describe("every header item shares one geometry", () => {
             "text-sm",
         ]) {
             expect(styles).toContain(token);
+        }
+    });
+
+    it("keeps `display` OUT of the shared box, so `hidden` is never overridden", () => {
+        // Tailwind emits `.hidden{display:none}` BEFORE `.inline-flex{display:inline-flex}`, so
+        // an element carrying both is visible at EVERY width. The shared box therefore declares
+        // no display, and each call site passes exactly one (bare `inline-flex` when always
+        // visible, `hidden xl:inline-flex` when it collapses into the drawer).
+        expect(styles).not.toContain("inline-flex");
+        expect(styles).not.toMatch(/\.?\bhidden\b/);
+
+        // Every gated item pairs `hidden` with a breakpoint display utility in ONE string.
+        for (const source of [header, signOut]) {
+            const gated = source.match(/"hidden xl:inline-flex"/g) ?? [];
+            expect(gated.length).toBeGreaterThan(0);
         }
     });
 
@@ -349,6 +364,81 @@ describe("every header item shares one geometry", () => {
             expect(source).not.toMatch(/rounded-lg px-3 py-2/);
             expect(source).not.toMatch(/rounded-xl[^\n]*px-4[^\n]*py-2(?!\.5)/);
         }
+    });
+});
+
+/* ==================================================================================
+ * 2d. THE BRAND REGION IS SHRINK-SAFE
+ * ==================================================================================
+ *
+ * The reported visual defect: `[logo] Ti...  Event  Cabang olahraga  [Search]` — the lockup was
+ * ellipsized and the primary navigation rode over it. The search region uses `flex-1`
+ * (`flex-basis: 0%`), so it cannot absorb negative free space; the shared `Brand` lockup was the
+ * ONLY shrinkable item, so flexbox crushed it. The fix is the row's flex contract, not offsets.
+ */
+
+const BRAND_COMPONENT = "components/Brand.tsx";
+
+describe("the landing navbar's brand never truncates or overlaps", () => {
+    const header = readCode(SITE_HEADER);
+
+    it("renders the configured logo and the name as ONE lockup", () => {
+        const html = renderToStaticMarkup(
+            createElement(Brand, {
+                logoSrc: "/uploads/logo.png",
+                name: "TinggalKlik.Co",
+            })
+        );
+
+        expect(html).toContain('src="/uploads/logo.png"');
+        expect(html).toContain("TinggalKlik");
+        expect(html).toContain(".Co");
+    });
+
+    it("falls back to the built-in wordmark when no logo is configured", () => {
+        const html = renderToStaticMarkup(
+            createElement(Brand, { logoSrc: null })
+        );
+
+        expect(html).toContain("TinggalKlik");
+    });
+
+    it("takes the name from the branding source, never a literal", () => {
+        expect(readCode(BRAND_COMPONENT)).toContain("logoSrc");
+        expect(header).toContain("getApplicationBranding");
+        expect(header).toContain("logoSrc={branding.logoUrl}");
+        expect(header).not.toContain("TinggalKlik");
+    });
+
+    it("wraps the lockup in a non-shrinking region (`flex: 0 0 auto`)", () => {
+        // The brand is ONE unit that must never give way; inside this region the lockup's
+        // `truncate` can never fire, so the name renders whole and cannot be overlapped.
+        expect(header).toContain('<div className="flex shrink-0 items-center">');
+    });
+
+    it("declares the shrink behaviour of every other region", () => {
+        // Primary nav pinned, search is the ONE flexible region, user nav pinned.
+        expect(header).toContain("hidden shrink-0 items-center gap-1 lg:flex");
+        expect(header).toContain(
+            "hidden min-w-0 flex-1 justify-end md:flex lg:max-w-xl"
+        );
+        expect(header).toContain(
+            "ml-auto flex shrink-0 items-center gap-1.5 md:ml-0"
+        );
+    });
+
+    it("does not solve the overlap with ad-hoc offsets or stacking", () => {
+        for (const hack of ["ml-10", "mr-10", "absolute left-", "z-50 ml-"]) {
+            expect(header).not.toContain(hack);
+        }
+    });
+
+    it("keeps the signed-in controls inline only where the row can hold them", () => {
+        // Below `xl` the same items live in the existing mobile drawer, whose toggle is the
+        // only thing the row carries. That is what keeps the brand pinned AND the row from
+        // overflowing horizontally at tablet / small-laptop widths.
+        expect(header).toContain('<details className="relative xl:hidden">');
+        expect(readCode(SITE_SIGN_OUT)).toContain('"hidden xl:inline-flex"');
     });
 });
 

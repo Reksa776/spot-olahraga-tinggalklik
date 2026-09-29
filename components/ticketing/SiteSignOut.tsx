@@ -29,7 +29,7 @@ export default function SiteSignOut({ variant = "button" }: Props) {
     const styles =
         variant === "menu"
             ? "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink-700 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900"
-            : cn(HEADER_NAV_VARIANT.outline, "hidden sm:inline-flex");
+            : cn(HEADER_NAV_VARIANT.outline, "hidden xl:inline-flex");
 
     return (
         <button

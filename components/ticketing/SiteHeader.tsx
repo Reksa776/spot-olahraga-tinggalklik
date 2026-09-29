@@ -108,7 +108,7 @@ export function DesktopNavLinks({ items }: { items: HeaderNavItem[] }) {
                     href={item.href}
                     className={cn(
                         HEADER_NAV_VARIANT[item.variant],
-                        "hidden sm:inline-flex"
+                        "hidden xl:inline-flex"
                     )}
                 >
                     {item.label}
@@ -167,12 +167,37 @@ export default async function SiteHeader() {
 
     return (
         <header className="sticky top-0 z-40 border-b border-ink-100 bg-white/90 backdrop-blur">
+            {/*
+             * ── THE ROW'S FLEX CONTRACT ─────────────────────────────────────────────
+             * The row is a four-region flex line: [BRAND] [PRIMARY NAV] [SEARCH] [USER NAV].
+             * Each region declares its shrink behaviour EXPLICITLY, because the previous
+             * header left it to the default and flexbox resolved the overflow by crushing the
+             * one item that happened to be shrinkable — the brand lockup.
+             *
+             *   BRAND     `shrink-0` — a logo + name is ONE unit and never gives way. The
+             *             shared `Brand` lockup carries `min-w-0` + `truncate` for surfaces
+             *             with a genuinely narrow rail (the dashboard sidebar); inside this
+             *             non-shrinking region that text can never be ellipsized, so the name
+             *             renders WHOLE and cannot be overlapped by "Event".
+             *   NAV       `shrink-0` — its items are already `whitespace-nowrap`; the region
+             *             must not shrink below them or they would spill over the brand.
+             *   SEARCH    `min-w-0 flex-1` — the ONE region allowed to yield. It grows into
+             *             free space and shrinks first when there is none.
+             *   USER NAV  `shrink-0` — the signed-in controls keep their shared `h-10` box.
+             *
+             * With the brand and both navigation regions pinned, the only order in which space
+             * is conceded is: search first, then (below `xl`) the signed-in links move into the
+             * existing mobile drawer. Nothing ever overlaps and nothing is ever truncated.
+             */}
             <div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-4 sm:px-6 lg:px-8">
-                <Brand logoSrc={branding.logoUrl} />
+                {/* BRAND REGION — `flex: 0 0 auto`, so the lockup is never squeezed. */}
+                <div className="flex shrink-0 items-center">
+                    <Brand logoSrc={branding.logoUrl} />
+                </div>
 
                 <nav
                     aria-label="Navigasi utama"
-                    className="hidden items-center gap-1 lg:flex"
+                    className="hidden shrink-0 items-center gap-1 lg:flex"
                 >
                     {/* The public links use the SAME nav geometry as the signed-in controls,
                         so the header reads as one system whether or not a visitor is signed in. */}
@@ -180,18 +205,21 @@ export default async function SiteHeader() {
                         <Link
                             key={item.href}
                             href={item.href}
-                            className={HEADER_NAV_VARIANT.quiet}
+                            className={cn(
+                                HEADER_NAV_VARIANT.quiet,
+                                "inline-flex"
+                            )}
                         >
                             {item.label}
                         </Link>
                     ))}
                 </nav>
 
-                <div className="hidden flex-1 justify-end md:flex lg:max-w-xl">
+                <div className="hidden min-w-0 flex-1 justify-end md:flex lg:max-w-xl">
                     <SearchBar size="sm" placeholder="Cari event atau olahraga…" />
                 </div>
 
-                <div className="ml-auto flex items-center gap-1.5 md:ml-0">
+                <div className="ml-auto flex shrink-0 items-center gap-1.5 md:ml-0">
                     {signedIn ? (
                         <>
                             {/*
@@ -212,7 +240,7 @@ export default async function SiteHeader() {
                             href="/login"
                             className={cn(
                                 HEADER_NAV_VARIANT.outline,
-                                "hidden sm:inline-flex"
+                                "hidden xl:inline-flex"
                             )}
                         >
                             Masuk
@@ -268,7 +296,7 @@ function MobileMenu({
     ];
 
     return (
-        <details className="relative lg:hidden">
+        <details className="relative xl:hidden">
             <summary
                 className="grid h-10 w-10 cursor-pointer list-none place-items-center rounded-xl border border-ink-200 text-ink-700 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900"
                 aria-label="Buka menu navigasi"
