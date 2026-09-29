@@ -25,6 +25,7 @@ import type { AuthzScope } from "@/lib/authz";
 import {
     canEnterDashboard,
     computeDashboardCapabilities,
+    getDashboardPath,
     shouldShowDashboardNav,
 } from "@/lib/dashboard/scope";
 
@@ -125,6 +126,42 @@ describe("the navbar offers Dashboard to exactly the back-office roles", () => {
 });
 
 /* ==================================================================================
+ * 1b. WHERE THE ITEM POINTS (pure decision) — the reported role-routing bug
+ * ================================================================================== */
+
+describe("the Dashboard destination follows the account's role", () => {
+    it("sends ADMIN and MANAGER to the one operator dashboard", () => {
+        expect(getDashboardPath("ADMIN")).toBe("/dashboard");
+        expect(getDashboardPath("MANAGER")).toBe("/dashboard");
+    });
+
+    it("sends PIC to the PIC self-service surface — never the operator dashboard", () => {
+        // The regression: `href="/dashboard"` was a single hardcoded constant, so a PIC
+        // clicking the navbar row landed on the operator overview.
+        expect(getDashboardPath("PIC")).toBe("/dashboard/pic");
+        expect(getDashboardPath("PIC")).not.toBe("/dashboard");
+    });
+
+    it("never points a CUSTOMER (or a guest) at a back-office surface", () => {
+        // The item is hidden for these accounts; even if a future edit rendered it, the
+        // destination is the public storefront, never /dashboard or /dashboard/pic.
+        expect(getDashboardPath("CUSTOMER")).toBe("/");
+        expect(getDashboardPath(null)).toBe("/");
+        expect(getDashboardPath(undefined)).toBe("/");
+    });
+
+    it("agrees with the login flow's own role table, role by role", () => {
+        // One mapping, derived rather than duplicated: the navbar and the post-login redirect
+        // must not be able to disagree about where a role belongs.
+        for (const role of PLATFORM_ROLES) {
+            expect(getDashboardPath(role)).toBe(
+                defaultDestinationForIntent(intentForPlatformRole(role))
+            );
+        }
+    });
+});
+
+/* ==================================================================================
  * 2. WHAT THE HEADER ACTUALLY RENDERS
  * ================================================================================== */
 
@@ -133,20 +170,22 @@ describe("SiteHeader renders one Dashboard destination, capability-gated", () =>
 
     it("asks the authoritative helper, and asks it exactly once", () => {
         expect(code).toContain('from "@/lib/dashboard/scope"');
-        expect(code).toContain("shouldShowDashboardNav(session?.user.platformRole)");
+        expect(code).toContain("shouldShowDashboardNav(platformRole)");
+        expect(code).toContain("const platformRole = session?.user.platformRole;");
 
         // One decision per render, shared by both renderings — not two independent guesses.
         expect(code.match(/shouldShowDashboardNav\(/g) ?? []).toHaveLength(1);
     });
 
-    it("defines the destination once and links it to `/dashboard`", () => {
-        // The constant is the ONLY place the path appears, so a typo cannot produce a second,
-        // different destination.
-        expect(code.match(/"\/dashboard"/g) ?? []).toHaveLength(1);
+    it("derives the destination from the role, with no hardcoded `/dashboard` link", () => {
+        // The header must ASK the role-aware helper (once)…
+        expect(code).toContain("getDashboardPath(platformRole)");
+        expect(code.match(/getDashboardPath\(/g) ?? []).toHaveLength(1);
 
-        expect(code).toMatch(
-            /DASHBOARD_NAV_ITEM\s*=\s*\{\s*href:\s*"\/dashboard",\s*label:\s*"Dashboard"\s*\}/
-        );
+        // …and must not carry a literal back-office href that every role would share. This is
+        // the exact line the reported bug lived on.
+        expect(code).not.toContain('href="/dashboard"');
+        expect(code).not.toMatch(/href:\s*"\/dashboard"/);
     });
 
     it("renders it on desktop as a link, gated on the helper's answer", () => {
@@ -157,14 +196,16 @@ describe("SiteHeader renders one Dashboard destination, capability-gated", () =>
         const desktop = code.slice(start, code.indexOf(") : null}", start));
 
         expect(desktop).toContain("<Link");
-        expect(desktop).toContain("DASHBOARD_NAV_ITEM.href");
-        expect(desktop).toContain("DASHBOARD_NAV_ITEM.label");
+        expect(desktop).toContain("href={dashboardHref}");
+        expect(desktop).toContain("{DASHBOARD_NAV_LABEL}");
     });
 
-    it("renders it in the mobile drawer under the SAME flag", () => {
-        // The drawer spreads the same constant, so the two renderings cannot disagree about who
-        // is offered it or where it points.
-        expect(code).toMatch(/showDashboard\s*\?\s*\[DASHBOARD_NAV_ITEM\]\s*:\s*\[\]/);
+    it("renders it in the mobile drawer under the SAME flag and destination", () => {
+        // The drawer uses the same computed href, so the two renderings cannot disagree about
+        // who is offered it or where it points.
+        expect(code).toMatch(
+            /showDashboard\s*\?\s*\[\{\s*href:\s*dashboardHref,\s*label:\s*DASHBOARD_NAV_LABEL\s*\}\]\s*:\s*\[\]/
+        );
 
         // …and it is not advertised to the signed-out visitor, whose drawer offers "Masuk".
         expect(code).toMatch(/\{ href: "\/login", label: "Masuk" \}/);
@@ -182,10 +223,10 @@ describe("SiteHeader renders one Dashboard destination, capability-gated", () =>
     });
 
     it("has no duplicate Dashboard entry in one rendering", () => {
-        // One label, one href, one constant — asserted above — plus exactly one row pushed into
-        // the drawer list.
-        expect(code.match(/label:\s*"Dashboard"/g) ?? []).toHaveLength(1);
-        expect(code.match(/DASHBOARD_NAV_ITEM\]/g) ?? []).toHaveLength(1);
+        // One label definition, read by both renderings, plus exactly one row pushed into the
+        // drawer list.
+        expect(code.match(/DASHBOARD_NAV_LABEL\s*=\s*"Dashboard"/g) ?? []).toHaveLength(1);
+        expect(code.match(/DASHBOARD_NAV_LABEL\s*\}\s*\]/g) ?? []).toHaveLength(1);
     });
 
     it("still shows the signed-in buyer their own actions and the sign-out control", () => {
@@ -368,6 +409,18 @@ describe("hiding the Dashboard item changes no authorization", () => {
 
         // The navbar agreeing with the gate is a consequence of the gate, not a substitute for it.
         expect(shouldShowDashboardNav("CUSTOMER")).toBe(false);
+    });
+
+    it("a PIC who now has the link still holds no operator read", () => {
+        // The role-aware link is a UI destination. A role-only PIC resolves with NO tenant
+        // capability, so even if the row pointed at `/dashboard` the operator data would be
+        // refused by the same deciders the API uses — the href change grants nothing.
+        const capabilities = computeDashboardCapabilities(roleOnlyScope("PIC"));
+
+        expect(getDashboardPath("PIC")).toBe("/dashboard/pic");
+        expect(capabilities.hasTenantAccess).toBe(false);
+        expect(capabilities.canReadOrders).toBe(false);
+        expect(capabilities.canReadPayments).toBe(false);
     });
 
     it("a guest has no session-derived capability at all", () => {

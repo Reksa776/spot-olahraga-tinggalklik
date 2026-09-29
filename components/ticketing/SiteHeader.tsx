@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { auth } from "@/auth";
 import { getApplicationBranding } from "@/lib/app-settings";
-import { shouldShowDashboardNav } from "@/lib/dashboard/scope";
+import { getDashboardPath, shouldShowDashboardNav } from "@/lib/dashboard/scope";
 
 import Brand from "./Brand";
 import MobileMenuLinks from "./MobileMenuLinks";
@@ -17,11 +17,16 @@ const NAV = [
 /**
  * The back office, as ONE definition rendered in two places (desktop link, mobile drawer row).
  *
- * The label and the path live here rather than in each rendering so the two cannot drift and
- * so "exactly one Dashboard destination" is a property of the source, not a promise. It is
- * gated by `shouldShowDashboardNav` — never by this constant alone.
+ * The LABEL lives here so the two renderings cannot drift and so "exactly one Dashboard
+ * destination" is a property of the source, not a promise. It is gated by
+ * `shouldShowDashboardNav` — never by this constant alone.
+ *
+ * The DESTINATION is deliberately NOT a constant: it follows the account's platform role
+ * through `getDashboardPath`, because a PIC's back office is `/dashboard/pic` while an
+ * ADMIN/MANAGER's is `/dashboard`. A single hardcoded `/dashboard` here was the bug — it
+ * sent PIC users into the operator overview.
  */
-const DASHBOARD_NAV_ITEM = { href: "/dashboard", label: "Dashboard" } as const;
+const DASHBOARD_NAV_LABEL = "Dashboard";
 
 /**
  * The header for the ticketing discovery surface.
@@ -58,13 +63,15 @@ export default async function SiteHeader() {
     const signedIn = Boolean(session?.user);
 
     /*
-     * One helper decides, for both renderings below. A GUEST has no session at all and a
-     * CUSTOMER resolves to `false`; ADMIN, MANAGER and PIC resolve to `true`. The
-     * destination is always `DASHBOARD_NAV_ITEM.href`, and nothing here is a security
-     * boundary — see the header.
+     * One helper decides WHO is offered the item, for both renderings below. A GUEST has no
+     * session at all and a CUSTOMER resolves to `false`; ADMIN, MANAGER and PIC resolve to
+     * `true`. A second, role-aware helper decides WHERE it points — `/dashboard` for
+     * ADMIN/MANAGER, `/dashboard/pic` for a PIC — and the two renderings share both answers.
+     * Nothing here is a security boundary — see the header.
      */
-    const showDashboard =
-        signedIn && shouldShowDashboardNav(session?.user.platformRole);
+    const platformRole = session?.user.platformRole;
+    const showDashboard = signedIn && shouldShowDashboardNav(platformRole);
+    const dashboardHref = getDashboardPath(platformRole);
 
     return (
         <header className="sticky top-0 z-40 border-b border-ink-100 bg-white/90 backdrop-blur">
@@ -109,10 +116,10 @@ export default async function SiteHeader() {
                              */}
                             {showDashboard ? (
                                 <Link
-                                    href={DASHBOARD_NAV_ITEM.href}
+                                    href={dashboardHref}
                                     className="hidden rounded-lg px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
                                 >
-                                    {DASHBOARD_NAV_ITEM.label}
+                                    {DASHBOARD_NAV_LABEL}
                                 </Link>
                             ) : null}
 
@@ -159,7 +166,11 @@ export default async function SiteHeader() {
                         Buat event
                     </Link>
 
-                    <MobileMenu signedIn={signedIn} showDashboard={showDashboard} />
+                    <MobileMenu
+                        signedIn={signedIn}
+                        showDashboard={showDashboard}
+                        dashboardHref={dashboardHref}
+                    />
                 </div>
             </div>
         </header>
@@ -182,6 +193,7 @@ export default async function SiteHeader() {
 function MobileMenu({
     signedIn,
     showDashboard,
+    dashboardHref,
 }: {
     signedIn: boolean;
     /**
@@ -190,13 +202,21 @@ function MobileMenu({
      * disagree about who is offered it.
      */
     showDashboard: boolean;
+    /**
+     * …and the SAME role-aware destination, for the same reason: the drawer row and the desktop
+     * link must point at the identical page (`/dashboard` for ADMIN/MANAGER, `/dashboard/pic`
+     * for a PIC).
+     */
+    dashboardHref: string;
 }) {
     const items = [
         ...NAV,
         { href: "/events", label: "Semua event" },
         ...(signedIn
             ? [
-                  ...(showDashboard ? [DASHBOARD_NAV_ITEM] : []),
+                  ...(showDashboard
+                      ? [{ href: dashboardHref, label: DASHBOARD_NAV_LABEL }]
+                      : []),
                   { href: "/ticketing/orders", label: "Pesanan saya" },
                   { href: "/ticketing/tickets", label: "Tiket saya" },
               ]

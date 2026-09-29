@@ -2,6 +2,10 @@ import type { PlatformRole } from "@prisma/client";
 
 import { AppError } from "@/lib/api/errors";
 import {
+    defaultDestinationForIntent,
+    intentForPlatformRole,
+} from "@/lib/auth/roles";
+import {
     PERMISSIONS,
     decideOrganizerPermission,
     decidePlatformPermission,
@@ -272,6 +276,37 @@ export function shouldShowDashboardNav(
         platformRole !== undefined &&
         platformRole !== "CUSTOMER"
     );
+}
+
+/**
+ * Where the PUBLIC navbar's "Dashboard" row points for a platform role.
+ *
+ * ── THE CONTRACT, IN ONE PLACE ─────────────────────────────────────────────────────
+ *   ADMIN    → "/dashboard"      MANAGER → "/dashboard"
+ *   PIC      → "/dashboard/pic"  CUSTOMER → "/" (never rendered — the item is hidden)
+ *
+ * This is the ROLE-AWARE destination the public header must use. A PIC clicking the
+ * generic "Dashboard" link used to be sent to `/dashboard`, the operator overview, because
+ * the header held a single hardcoded href for every role. A PIC's back office is
+ * `/dashboard/pic`, so the destination now follows the account's own role.
+ *
+ * ── WHY IT DELEGATES INSTEAD OF RE-DECLARING THE MAPPING ────────────────────────────
+ * The same role→destination table already exists for the login flow (`LOGIN_ROLE_INTENT_META`
+ * in `lib/auth/roles.ts`, reached through `intentForPlatformRole` +
+ * `defaultDestinationForIntent`). Deriving from it means the navbar and the post-login
+ * redirect cannot disagree about where a PIC belongs, and a future role is handled by the
+ * table that already governs it — there is no second mapping to keep in sync.
+ *
+ * ── UI DESTINATION, NEVER AN AUTHORIZATION ─────────────────────────────────────────
+ * Nothing here grants access. The destination page re-decides its own read on the server
+ * (`canEnterDashboard` in the dashboard layout plus every service's own `decide*`), so
+ * pointing a link at `/dashboard/pic` — or typing `/dashboard` by hand — changes no
+ * permission. Hiding or retargeting a row is a courtesy; the gate is elsewhere.
+ */
+export function getDashboardPath(
+    platformRole: PlatformRole | null | undefined
+): string {
+    return defaultDestinationForIntent(intentForPlatformRole(platformRole));
 }
 
 export function computeDashboardCapabilities(
