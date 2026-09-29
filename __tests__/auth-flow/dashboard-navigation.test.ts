@@ -8,8 +8,15 @@ jest.mock("@/auth", () => ({ auth: jest.fn() }));
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import type { PlatformRole } from "@prisma/client";
+
+import {
+    DesktopNavLinks,
+    signedInNavItems,
+} from "@/components/ticketing/SiteHeader";
 
 import {
     DEFAULT_POST_LOGIN_PATH,
@@ -165,50 +172,39 @@ describe("the Dashboard destination follows the account's role", () => {
  * 2. WHAT THE HEADER ACTUALLY RENDERS
  * ================================================================================== */
 
-describe("SiteHeader renders one Dashboard destination, capability-gated", () => {
+describe("SiteHeader renders one role-aware Dashboard destination", () => {
     const code = readCode(SITE_HEADER);
 
-    it("asks the authoritative helper, and asks it exactly once", () => {
+    it("asks the authoritative helpers, each exactly once", () => {
         expect(code).toContain('from "@/lib/dashboard/scope"');
         expect(code).toContain("shouldShowDashboardNav(platformRole)");
+        expect(code).toContain("getDashboardPath(platformRole)");
         expect(code).toContain("const platformRole = session?.user.platformRole;");
 
         // One decision per render, shared by both renderings — not two independent guesses.
         expect(code.match(/shouldShowDashboardNav\(/g) ?? []).toHaveLength(1);
+        expect(code.match(/getDashboardPath\(/g) ?? []).toHaveLength(1);
     });
 
-    it("derives the destination from the role, with no hardcoded `/dashboard` link", () => {
-        // The header must ASK the role-aware helper (once)…
-        expect(code).toContain("getDashboardPath(platformRole)");
-        expect(code.match(/getDashboardPath\(/g) ?? []).toHaveLength(1);
-
-        // …and must not carry a literal back-office href that every role would share. This is
-        // the exact line the reported bug lived on.
+    it("carries no hardcoded `/dashboard` link for any role", () => {
+        // The exact line the reported bug lived on: one generic href every role shared.
         expect(code).not.toContain('href="/dashboard"');
         expect(code).not.toMatch(/href:\s*"\/dashboard"/);
     });
 
-    it("renders it on desktop as a link, gated on the helper's answer", () => {
-        const start = code.indexOf("{showDashboard ? (");
-
-        expect(start).toBeGreaterThan(-1);
-
-        const desktop = code.slice(start, code.indexOf(") : null}", start));
-
-        expect(desktop).toContain("<Link");
-        expect(desktop).toContain("href={dashboardHref}");
-        expect(desktop).toContain("{DASHBOARD_NAV_LABEL}");
-    });
-
-    it("renders it in the mobile drawer under the SAME flag and destination", () => {
-        // The drawer uses the same computed href, so the two renderings cannot disagree about
-        // who is offered it or where it points.
-        expect(code).toMatch(
-            /showDashboard\s*\?\s*\[\{\s*href:\s*dashboardHref,\s*label:\s*DASHBOARD_NAV_LABEL\s*\}\]\s*:\s*\[\]/
+    it("builds ONE item list that both renderings consume", () => {
+        // The desktop row and the mobile drawer read the same array, so they cannot disagree
+        // about who is offered the back-office entrance or where it points.
+        expect(code).toContain(
+            "const navItems = signedIn ? signedInNavItems(platformRole) : [];"
         );
-
-        // …and it is not advertised to the signed-out visitor, whose drawer offers "Masuk".
-        expect(code).toMatch(/\{ href: "\/login", label: "Masuk" \}/);
+        expect(code).toContain("<DesktopNavLinks items={navItems} />");
+        expect(code).toContain(
+            "<MobileMenu signedIn={signedIn} navItems={navItems} />"
+        );
+        expect(code).toContain(
+            '...(signedIn ? navItems : [{ href: "/login", label: "Masuk" }])'
+        );
     });
 
     it("keeps Dashboard OUT of the public NAV list", () => {
@@ -223,17 +219,136 @@ describe("SiteHeader renders one Dashboard destination, capability-gated", () =>
     });
 
     it("has no duplicate Dashboard entry in one rendering", () => {
-        // One label definition, read by both renderings, plus exactly one row pushed into the
-        // drawer list.
+        // One label definition, read by the single item builder.
         expect(code.match(/DASHBOARD_NAV_LABEL\s*=\s*"Dashboard"/g) ?? []).toHaveLength(1);
-        expect(code.match(/DASHBOARD_NAV_LABEL\s*\}\s*\]/g) ?? []).toHaveLength(1);
+        expect(code.match(/label:\s*DASHBOARD_NAV_LABEL/g) ?? []).toHaveLength(1);
     });
 
     it("still shows the signed-in buyer their own actions and the sign-out control", () => {
-        expect(code).toContain('href="/ticketing/orders"');
-        expect(code).toContain('href="/ticketing/tickets"');
+        expect(code).toContain('href: "/ticketing/orders"');
+        expect(code).toContain('href: "/ticketing/tickets"');
         expect(code).toContain("<SiteSignOut />");
         expect(code).toContain('<SiteSignOut variant="menu" />');
+    });
+});
+
+/* ==================================================================================
+ * 2b. THE LANDING NAVBAR'S ACTUAL OUTPUT — rendered, not read
+ * ==================================================================================
+ *
+ * `/` renders `SiteShell → SiteHeader`, and this is the desktop row that produces it. The
+ * tests below RENDER that row for each role (it is a pure, synchronous component) and assert
+ * the `href` the browser would receive — so a PIC's "Dashboard" item is proven to be
+ * `/dashboard/pic`, not merely declared to be.
+ */
+
+describe("the landing navbar emits the role-correct href (rendered output)", () => {
+    function renderDesktopRow(role: PlatformRole): string {
+        return renderToStaticMarkup(
+            createElement(DesktopNavLinks, { items: signedInNavItems(role) })
+        );
+    }
+
+    it("PIC → /dashboard/pic, never /dashboard", () => {
+        const html = renderDesktopRow("PIC");
+
+        expect(html).toContain('href="/dashboard/pic"');
+        expect(html).not.toContain('href="/dashboard"');
+    });
+
+    it("ADMIN → /dashboard", () => {
+        const html = renderDesktopRow("ADMIN");
+
+        expect(html).toContain('href="/dashboard"');
+        expect(html).not.toContain('href="/dashboard/pic"');
+    });
+
+    it("MANAGER → /dashboard", () => {
+        const html = renderDesktopRow("MANAGER");
+
+        expect(html).toContain('href="/dashboard"');
+        expect(html).not.toContain('href="/dashboard/pic"');
+    });
+
+    it("CUSTOMER → no operator or PIC dashboard link at all", () => {
+        const html = renderDesktopRow("CUSTOMER");
+
+        expect(html).not.toContain('href="/dashboard"');
+        expect(html).not.toContain('href="/dashboard/pic"');
+        expect(html).not.toContain("Dashboard");
+    });
+
+    it("keeps the buyer's own rows for every role", () => {
+        for (const role of PLATFORM_ROLES) {
+            const html = renderDesktopRow(role);
+
+            expect(html).toContain('href="/ticketing/orders"');
+            expect(html).toContain('href="/ticketing/tickets"');
+        }
+    });
+
+    it("exposes the same items the drawer spreads, for every role", () => {
+        for (const role of PLATFORM_ROLES) {
+            const items = signedInNavItems(role);
+            const expected = shouldShowDashboardNav(role) ? 3 : 2;
+
+            expect(items).toHaveLength(expected);
+            expect(items.some((item) => item.href === "/dashboard/pic")).toBe(
+                role === "PIC"
+            );
+        }
+    });
+});
+
+/* ==================================================================================
+ * 2c. THE HEADER IS ONE UI SYSTEM — one geometry for every item
+ * ==================================================================================
+ *
+ * The reported visual defect: each item hand-wrote its own box (`rounded-lg px-3 py-2` vs
+ * `rounded-xl px-4 py-2`), none had a fixed height and none forbade wrapping, so "Pesanan
+ * saya" wrapped onto two lines and the row read as differently sized buttons. The contract
+ * now lives in ONE module and every item consumes it.
+ */
+
+const HEADER_NAV_STYLES = "components/ticketing/header-nav.ts";
+const SITE_SIGN_OUT = "components/ticketing/SiteSignOut.tsx";
+
+describe("every header item shares one geometry", () => {
+    const styles = readCode(HEADER_NAV_STYLES);
+    const header = readCode(SITE_HEADER);
+    const signOut = readCode(SITE_SIGN_OUT);
+
+    it("defines one box with a fixed height and no wrapping", () => {
+        for (const token of [
+            "inline-flex",
+            "h-10",
+            "items-center",
+            "justify-center",
+            "whitespace-nowrap",
+            "rounded-xl",
+            "px-4",
+            "text-sm",
+        ]) {
+            expect(styles).toContain(token);
+        }
+    });
+
+    it("renders every control from that one box", () => {
+        // Public links, the signed-in rows, "Masuk", "Buat event" and the sign-out control.
+        expect(header).toContain("HEADER_NAV_VARIANT.quiet");
+        expect(header).toContain("HEADER_NAV_VARIANT[item.variant]");
+        expect(header).toContain("HEADER_NAV_VARIANT.outline");
+        expect(header).toContain("HEADER_NAV_VARIANT.primary");
+        expect(signOut).toContain("HEADER_NAV_VARIANT.outline");
+    });
+
+    it("leaves no item with its own hand-written box", () => {
+        // The old per-item geometry is gone: no `rounded-lg px-3 py-2` (links) and no
+        // `rounded-xl px-4 py-2` (chips) survives in the header or its sign-out control.
+        for (const source of [header, signOut]) {
+            expect(source).not.toMatch(/rounded-lg px-3 py-2/);
+            expect(source).not.toMatch(/rounded-xl[^\n]*px-4[^\n]*py-2(?!\.5)/);
+        }
     });
 });
 

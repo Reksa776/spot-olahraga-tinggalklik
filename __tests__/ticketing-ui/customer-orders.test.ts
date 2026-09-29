@@ -786,10 +786,12 @@ describe("P20B-7. navigation", () => {
     test("the header links 'Pesanan saya' for a signed-in visitor, on desktop AND mobile", () => {
         const source = code(read(SITE_HEADER));
 
-        // The desktop anchor and the mobile menu entry — two renderings of ONE destination,
-        // both behind the `signedIn` branch.
-        expect(source).toMatch(/href="\/ticketing\/orders"/);
+        // The destination is declared ONCE in `signedInNavItems` and rendered in two places:
+        // `DesktopNavLinks` renders `item.href` as an anchor, and the mobile drawer spreads the
+        // same list. Both are behind the `signedIn` branch.
         expect(source).toMatch(/href: "\/ticketing\/orders"/);
+        expect(source).toContain("signedInNavItems");
+        expect(source).toContain("<DesktopNavLinks items={navItems} />");
         expect(source).toContain("Pesanan saya");
 
         // One navigation system: the new entry is rendered by the existing header, and the

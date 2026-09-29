@@ -1,13 +1,16 @@
 import Link from "next/link";
+import type { PlatformRole } from "@prisma/client";
 
 import { auth } from "@/auth";
 import { getApplicationBranding } from "@/lib/app-settings";
 import { getDashboardPath, shouldShowDashboardNav } from "@/lib/dashboard/scope";
+import { cn } from "@/lib/utils";
 
 import Brand from "./Brand";
 import MobileMenuLinks from "./MobileMenuLinks";
 import SearchBar from "./SearchBar";
 import SiteSignOut from "./SiteSignOut";
+import { HEADER_NAV_VARIANT, type HeaderNavVariant } from "./header-nav";
 
 const NAV = [
     { href: "/events", label: "Event" },
@@ -15,25 +18,114 @@ const NAV = [
 ];
 
 /**
- * The back office, as ONE definition rendered in two places (desktop link, mobile drawer row).
- *
- * The LABEL lives here so the two renderings cannot drift and so "exactly one Dashboard
- * destination" is a property of the source, not a promise. It is gated by
- * `shouldShowDashboardNav` — never by this constant alone.
- *
- * The DESTINATION is deliberately NOT a constant: it follows the account's platform role
- * through `getDashboardPath`, because a PIC's back office is `/dashboard/pic` while an
- * ADMIN/MANAGER's is `/dashboard`. A single hardcoded `/dashboard` here was the bug — it
- * sent PIC users into the operator overview.
+ * The label of the back-office entrance, in ONE place so the desktop link and the mobile
+ * drawer row cannot drift. The DESTINATION is not a constant: it follows the account's
+ * platform role (`getDashboardPath`) — `/dashboard` for ADMIN/MANAGER, `/dashboard/pic` for a
+ * PIC. A single hardcoded `/dashboard` is the defect this replaces; see `signedInNavItems`.
  */
 const DASHBOARD_NAV_LABEL = "Dashboard";
+
+/** The organiser call to action, as one definition shared by the desktop link and the drawer. */
+const BUAT_EVENT_ITEM = { href: "/dashboard/events", label: "Buat event" } as const;
+
+/** One link rendered by the desktop row and pushed into the mobile drawer. */
+export type HeaderNavItem = {
+    href: string;
+    label: string;
+    variant: HeaderNavVariant;
+};
+
+/**
+ * ==========================================
+ * THE SIGNED-IN NAV ITEMS — ONE LIST, ONE ROLE-AWARE DESTINATION
+ * ==========================================
+ *
+ * Every signed-in item the header shows, in ONE array that BOTH renderings consume: the
+ * desktop link row (`DesktopNavLinks`) and the mobile drawer (`MobileMenu`). The drawer used
+ * to spread a single hardcoded constant; now it spreads this list, so the two renderings cannot
+ * disagree about WHICH items exist or WHERE they point.
+ *
+ * ── THE ROLE-ROUTING CONTRACT ───────────────────────────────────────────────────
+ *   ADMIN    → /dashboard       (operator back office)
+ *   MANAGER  → /dashboard       (operator back office)
+ *   PIC      → /dashboard/pic   (PIC self-service — NOT the operator overview)
+ *   CUSTOMER → no Dashboard item at all
+ *
+ * `shouldShowDashboardNav` decides who is offered the item and `getDashboardPath` decides
+ * where it points. Both are the project's existing helpers: the path one DERIVES from the
+ * login flow's own `LOGIN_ROLE_INTENT_META` table, so the navbar and the post-login redirect
+ * can never disagree about where a PIC belongs, and no second role→path mapping exists.
+ *
+ * ── WHY THIS IS A PURE FUNCTION ─────────────────────────────────────────────────
+ * It takes the platform role and returns data, with no session, no database and no rendering.
+ * That is what makes the routing decision directly testable for every role — including a
+ * RENDERED check that the desktop row really emits `href="/dashboard/pic"` for a PIC (see
+ * `__tests__/auth-flow/dashboard-navigation.test.ts`). Nothing here is an authorization: the
+ * destination page re-decides its own read on the server.
+ */
+export function signedInNavItems(
+    platformRole: PlatformRole | null | undefined
+): HeaderNavItem[] {
+    const items: HeaderNavItem[] = [];
+
+    if (shouldShowDashboardNav(platformRole)) {
+        items.push({
+            href: getDashboardPath(platformRole),
+            label: DASHBOARD_NAV_LABEL,
+            variant: "quiet",
+        });
+    }
+
+    items.push({
+        href: "/ticketing/orders",
+        label: "Pesanan saya",
+        variant: "quiet",
+    });
+    items.push({
+        href: "/ticketing/tickets",
+        label: "Tiket saya",
+        variant: "outline",
+    });
+
+    return items;
+}
+
+/**
+ * The desktop signed-in link row — the SAME items as the drawer, rendered with the shared nav
+ * geometry (`components/ticketing/header-nav.ts`). Exported and pure so a test can render it
+ * for a role and assert the actual `href` the browser would receive.
+ *
+ * The `hidden sm:inline-flex` is the responsive contract the row already had: below `sm` the
+ * links live in the mobile drawer instead, and the geometry's `inline-flex` is restored at
+ * `sm`, so the item is never `display:none` at desktop widths.
+ */
+export function DesktopNavLinks({ items }: { items: HeaderNavItem[] }) {
+    return (
+        <>
+            {items.map((item) => (
+                <Link
+                    key={item.href}
+                    href={item.href}
+                    className={cn(
+                        HEADER_NAV_VARIANT[item.variant],
+                        "hidden sm:inline-flex"
+                    )}
+                >
+                    {item.label}
+                </Link>
+            ))}
+        </>
+    );
+}
 
 /**
  * The header for the ticketing discovery surface.
  *
  * Why not in `app/layout.tsx`: the retail storefront (`/products`, `/cart`, `/checkout`,
  * `/orders`) is live and renders its own chrome; a global header would double up there. Ticketing
- * pages opt in via `SiteShell`, which is additive by construction.
+ * pages opt in via `SiteShell`, which is additive by construction. Every route that renders this
+ * header — `/`, `/events`, `/e/[slug]`, the legal pages — renders THE SAME header: there is one
+ * public navbar in the product, and this is it.
  *
  * Sole data read is `auth()` — the cookie session, no database round-trip — so the header can sit
  * on every page without adding a query. Anything authoritative (ticket counts, order state) is
@@ -43,9 +135,10 @@ const DASHBOARD_NAV_LABEL = "Dashboard";
  * row plus every membership and grant, on every public page, for every signed-in visitor. See
  * `shouldShowDashboardNav` for the argument and for the one asymmetry it accepts.
  *
- * DASHBOARD VISIBILITY IS UX ONLY. `/dashboard` is gated server-side by the layout and by every
- * service under it, so an account that is not offered the link is refused exactly as before, and
- * an account that is offered it gains nothing by seeing it.
+ * DASHBOARD VISIBILITY AND DESTINATION ARE UX ONLY. `/dashboard` and `/dashboard/pic` are gated
+ * server-side by the dashboard layout and by every service under it, so an account that is not
+ * offered the link is refused exactly as before, and an account that is offered it gains nothing
+ * by seeing it — including by typing `/dashboard` by hand.
  *
  * Mobile deliberately has no inline search field: at 375px the row would be brand + field +
  * actions, which is the "overcrowded" failure the brief warns about. Search is a full-width
@@ -63,15 +156,14 @@ export default async function SiteHeader() {
     const signedIn = Boolean(session?.user);
 
     /*
-     * One helper decides WHO is offered the item, for both renderings below. A GUEST has no
-     * session at all and a CUSTOMER resolves to `false`; ADMIN, MANAGER and PIC resolve to
-     * `true`. A second, role-aware helper decides WHERE it points — `/dashboard` for
-     * ADMIN/MANAGER, `/dashboard/pic` for a PIC — and the two renderings share both answers.
-     * Nothing here is a security boundary — see the header.
+     * ONE decision per render, shared by both renderings: the platform role is read once, the
+     * item list is built once from it, and the desktop row and the mobile drawer both consume
+     * that same list. A GUEST has no session and a CUSTOMER resolves to no Dashboard item;
+     * ADMIN, MANAGER and PIC get one, pointing at `/dashboard`, `/dashboard`, `/dashboard/pic`
+     * respectively. Nothing here is a security boundary — see the header.
      */
     const platformRole = session?.user.platformRole;
-    const showDashboard = signedIn && shouldShowDashboardNav(platformRole);
-    const dashboardHref = getDashboardPath(platformRole);
+    const navItems = signedIn ? signedInNavItems(platformRole) : [];
 
     return (
         <header className="sticky top-0 z-40 border-b border-ink-100 bg-white/90 backdrop-blur">
@@ -82,11 +174,13 @@ export default async function SiteHeader() {
                     aria-label="Navigasi utama"
                     className="hidden items-center gap-1 lg:flex"
                 >
+                    {/* The public links use the SAME nav geometry as the signed-in controls,
+                        so the header reads as one system whether or not a visitor is signed in. */}
                     {NAV.map((item) => (
                         <Link
                             key={item.href}
                             href={item.href}
-                            className="rounded-lg px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900"
+                            className={HEADER_NAV_VARIANT.quiet}
                         >
                             {item.label}
                         </Link>
@@ -97,80 +191,45 @@ export default async function SiteHeader() {
                     <SearchBar size="sm" placeholder="Cari event atau olahraga…" />
                 </div>
 
-                <div className="ml-auto flex items-center gap-2 md:ml-0">
+                <div className="ml-auto flex items-center gap-1.5 md:ml-0">
                     {signedIn ? (
                         <>
                             {/*
-                             * DASHBOARD NAVBAR — the back-office entrance for the accounts
-                             * that HAVE one (ADMIN / MANAGER / PIC).
+                             * THE SIGNED-IN ROW. "Dashboard" and "Pesanan saya" are quiet nav
+                             * links, "Tiket saya" and "Keluar" are bordered secondary controls,
+                             * and "Buat event" beside them is the ONE primary action — all four
+                             * drawn on the shared nav geometry so the row reads as one system
+                             * rather than as buttons of four different sizes.
                              *
-                             * It sits with the other signed-in actions rather than in the
-                             * public `NAV` above, because it is not a public link: a visitor
-                             * without a session would be sent a link that only bounces to
-                             * /login, exactly the reason "Pesanan saya" is here too.
-                             *
-                             * Styled as the QUIET nav link (the same treatment as "Pesanan
-                             * saya") and not as a chip: "Buat event" beside it is the primary
-                             * call to action, and a second bordered button would read as a
-                             * second one. Recognisable, not competing.
+                             * The Dashboard row's href comes from `signedInNavItems`, i.e. from
+                             * the account's platform role. It is NOT a constant.
                              */}
-                            {showDashboard ? (
-                                <Link
-                                    href={dashboardHref}
-                                    className="hidden rounded-lg px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
-                                >
-                                    {DASHBOARD_NAV_LABEL}
-                                </Link>
-                            ) : null}
-
-                            {/*
-                             * PHASE 20B — "Pesanan saya" (the buyer's order history).
-                             *
-                             * Deliberately NOT added to `NAV` above: that list is rendered for
-                             * every visitor and `/ticketing/orders` requires a session, so a
-                             * signed-out shopper would be sent a link that only bounces to
-                             * /login. It is the storefront's job to invite; a private list
-                             * belongs in the signed-in actions, exactly like the wallet beside
-                             * it. Rendered as a quiet nav link rather than a second bordered
-                             * button so the header keeps ONE primary action per state.
-                             */}
-                            <Link
-                                href="/ticketing/orders"
-                                className="hidden rounded-lg px-3 py-2 text-sm font-semibold text-ink-600 transition hover:bg-ink-50 hover:text-ink-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
-                            >
-                                Pesanan saya
-                            </Link>
-
-                            <Link
-                                href="/ticketing/tickets"
-                                className="hidden rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-800 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
-                            >
-                                Tiket saya
-                            </Link>
-
+                            <DesktopNavLinks items={navItems} />
                             <SiteSignOut />
                         </>
                     ) : (
                         <Link
                             href="/login"
-                            className="hidden rounded-xl border border-ink-200 px-4 py-2 text-sm font-semibold text-ink-800 transition hover:border-ink-900 hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 sm:block"
+                            className={cn(
+                                HEADER_NAV_VARIANT.outline,
+                                "hidden sm:inline-flex"
+                            )}
                         >
                             Masuk
                         </Link>
                     )}
 
                     <Link
-                        href="/dashboard/events"
-                        className="hidden rounded-xl bg-ink-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-ink-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-900 xl:block"
+                        href={BUAT_EVENT_ITEM.href}
+                        className={cn(
+                            HEADER_NAV_VARIANT.primary,
+                            "hidden xl:inline-flex"
+                        )}
                     >
-                        Buat event
+                        {BUAT_EVENT_ITEM.label}
                     </Link>
 
-                    <MobileMenu
-                        signedIn={signedIn}
-                        showDashboard={showDashboard}
-                        dashboardHref={dashboardHref}
-                    />
+                    <MobileMenu signedIn={signedIn} navItems={navItems} />
                 </div>
             </div>
         </header>
@@ -189,39 +248,23 @@ export default async function SiteHeader() {
  * the page it had just navigated to. That component closes the drawer it is inside; the
  * `<summary>` remains the native toggle, so the keyboard and no-JavaScript behaviour are
  * unchanged.
+ *
+ * It receives the SAME `navItems` array the desktop row renders, so the drawer and the desktop
+ * link cannot disagree about who is offered the back-office entrance or where it points.
  */
 function MobileMenu({
     signedIn,
-    showDashboard,
-    dashboardHref,
+    navItems,
 }: {
     signedIn: boolean;
-    /**
-     * The SAME decision the desktop link uses, passed down rather than recomputed: there is one
-     * call to `shouldShowDashboardNav` per render, so the two renderings of the item cannot
-     * disagree about who is offered it.
-     */
-    showDashboard: boolean;
-    /**
-     * …and the SAME role-aware destination, for the same reason: the drawer row and the desktop
-     * link must point at the identical page (`/dashboard` for ADMIN/MANAGER, `/dashboard/pic`
-     * for a PIC).
-     */
-    dashboardHref: string;
+    /** Built once by `SiteHeader` from the session's platform role. */
+    navItems: HeaderNavItem[];
 }) {
     const items = [
         ...NAV,
         { href: "/events", label: "Semua event" },
-        ...(signedIn
-            ? [
-                  ...(showDashboard
-                      ? [{ href: dashboardHref, label: DASHBOARD_NAV_LABEL }]
-                      : []),
-                  { href: "/ticketing/orders", label: "Pesanan saya" },
-                  { href: "/ticketing/tickets", label: "Tiket saya" },
-              ]
-            : [{ href: "/login", label: "Masuk" }]),
-        { href: "/dashboard/events", label: "Buat event" },
+        ...(signedIn ? navItems : [{ href: "/login", label: "Masuk" }]),
+        BUAT_EVENT_ITEM,
     ];
 
     return (
