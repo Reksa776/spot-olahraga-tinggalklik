@@ -970,6 +970,47 @@ html.dark {
 }
 
 /*
+ * ── THE SPORT GRID'S OWN PACE — THE PHONE ONLY ─────────────────────────────────
+ *
+ * The landing page's tiles (`.reveal-tile`, written by `components/ticketing/SportGrid.tsx`) share the
+ * `card` step everywhere, and above `md` they share its pace too — nothing below changes a desktop or
+ * a tablet reading. A phone is a different reading situation, not a smaller desktop: the tiles are a
+ * swipeable row of fourteen, so a 70ms step asks a thumb to keep scrolling through a queue. Below
+ * `md` the tiles therefore run on their own step and their own entrance, so the whole row lands
+ * together instead of the visitor out-scrolling it.
+ *
+ * THE DELAY IS PER-TILE, so it cannot be a fixed declaration: the component writes both paces as
+ * custom properties on each tile (`--tk-tile-delay`, the 70ms/350ms cadence; `--tk-tile-delay-mobile`,
+ * the 20ms/120ms one) and the two rules below choose WHICH the current width plays. That is also why
+ * no `!important` appears here: nothing writes an inline `animation-delay` for a tile, so the
+ * breakpoint can simply select a value rather than fight the markup for one.
+ *
+ * The override names the attributes AND the class, so it can only ever match a landing-page tile —
+ * the `/events` filter chips carry no reveal attribute at all, and an event card carries the
+ * attribute without the class.
+ */
+[data-reveal="card"].reveal-tile,
+[data-reveal-scroll="card"].reveal-tile {
+  animation-delay: var(--tk-tile-delay);
+}
+
+@media (max-width: 767px) {
+  :root {
+    /* Defined ONLY here: no width above the breakpoint can see the faster pace. */
+    --tk-reveal-shift-tile: 8px;
+    --tk-reveal-duration-tile: 320ms;
+  }
+
+  [data-reveal="card"].reveal-tile,
+  [data-reveal-scroll="card"].reveal-tile {
+    /* A shorter distance than the tablet's 13px, and a much shorter entrance than the card's. */
+    --tk-reveal-shift: var(--tk-reveal-shift-tile);
+    animation-duration: var(--tk-reveal-duration-tile);
+    animation-delay: var(--tk-tile-delay-mobile);
+  }
+}
+
+/*
  * REDUCED MOTION — the one rule the whole system depends on.
  *
  * Both attributes are neutralised, and `opacity`/`transform` are forced to their resting

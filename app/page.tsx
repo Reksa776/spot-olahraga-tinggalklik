@@ -199,7 +199,15 @@ export default async function DiscoveryHomePage() {
                             subtitle="Event yang baru dipublikasikan"
                             href="/events?sort=newest"
                         />
-                        <EventRow events={newest.items} />
+                        {/*
+                         * This is the one section that is a CATALOGUE rather than a teaser: the
+                         * visitor is browsing what is new, not scanning the soonest dates, so its
+                         * cards are a vertical grid — one column on a phone, three from `lg` up —
+                         * instead of the horizontal peek-at-the-next one. It is the only call site
+                         * that opts out of the default row, which is what leaves Event terdekat and
+                         * the free-ticket row byte-identically as they were.
+                         */}
+                        <EventRow events={newest.items} layout="grid" />
                     </Reveal>
                 ) : null}
 

@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 import Link from "next/link";
 
 import Reveal, { revealDelay } from "@/components/ui/Reveal";
@@ -8,6 +10,35 @@ export type SportOption = {
     name: string;
     slug: string;
 };
+
+/**
+ * THE PHONE'S TILE PACE — and why there is a second pair of numbers at all.
+ *
+ * Above `md` the tile branch keeps the shared card cadence it has always used: `revealDelay()`'s
+ * 70ms step, capped at 350ms, with the card step's own distance and duration. A phone is a different
+ * reading situation, not a smaller desktop: fourteen tiles in a swipeable row, so a step the width
+ * of an event row's is a queue a thumb can out-scroll — the visitor reaches the section, keeps
+ * scrolling, and the tiles are still arriving underneath them. These two numbers are the phone's
+ * answer: a fifth of the gap and a cap the whole row clears in about a tenth of a second, so the
+ * tiles read as one row arriving rather than as fourteen arrivals.
+ *
+ * They are applied by `app/globals.css` in a `max-width: 767px` block (below Tailwind's `md`), and
+ * NEVER as a base value — the token only exists inside that media query, so no width above it can see
+ * the faster pace. The delay is per-tile, so it cannot be a fixed CSS value either: the component
+ * writes both paces as custom properties and the stylesheet selects which one plays.
+ */
+export const SPORT_TILE_MOBILE_STEP_MS = 20;
+
+/** The phone's cap: six steps, so the last tile waits ~120ms, never hundreds. */
+export const SPORT_TILE_MOBILE_MAX_DELAY_MS = 120;
+
+/**
+ * The phone's stagger delay for the tile at `index`, capped exactly like `revealDelay()` so a longer
+ * sport list cannot produce a longer wait.
+ */
+export function sportTileMobileDelay(index: number): number {
+    return Math.min(index * SPORT_TILE_MOBILE_STEP_MS, SPORT_TILE_MOBILE_MAX_DELAY_MS);
+}
 
 type Props = {
     sports: SportOption[];
@@ -82,11 +113,27 @@ export default function SportGrid({
      * The tiles use the same `card` step the event rows do — a 16px rise and a 0.98 scale, 70ms
      * apart — so the two grids on the page clearly belong to one system. The tile is revealed as a
      * WHOLE: its tint chip and its label are the card, not three animated parts of one.
+     *
+     * The `card` step is the tile's step at every width, but the tile's PACE is not one number: above
+     * `md` the tiles play the shared cadence above, and below it they run on their own
+     * `SPORT_TILE_MOBILE_*` numbers (a 20ms step capped at 120ms, a 320ms 8px landing) selected by a
+     * `max-width: 767px` block in `app/globals.css`. Desktop and tablet are therefore byte-for-byte
+     * the same cadence they were; only the phone's fourteen-tile row is accelerated.
      */
     return (
         <ul
             id={id}
-            className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7"
+            /*
+             * The same scroller recipe the event rows use: a negative margin plus matching padding
+             * so the row bleeds to the container's edge while the PAGE never scrolls sideways (the
+             * horizontal overflow is clipped by this list's own `overflow-x-auto`), fixed-width snap
+             * targets on a phone and a tablet, and the original grid restored from `lg` up — four
+             * across, seven on a wide desktop, so a large screen is never squeezed into one thin row.
+             *
+             * The 1px/2px padding top-and-bottom is what keeps the tile's 2px hover lift (and the
+             * card shadow) from being clipped by the scroller's own box.
+             */
+            className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pt-1 pb-2 sm:-mx-6 sm:px-6 lg:mx-0 lg:grid lg:grid-cols-4 lg:overflow-visible lg:px-0 lg:pt-0 lg:pb-0 xl:grid-cols-7 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]"
         >
             {sports.map((sport, index) => {
                 const count = counts?.[sport.slug];
@@ -97,7 +144,20 @@ export default function SportGrid({
                         key={sport.id}
                         scroll
                         variant="card"
-                        delay={revealDelay(index)}
+                        /*
+                         * The pace rides on the element as two custom properties rather than as an
+                         * inline `animation-delay`: the stylesheet plays `--tk-tile-delay` above
+                         * `md` and `--tk-tile-delay-mobile` below it. One value cannot be right at
+                         * both widths, and choosing one in CSS is what keeps the choice out of an
+                         * `!important` fight with the markup.
+                         */
+                        className="reveal-tile w-[150px] shrink-0 snap-start sm:w-[168px] lg:w-auto"
+                        style={
+                            {
+                                "--tk-tile-delay": `${revealDelay(index)}ms`,
+                                "--tk-tile-delay-mobile": `${sportTileMobileDelay(index)}ms`,
+                            } as CSSProperties
+                        }
                     >
                         <Link
                             href={`/events?sport=${encodeURIComponent(sport.slug)}`}

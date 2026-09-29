@@ -46,7 +46,12 @@ import Reveal, {
 } from "@/components/ui/Reveal";
 import EventRow from "@/components/ticketing/EventRow";
 import SectionHeader from "@/components/ticketing/SectionHeader";
-import SportGrid, { type SportOption } from "@/components/ticketing/SportGrid";
+import SportGrid, {
+    SPORT_TILE_MOBILE_MAX_DELAY_MS,
+    SPORT_TILE_MOBILE_STEP_MS,
+    sportTileMobileDelay,
+    type SportOption,
+} from "@/components/ticketing/SportGrid";
 import type { PublicEventCard } from "@/lib/events/catalog";
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -663,17 +668,164 @@ describe("event cards stagger as list items, and only on the landing page", () =
     });
 });
 
+/*
+ * THE OTHER LAYOUT — opt-in, and used by exactly one section. Keeping it a variant of the LIST (the
+ * same `Reveal`-wrapped items, the same capped stagger, the same `EventCard`) rather than a second
+ * card or a second row component is what lets "Baru ditambahkan" read as a catalogue while every
+ * other row — Event terdekat above all — stays byte-identically the horizontal scroller.
+ */
+describe("the newest section opts into the vertical card grid, and the other rows do not", () => {
+    it("stacks full-width cards instead of a snap-scroller", () => {
+        const html = renderToString(
+            createElement(EventRow, {
+                events: [EVENT, { ...EVENT, slug: "b" }],
+                layout: "grid",
+            })
+        );
+
+        // One column on a phone, two on a tablet, three from `lg` up.
+        expect(html).toContain("grid-cols-1");
+        expect(html).toContain("sm:grid-cols-2");
+        expect(html).toContain("lg:grid-cols-3");
+
+        // No scroller and no fixed card width: the cards are in the page's own flow.
+        expect(html).not.toContain("snap-x");
+        expect(html).not.toContain("overflow-x-auto");
+        expect(html).not.toContain("w-[268px]");
+
+        // Still a list, still one item per event.
+        expect(html).toContain("data-event-row");
+        expect((html.match(/<ul /g) ?? []).length).toBe(1);
+        expect((html.match(/<li /g) ?? []).length).toBe(2);
+    });
+
+    it("keeps the shared entrance — the same card step and the same capped stagger", () => {
+        const html = renderToString(
+            createElement(EventRow, {
+                events: [EVENT, { ...EVENT, slug: "b" }, { ...EVENT, slug: "c" }],
+                layout: "grid",
+            })
+        );
+
+        expect(html).toContain('data-reveal-scroll="card"');
+        expect((html.match(/data-reveal-scroll="card"/g) ?? []).length).toBe(3);
+        expect(html).toContain(`animation-delay:${REVEAL_STEP_MS}ms`);
+        expect(html).toContain(`animation-delay:${REVEAL_STEP_MS * 2}ms`);
+    });
+
+    it("is opted into by the new-events section only — the protected rows keep the default", () => {
+        const code = readCode("app/page.tsx");
+
+        // Exactly one call site asks for the grid…
+        expect((code.match(/layout="grid"/g) ?? []).length).toBe(1);
+
+        // …and it is the `sort: newest` section, while Event terdekat (the protected row) and the
+        // free-ticket row take no layout prop at all.
+        expect(code).toContain('<EventRow events={newest.items} layout="grid" />');
+        expect(code).toContain("<EventRow events={upcoming} />");
+        expect(code).toContain("<EventRow events={free.items} />");
+    });
+});
+
 describe("sport tiles stagger on the landing page and the /events filter chips do NOT", () => {
-    it("staggers the tile variant, on the same step the event cards use", () => {
+    it("staggers the tile variant, on the card step, revealed on entry", () => {
         const html = renderToString(createElement(SportGrid, { sports: SPORTS }));
 
         expect(html).toContain('data-reveal-scroll="card"');
         expect((html.match(/data-reveal-scroll="card"/g) ?? []).length).toBe(SPORTS.length);
-        expect(html).toContain(`animation-delay:${REVEAL_STEP_MS}ms`);
         expect((html.match(/<li /g) ?? []).length).toBe(SPORTS.length);
+
+        // Every tile carries the pace marker, so the stylesheet's breakpoint rule can match it and
+        // nothing else on the page. It leads the class list; the layout classes follow it.
+        expect((html.match(/class="reveal-tile[^"]*"/g) ?? []).length).toBe(SPORTS.length);
+
+        // The tile still animates (it is not on the static/`animation: none` path), and the pace
+        // arrives as data rather than as an inline `animation-delay`…
+        expect(html).not.toContain("animation-delay");
 
         // The tile is revealed as a whole: one attribute per <li>, none on the link inside it.
         expect(html).not.toMatch(/<a [^>]*data-reveal/);
+    });
+
+    it("scrolls horizontally below `lg`, and the page itself never scrolls sideways", () => {
+        const html = renderToString(createElement(SportGrid, { sports: SPORTS }));
+
+        /*
+         * The tiles ride the same scroller recipe as the event rows: the horizontal overflow belongs
+         * to THIS list (`overflow-x-auto`), it bleeds to the container's edge through a negative
+         * margin that its own padding cancels out, and the bar is hidden on both engines. That is
+         * exactly why the document cannot gain a horizontal scrollbar.
+         */
+        expect(html).toContain("snap-x");
+        expect(html).toContain("snap-mandatory");
+        expect(html).toContain("overflow-x-auto");
+        expect(html).toContain("-mx-4");
+        expect(html).toContain("sm:-mx-6");
+        expect(html).toContain("lg:mx-0");
+        // Rendered HTML escapes the arbitrary variant's `&`.
+        expect(html).toContain("[&amp;::-webkit-scrollbar]:hidden");
+        expect(html).toContain("[scrollbar-width:none]");
+
+        // Every tile is a fixed snap target on the scroller and a grid cell from `lg` up, so a wide
+        // screen is still the tidy grid it always was rather than one thin row of fourteen.
+        expect((html.match(/shrink-0 snap-start/g) ?? []).length).toBe(SPORTS.length);
+        expect((html.match(/lg:w-auto/g) ?? []).length).toBe(SPORTS.length);
+        expect(html).toContain("lg:grid");
+        expect(html).toContain("lg:grid-cols-4");
+        expect(html).toContain("xl:grid-cols-7");
+    });
+
+    it("keeps the tablet/desktop tile delays on the shared capped helper", () => {
+        const many = Array.from({ length: 8 }, (_, index) => ({
+            id: `s${index}`,
+            name: `Sport ${index}`,
+            slug: `sport-${index}`,
+        }));
+        const html = renderToString(createElement(SportGrid, { sports: many }));
+
+        // `--tk-tile-delay` is the value every width above `md` plays, and it is literally
+        // `revealDelay(index)` — the same capped helper the event rows and the footer use.
+        for (let index = 0; index < many.length; index += 1) {
+            expect(html).toContain(`--tk-tile-delay:${revealDelay(index)}ms`);
+        }
+
+        expect(revealDelay(7)).toBe(REVEAL_MAX_DELAY_MS);
+        expect(html).toContain(`--tk-tile-delay:${REVEAL_MAX_DELAY_MS}ms`);
+        expect(html).toContain(`--tk-tile-delay:${REVEAL_STEP_MS}ms`);
+    });
+
+    it("exposes the phone's own pace, and caps it well below the shared one", () => {
+        expect(sportTileMobileDelay(0)).toBe(0);
+        expect(sportTileMobileDelay(1)).toBe(SPORT_TILE_MOBILE_STEP_MS);
+        expect(sportTileMobileDelay(100)).toBe(SPORT_TILE_MOBILE_MAX_DELAY_MS);
+        expect(sportTileMobileDelay(1000)).toBe(sportTileMobileDelay(100));
+
+        // A 20-25ms step: below the ~40ms that reads as "simultaneous", and a third of the shared
+        // 70ms step, which is what turns fourteen arrivals into one grid.
+        expect(SPORT_TILE_MOBILE_STEP_MS).toBeGreaterThanOrEqual(15);
+        expect(SPORT_TILE_MOBILE_STEP_MS).toBeLessThanOrEqual(25);
+        expect(SPORT_TILE_MOBILE_STEP_MS).toBeLessThan(REVEAL_STEP_MS);
+
+        // The cap keeps the last tile inside ~120-150ms, so a 14-tile phone grid clears in a tenth
+        // of a second instead of queueing.
+        expect(SPORT_TILE_MOBILE_MAX_DELAY_MS).toBeLessThanOrEqual(150);
+        expect(SPORT_TILE_MOBILE_MAX_DELAY_MS).toBeGreaterThanOrEqual(100);
+        expect(SPORT_TILE_MOBILE_MAX_DELAY_MS).toBeLessThan(REVEAL_MAX_DELAY_MS);
+
+        // Six steps, then the cap.
+        expect(sportTileMobileDelay(6)).toBe(SPORT_TILE_MOBILE_MAX_DELAY_MS);
+        expect(sportTileMobileDelay(5)).toBe(SPORT_TILE_MOBILE_STEP_MS * 5);
+    });
+
+    it("renders both paces on every tile, so the breakpoint has something to choose", () => {
+        const html = renderToString(createElement(SportGrid, { sports: SPORTS }));
+
+        for (let index = 0; index < SPORTS.length; index += 1) {
+            expect(html).toContain(`--tk-tile-delay:${revealDelay(index)}ms`);
+            expect(html).toContain(
+                `--tk-tile-delay-mobile:${sportTileMobileDelay(index)}ms`
+            );
+        }
     });
 
     it("leaves the chip variant completely un-animated, so /events is untouched", () => {
@@ -683,12 +835,158 @@ describe("sport tiles stagger on the landing page and the /events filter chips d
 
         expect(html).not.toContain("data-reveal");
         expect(html).not.toContain("animation-delay");
+        // The pace marker only exists in the tile branch, so no breakpoint rule can reach a chip.
+        expect(html).not.toContain("reveal-tile");
+        expect(html).not.toContain("--tk-tile-delay");
 
         // …and the component's source scopes the reveal to the tile branch.
         const code = readCode("components/ticketing/SportGrid.tsx");
         const chipBranch = code.slice(code.indexOf('variant === "chip"'), code.indexOf("return (", code.indexOf('variant === "chip"')));
 
         expect(chipBranch).not.toContain("<Reveal");
+    });
+});
+
+/* ==================================================================================
+ * 4d. THE SPORT GRID'S MOBILE PACE — FASTER BELOW `md`, IDENTICAL ABOVE IT
+ * ==================================================================================
+ * A phone shows two columns of fourteen tiles, so the shared card cadence turns the grid into a queue
+ * the visitor out-scrolls. The fix is one breakpoint-scoped block; these assertions are the contract
+ * that it stays scoped, stays faster, and changes nothing above it.
+ */
+
+describe("the sport grid runs faster on a phone and is untouched above it", () => {
+    const flat = CSS.replace(/\s+/g, " ");
+
+    /** The declarations of one flattened rule, so an assertion cannot be met by another rule. */
+    function rule(selector: string): string {
+        const start = flat.indexOf(selector);
+
+        expect(start).toBeGreaterThan(-1);
+
+        const open = flat.indexOf("{", start);
+
+        return flat.slice(open + 1, flat.indexOf("}", open));
+    }
+
+    const mobileStart = CSS.indexOf("@media (max-width: 767px)");
+    const reduceStart = CSS.indexOf("@media (prefers-reduced-motion: reduce)", mobileStart);
+    const mobile = CSS.slice(mobileStart, reduceStart);
+
+    it("scopes the faster pace to BELOW md — 767px, not the tablet's 1023.98px", () => {
+        expect(mobileStart).toBeGreaterThan(-1);
+        expect(reduceStart).toBeGreaterThan(mobileStart);
+
+        // 767px is Tailwind's `md` boundary: the phone layout ends exactly here, so the tablet
+        // (834x1112) and the desktop keep the cadence they had.
+        expect(flat).toContain("@media (max-width: 767px)");
+        expect(mobile).toContain('[data-reveal="card"].reveal-tile');
+        expect(mobile).toContain('[data-reveal-scroll="card"].reveal-tile');
+    });
+
+    it("gives the phone a shorter entrance than the card step it replaces", () => {
+        const duration = Number(mobile.match(/--tk-reveal-duration-tile:\s*(\d+)ms/)![1]);
+        const shift = Number(mobile.match(/--tk-reveal-shift-tile:\s*(\d+)px/)![1]);
+
+        // 300-350ms, the brief's band, and visibly shorter than the 500-580ms card step.
+        expect(duration).toBeGreaterThanOrEqual(300);
+        expect(duration).toBeLessThanOrEqual(350);
+
+        const cardDuration = Number(CSS.match(/--tk-reveal-duration-card:\s*(\d+)ms/)![1]);
+
+        expect(duration).toBeLessThan(cardDuration);
+
+        // A 6-8px rise: smaller than the tablet's 13px card distance, and the same tiny 0.98 scale
+        // the card step already uses (the tile rule introduces no second scale).
+        expect(shift).toBeGreaterThanOrEqual(6);
+        expect(shift).toBeLessThanOrEqual(8);
+        expect(shift).toBeLessThan(
+            Number(CSS.match(/--tk-reveal-shift-card:\s*(\d+)px/)![1])
+        );
+
+        // …and the tile rule only ever names a duration and a delay: no keyframes, no new movement.
+        expect(mobile).toContain("animation-duration: var(--tk-reveal-duration-tile)");
+        expect(mobile).not.toContain("animation-name");
+        expect(mobile).not.toContain("@keyframes");
+    });
+
+    it("plays the phone's delay only BELOW md, and the shared one above it", () => {
+        const base = CSS.slice(0, mobileStart);
+
+        // Above the breakpoint the tile's delay is `--tk-tile-delay`, whose value is `revealDelay()`.
+        expect(rule('[data-reveal="card"].reveal-tile, [data-reveal-scroll="card"].reveal-tile')).toBe(
+            " animation-delay: var(--tk-tile-delay); "
+        );
+
+        // Below it, the phone's value plays instead.
+        expect(mobile).toContain("animation-delay: var(--tk-tile-delay-mobile)");
+
+        /*
+         * …and the phone's tokens do not EXIST above the breakpoint: they are declared inside the
+         * media block, so no desktop or tablet rule can reference them even by accident.
+         */
+        expect(base).not.toContain("--tk-reveal-duration-tile");
+        expect(base).not.toContain("--tk-reveal-shift-tile");
+        expect(base).not.toContain("--tk-tile-delay-mobile");
+        expect((CSS.match(/--tk-reveal-duration-tile/g) ?? []).length).toBe(2);
+    });
+
+    it("leaves the card step, and every other step's desktop timing, exactly as it was", () => {
+        // The tile still wears the card step wherever it is read…
+        const card = rule('[data-reveal="card"], [data-reveal-scroll="card"]');
+
+        expect(card).toContain("--tk-reveal-shift: var(--tk-reveal-shift-card)");
+        expect(card).toContain("--tk-reveal-scale-factor: var(--tk-reveal-scale-factor-card)");
+        expect(card).toContain("animation-name: tk-reveal-scale");
+        expect(card).toContain("animation-duration: var(--tk-reveal-duration-card)");
+
+        // …and the desktop/tablet card tokens themselves are the untouched originals.
+        expect(CSS).toMatch(/--tk-reveal-shift-card:\s*16px/);
+        expect(CSS).toMatch(/--tk-reveal-duration-card:\s*580ms/);
+        expect(CSS).toMatch(/--tk-reveal-shift-section:\s*18px/);
+        expect(CSS).toMatch(/--tk-reveal-duration-section:\s*620ms/);
+        expect(CSS).toMatch(/--tk-reveal-shift-quiet:\s*8px/);
+        expect(CSS).toMatch(/--tk-reveal-duration-quiet:\s*620ms/);
+
+        // The tablet/phone token blocks are unchanged too: the new pace lives in its own block.
+        expect(CSS).toMatch(/--tk-reveal-shift-card:\s*13px/);
+        expect(CSS).toMatch(/--tk-reveal-duration-card:\s*540ms/);
+        expect(CSS).toMatch(/--tk-reveal-shift-card:\s*10px/);
+        expect(CSS).toMatch(/--tk-reveal-duration-card:\s*500ms/);
+    });
+
+    it("does not change EventRow's or the footer's pacing", () => {
+        // The shared step and cap are untouched, and that is what those two call sites read.
+        expect(REVEAL_STEP_MS).toBe(70);
+        expect(REVEAL_MAX_DELAY_MS).toBe(350);
+        expect(readCode("components/ticketing/EventRow.tsx")).toContain("revealDelay(");
+        expect(readCode("components/ticketing/SiteFooter.tsx")).toContain("revealDelay(");
+
+        /*
+         * The tile class is named exactly four times in the stylesheet — the two card-attribute
+         * selectors of the base rule, and the same two in the phone block — so no third rule (and no
+         * non-tile element) can pick up either pace.
+         */
+        expect([...CSS.matchAll(/\[data-reveal(?:-scroll)?="card"\]\.reveal-tile/g)]).toHaveLength(4);
+        expect((CSS.match(/reveal-tile/g) ?? []).length).toBe(4);
+        // …and in the component it is written once, on the tile branch only.
+        expect((readCode("components/ticketing/SportGrid.tsx").match(/reveal-tile/g) ?? []).length).toBe(1);
+    });
+
+    it("keeps the phone's pace on the same safe mechanism — no paused state, no timeline swap", () => {
+        expect(mobile).not.toContain("animation-play-state");
+        expect(mobile).not.toContain("paused");
+        expect(mobile).not.toContain("animation-timeline");
+
+        // Reduced motion still wins on a phone: the reduce block is later in the file and forces the
+        // resting state with `!important` for both attributes.
+        const reduce = CSS.slice(reduceStart);
+
+        expect(reduce).toContain("[data-reveal-scroll]");
+        expect(reduce).toMatch(/animation:\s*none\s*!important/);
+        expect(reduce).toMatch(/opacity:\s*1\s*!important/);
+        expect(reduce).toMatch(/transform:\s*none\s*!important/);
+        expect(reduceStart).toBeGreaterThan(mobileStart);
     });
 });
 
