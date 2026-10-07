@@ -257,6 +257,46 @@ export function isEventPurchasable(event: EventPurchaseGate): boolean {
 }
 
 /**
+ * The subset of an `Event` row that decides whether its own schedule has passed.
+ */
+export type EventEndWindow = {
+    startAt: Date;
+    endAt: Date | null;
+};
+
+/**
+ * Has this event's own schedule passed? (PHASE B — landing visibility + checkout guard)
+ *
+ * THE one canonical statement of "event sudah lewat", so the catalog listing, the
+ * "Ditutup" badge, the detail page's purchase card and the checkout gate all answer the
+ * same question the same way instead of each re-deriving a date comparison.
+ *
+ * ```
+ *   endAt IS NOT NULL  →  ended  ⇔  endAt  < now
+ *   endAt IS NULL      →  ended  ⇔  startAt < now
+ * ```
+ *
+ * This is deliberately the rule the public catalog has always used to decide whether a
+ * listing is "past" (`endAt >= now`, else `startAt >= now` is the not-past form), so no
+ * new business rule is introduced — the same comparison is simply given a name and
+ * reused. A null `endAt` means "no fixed end", which the catalog already treated as
+ * over once the start had passed; keeping that reading here means the badge and the
+ * listing can never disagree about the same row.
+ *
+ * The boundary is STRICT: `end == now` is still not ended, matching the catalog's
+ * inclusive `gte`. Pure and clock-injectable, like every other time-dependent predicate
+ * in this tree, so a test can pin the exact boundary instead of racing it.
+ */
+export function isEventEnded(
+    event: EventEndWindow,
+    now: Date = new Date()
+): boolean {
+    const end = event.endAt ?? event.startAt;
+
+    return end.getTime() < now.getTime();
+}
+
+/**
  * The event statuses at which a gate may admit people (Phase 13).
  *
  * Identical to `isEventPurchasable`'s sellable set on purpose: a gate is open while the

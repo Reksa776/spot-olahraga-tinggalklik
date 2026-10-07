@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { AppError } from "@/lib/api/errors";
 import { prisma } from "@/lib/prisma";
 
-import { summarizeSales, type SalesState } from "./sales-state";
+import { isEventEnded, summarizeSales, type SalesState } from "./sales-state";
 import type { CatalogQuery } from "./validation";
 
 /**
@@ -40,7 +40,19 @@ import type { CatalogQuery } from "./validation";
  * would be a business decision. Instead an event is treated as past when its own end
  * has passed — `endAt` when set, otherwise `startAt`, matching design §10.2 where a
  * null `endAt` means a running/road event with no fixed end. That needs no magic
- * constant and no arbitrary tolerance.
+ * constant and no arbitrary tolerance. The predicate itself now lives in
+ * `isEventEnded` (`lib/events/sales-state.ts`) so the listing, the card badge, the
+ * detail page and the checkout gate cannot drift apart.
+ *
+ * ── PHASE B: A PUBLISHED EVENT IS NEVER DELETED BY THE CLOCK ────────────────────
+ * The original filter hid every past event, which also hid a still-`PUBLISHED` one —
+ * the customer's own purchase history and the organiser's public record simply
+ * vanished once the date went by. A `PUBLISHED` row is therefore no longer
+ * date-filtered: it stays discoverable and is marked `hasEnded`, so the landing page
+ * can show it as "Ditutup" with no purchase affordance instead of silently dropping
+ * it. `ONGOING` keeps the live-window filter it has always had: it is a time statement
+ * the scheduler resolves into `COMPLETED`, and `COMPLETED` stays outside the catalog's
+ * status list entirely.
  */
 
 /** `remaining` is always null while D-15 is undecided (see sales-state.ts). */
@@ -106,6 +118,11 @@ export type PublicEventCard = {
     priceTo: number | null;
     salesState: SalesState;
     isSoldOut: boolean;
+    /**
+     * PHASE B — the event's own schedule has passed (`isEventEnded`). Server-computed so the
+     * card never re-derives the rule from a client clock; "Ditutup" is presented from this.
+     */
+    hasEnded: boolean;
     remaining: number | null;
     shareUrl: string;
 };
@@ -116,12 +133,16 @@ function canonicalShareUrl(origin: string, slug: string): string {
     return `${origin.replace(/\/+$/, "")}/e/${slug}`;
 }
 
-function toCard(row: CardRow, origin: string): PublicEventCard {
-    const summary = summarizeSales(row.ticketTypes as TicketTypeRow[], {
-        salesStartAt: row.salesStartAt,
-        salesEndAt: row.salesEndAt,
-        startAt: row.startAt,
-    });
+function toCard(row: CardRow, origin: string, now: Date): PublicEventCard {
+    const summary = summarizeSales(
+        row.ticketTypes as TicketTypeRow[],
+        {
+            salesStartAt: row.salesStartAt,
+            salesEndAt: row.salesEndAt,
+            startAt: row.startAt,
+        },
+        now
+    );
 
     return {
         slug: row.slug,
@@ -138,35 +159,82 @@ function toCard(row: CardRow, origin: string): PublicEventCard {
         priceTo: summary.priceTo,
         salesState: summary.salesState,
         isSoldOut: summary.isSoldOut,
+        hasEnded: isEventEnded({ startAt: row.startAt, endAt: row.endAt }, now),
         remaining: REMAINING_HIDDEN,
         shareUrl: canonicalShareUrl(origin, row.slug),
     };
 }
 
 /**
- * The hard-coded public filter.
+ * The always-on public filter: which rows may be shown to an anonymous visitor at all.
  *
  * Deliberately a single constant with no branch: design §29.5 bans "a 'no filter'
  * branch in a list query", because one forgotten branch leaks the platform. A caller
- * cannot influence `status`, `visibility` or `archivedAt` — only the documented
- * filter parameters are merged in.
+ * cannot influence `status`, `visibility` or `archivedAt` — only the documented filter
+ * parameters are merged in.
+ *
+ * PHASE 15 (P14-D11): `ONGOING` is now a reachable, REAL state (the scheduler moves
+ * `PUBLISHED → ONGOING` at `startAt`), so a filter of `status: "PUBLISHED"` would make
+ * every live event vanish from the catalog the moment it started.
+ *
+ * `COMPLETED` is deliberately absent: completion means the event is over.
+ * `DRAFT` / `PENDING_REVIEW` / `CANCELLED` / `ARCHIVED` stay excluded.
  */
-function publicVisibilityWhere(now: Date): Prisma.EventWhereInput {
+function publicStatusWhere(): Prisma.EventWhereInput {
     return {
-        // PHASE 15 (P14-D11): `ONGOING` is now a reachable, REAL state (the scheduler moves
-        // `PUBLISHED → ONGOING` at `startAt`), so a filter of `status: "PUBLISHED"` would
-        // make every live event vanish from the catalog the moment it started.
-        //
-        // `COMPLETED` is deliberately absent: completion means the event is over, and the
-        // existing past-event filter below already hides an event whose end has passed.
-        // `DRAFT` / `PENDING_REVIEW` / `CANCELLED` / `ARCHIVED` stay excluded.
         status: { in: ["PUBLISHED", "ONGOING"] },
         visibility: "PUBLIC",
         archivedAt: null,
-        // Not yet past: endAt when set, otherwise startAt.
+    };
+}
+
+/**
+ * Not yet past: `endAt` when set, otherwise `startAt` — the positive form of
+ * `isEventEnded`. Exported implicitly through `publicVisibilityWhere`; the ordering
+ * split below reuses it so "upcoming" means exactly the same thing in both places.
+ */
+function notEndedWhere(now: Date): Prisma.EventWhereInput {
+    return {
         OR: [
             { endAt: { gte: now } },
             { AND: [{ endAt: null }, { startAt: { gte: now } }] },
+        ],
+    };
+}
+
+/**
+ * The hard-coded public filter (see the module note on the PHASE B rule).
+ *
+ * `PUBLISHED` rows are shown regardless of the clock — a passed event stays on the
+ * landing page as "Ditutup"; only `ONGOING` rows carry the not-yet-past filter, because
+ * `ONGOING` is the live window the scheduler resolves into `COMPLETED`.
+ */
+function publicVisibilityWhere(now: Date): Prisma.EventWhereInput {
+    return {
+        AND: [
+            publicStatusWhere(),
+            {
+                OR: [
+                    // PHASE B: a PUBLISHED event is never hidden merely because its date
+                    // has gone by. Its purchase affordance is suppressed by `hasEnded`
+                    // (and refused server-side), not by removing it from the listing.
+                    { status: "PUBLISHED" },
+                    notEndedWhere(now),
+                ],
+            },
+        ],
+    };
+}
+
+/**
+ * Past rows, for the date ordering only (never for visibility): `endAt` when set,
+ * otherwise `startAt`. The mirror of `notEndedWhere`, derived from the same rule.
+ */
+function endedWhere(now: Date): Prisma.EventWhereInput {
+    return {
+        OR: [
+            { endAt: { lt: now } },
+            { AND: [{ endAt: null }, { startAt: { lt: now } }] },
         ],
     };
 }
@@ -286,7 +354,7 @@ export async function listPublicEvents(
         const items = orderedIds
             .map((id) => byId.get(id))
             .filter((row): row is CardRow => row !== undefined)
-            .map((row) => toCard(row, origin));
+            .map((row) => toCard(row, origin, now));
 
         return {
             items,
@@ -299,21 +367,88 @@ export async function listPublicEvents(
         };
     }
 
-    const orderBy: Prisma.EventOrderByWithRelationInput[] =
-        sort === "newest"
-            ? [{ createdAt: "desc" }]
-            : [{ startAt: "asc" }, { createdAt: "asc" }];
+    if (sort === "newest") {
+        // "Baru ditambahkan" is about when an event was PUBLISHED, not when it happens, so a
+        // finished event does not need to be pushed back here — creation order is the whole
+        // point of the section. The DATE ordering below is the one that must lead with what
+        // has not happened yet.
+        const rows = await prisma.event.findMany({
+            where,
+            select: CARD_SELECT,
+            orderBy: [{ createdAt: "desc" }],
+            skip,
+            take: limit,
+        });
 
-    const rows = await prisma.event.findMany({
-        where,
-        select: CARD_SELECT,
-        orderBy,
-        skip,
-        take: limit,
-    });
+        return {
+            items: rows.map((row) => toCard(row, origin, now)),
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit),
+            },
+        };
+    }
+
+    /*
+     * ── THE DATE ORDERING: NOT-YET-ENDED FIRST, ENDED AFTER ──────────────────────
+     *
+     * PHASE B. Once a still-`PUBLISHED` event is kept in the listing after its date (see the
+     * module note), a plain `startAt asc` would put every finished event at the FRONT of "Event
+     * terdekat" — a section whose whole promise is "Yang paling cepat digelar". With enough
+     * passed events the upcoming ones would fall off a `limit: 8` page entirely.
+     *
+     * Prisma cannot `ORDER BY` "has this row's end passed?", because that is a comparison
+     * against the clock rather than a column. So the page is assembled from the two sets the
+     * visibility rule already knows — the live window (`notEndedWhere`, soonest first) and the
+     * finished rows (`endedWhere`, most recently started first) — and the offset is applied
+     * across that union. `upcomingCount` is what maps a page offset onto the right set; without
+     * it, page 2 could silently repeat or skip rows.
+     *
+     * Both reads are bounded and share the same `where`, so nothing about WHICH rows are public
+     * changes here — only the order the union is presented in.
+     */
+    const upcomingWhere: Prisma.EventWhereInput = {
+        AND: [where, notEndedWhere(now)],
+    };
+    const pastWhere: Prisma.EventWhereInput = { AND: [where, endedWhere(now)] };
+
+    const upcomingCount = await prisma.event.count({ where: upcomingWhere });
+
+    const upcomingTake =
+        skip < upcomingCount ? Math.min(limit, upcomingCount - skip) : 0;
+
+    const upcomingRows =
+        upcomingTake > 0
+            ? await prisma.event.findMany({
+                  where: upcomingWhere,
+                  select: CARD_SELECT,
+                  orderBy: [{ startAt: "asc" }, { createdAt: "asc" }],
+                  skip,
+                  take: upcomingTake,
+              })
+            : [];
+
+    const pastTake = limit - upcomingRows.length;
+
+    const pastRows =
+        pastTake > 0
+            ? await prisma.event.findMany({
+                  where: pastWhere,
+                  select: CARD_SELECT,
+                  // Most recently started first — the closest thing to "most recently finished"
+                  // that `orderBy` can express when `endAt` is nullable.
+                  orderBy: [{ startAt: "desc" }, { createdAt: "desc" }],
+                  skip: skip < upcomingCount ? 0 : skip - upcomingCount,
+                  take: pastTake,
+              })
+            : [];
 
     return {
-        items: rows.map((row) => toCard(row, origin)),
+        items: [...upcomingRows, ...pastRows].map((row) =>
+            toCard(row, origin, now)
+        ),
         pagination: {
             page,
             limit,
@@ -332,8 +467,9 @@ export async function listPublicEvents(
  * in the page would be a second, drifting copy of the visibility rule.
  *
  * It reuses `publicVisibilityWhere`, so a sport's count can only ever include PUBLISHED + PUBLIC,
- * non-archived, not-yet-past events — exactly the set `/events?sport=<slug>` will return. Keyed by
- * slug because that is what the links use.
+ * non-archived events — exactly the set `/events?sport=<slug>` will return (including a passed
+ * PUBLISHED event, since PHASE B keeps those discoverable). Keyed by slug because that is what the
+ * links use.
  *
  * Read-only and additive: no existing query, payload or rule changes.
  */
@@ -480,15 +616,29 @@ export type PublicEventDetail = {
     };
     /** Post-event Google Drive documentation link; shown only for COMPLETED events. */
     documentationUrl: string | null;
+    /**
+     * PHASE B — the event's own schedule has passed (`isEventEnded`). Server-computed, so the
+     * page presents "Ditutup" and suppresses the purchase card from ONE verdict rather than
+     * re-deriving it in the view (and the same verdict is what the checkout gate enforces).
+     */
+    hasEnded: boolean;
     shareUrl: string;
 };
 
-function toDetail(row: DetailRow, origin: string): PublicEventDetail {
-    const summary = summarizeSales(row.ticketTypes as TicketTypeRow[], {
-        salesStartAt: row.salesStartAt,
-        salesEndAt: row.salesEndAt,
-        startAt: row.startAt,
-    });
+function toDetail(
+    row: DetailRow,
+    origin: string,
+    now: Date
+): PublicEventDetail {
+    const summary = summarizeSales(
+        row.ticketTypes as TicketTypeRow[],
+        {
+            salesStartAt: row.salesStartAt,
+            salesEndAt: row.salesEndAt,
+            startAt: row.startAt,
+        },
+        now
+    );
 
     const isAvailable = row.status === "PUBLISHED" || row.status === "ONGOING" || row.status === "COMPLETED";
 
@@ -576,6 +726,7 @@ function toDetail(row: DetailRow, origin: string): PublicEventDetail {
             priceTo: summary.priceTo,
         },
         documentationUrl: row.documentationUrl,
+        hasEnded: isEventEnded({ startAt: row.startAt, endAt: row.endAt }, now),
         shareUrl: canonicalShareUrl(origin, row.slug),
     };
 }
@@ -595,10 +746,20 @@ function toDetail(row: DetailRow, origin: string): PublicEventDetail {
  * "may still resolve" and the page "must clearly show that the event is
  * unavailable/unpublished". The payload stops at the unavailable marker: callers must
  * check `isAvailable` before rendering anything purchase-related.
+ *
+ * PHASE B adds `hasEnded` to the payload, which is a DIFFERENT axis from `isAvailable`:
+ * availability is about the event's status (D-14), `hasEnded` is about its clock. A
+ * `PUBLISHED` event whose date has gone by is still available (its page still renders),
+ * yet it must not offer a purchase — the page combines the two.
+ *
+ * `now` is injectable for the same reason every other time-dependent predicate in this
+ * tree takes one: a test can pin the boundary instead of racing it. Production callers
+ * omit it and get the server clock, matching the catalog listing.
  */
 export async function getPublicEventBySlug(
     slugOrCode: string,
-    origin: string
+    origin: string,
+    now: Date = new Date()
 ): Promise<PublicEventDetail> {
     if (!slugOrCode || typeof slugOrCode !== "string") {
         throw AppError.notFound("Event tidak ditemukan.");
@@ -624,5 +785,5 @@ export async function getPublicEventBySlug(
         throw AppError.notFound("Event tidak ditemukan.");
     }
 
-    return toDetail(row, origin);
+    return toDetail(row, origin, now);
 }

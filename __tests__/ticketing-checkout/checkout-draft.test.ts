@@ -878,3 +878,89 @@ describe("H. the first render is the server's, so the draft cannot desynchronise
         expect(html).toContain('value="akun@example.com"');
     });
 });
+
+/* ==================================================================================
+ * I. PHASE B — THE PURCHASE CARD'S DISABLED STATE AND THE UNTOUCHED FORM
+ * ==================================================================================
+ *
+ * The detail page combines `event.isAvailable` with the catalog's `hasEnded` verdict and hands
+ * the result to this form. So these two tests are the CTA half of the phase: `isAvailable: false`
+ * is what a passed event renders, and it must be a REFUSAL rather than a form the buyer can press
+ * (D). `isAvailable: true` must stay exactly the form it always was (N).
+ */
+
+describe("I. a passed event renders a refusal instead of a purchase form", () => {
+    const TICKETS = [
+        {
+            id: "tt_tribun",
+            name: "Tribun Utara",
+            description: null,
+            price: 75_000,
+            currency: "IDR",
+            minPerOrder: 1,
+            maxPerOrder: 4,
+            salesState: "OPEN" as const,
+            isSoldOut: false,
+            remaining: null,
+        },
+    ];
+
+    function render(props: { isAvailable: boolean; salesState?: "OPEN" | "CLOSED" }) {
+        return renderToStaticMarkup(
+            createElement(TicketPurchaseForm, {
+                eventId: "evt_bandung",
+                ticketTypes: TICKETS.map((ticket) => ({
+                    ...ticket,
+                    salesState: props.salesState ?? ticket.salesState,
+                })),
+                isAvailable: props.isAvailable,
+                shareToken: null,
+            })
+        );
+    }
+
+    it("D. shows the unavailable notice and offers no submit button", () => {
+        const html = render({ isAvailable: false });
+
+        expect(html).toContain("Pembelian tiket tidak tersedia untuk event ini.");
+        expect(html).not.toContain('type="submit"');
+        expect(html).not.toContain("Pesan tiket");
+    });
+
+    it("D. does not render the buyer fields or quantity steppers either", () => {
+        const html = render({ isAvailable: false });
+
+        expect(html).not.toContain('id="buyer-name"');
+        expect(html).not.toContain('id="qty-tt_tribun"');
+    });
+
+    it("the disabled CTA is the same refusal this form has always shown for a DRAFT/CANCELLED event", () => {
+        // Presentation only: Phase B reuses the existing D-14 refusal rather than inventing a
+        // second unavailable state.
+        expect(render({ isAvailable: false })).toContain(
+            "Pembelian tiket tidak tersedia untuk event ini."
+        );
+    });
+
+    it("N. an available event still renders the working form — submit button, steppers, fields", () => {
+        const html = render({ isAvailable: true });
+
+        expect(html).toContain('type="submit"');
+        expect(html).toContain("Pesan tiket");
+        expect(html).toContain('id="qty-tt_tribun"');
+        expect(html).toContain('id="buyer-name"');
+        expect(html).toContain('id="buyer-email"');
+        expect(html).toContain('id="buyer-phone"');
+        expect(html).not.toContain("Pembelian tiket tidak tersedia");
+    });
+
+    it("N. the submit button is disabled when nothing can be bought, without removing the form", () => {
+        // A CLOSED tier (the default sales window, i.e. an event past its start with no explicit
+        // `salesEndAt`) still renders the tier list, but the action is dead.
+        const html = render({ isAvailable: true, salesState: "CLOSED" });
+
+        expect(html).toContain("Penjualan ditutup");
+        expect(html).toContain('type="submit"');
+        expect(html).toMatch(/disabled/);
+    });
+});

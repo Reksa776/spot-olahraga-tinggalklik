@@ -46,6 +46,7 @@ const EVENT: PublicEventCard = {
     priceTo: 150000,
     salesState: "OPEN",
     isSoldOut: false,
+    hasEnded: false,
     remaining: null,
     shareUrl: "https://tinggalklik.co/e/liga-basket-bandung",
 };
@@ -116,6 +117,46 @@ describe("G1. EventCard", () => {
         expect(soon).toContain("Segera");
         expect(open).not.toContain("Tiket habis");
         expect(open).not.toContain("Penjualan ditutup");
+    });
+
+    /*
+     * PHASE B — C/D. A passed event is "Ditutup".
+     *
+     * The card is fed a `salesState` of OPEN on purpose: that is what the sales window reports
+     * when an explicit `salesEndAt` outlives the event, and it is precisely the input that made
+     * the old badge logic stay silent. `hasEnded` must outrank it.
+     */
+    it("badges a passed event as 'Ditutup', even while its sales window still reads OPEN", () => {
+        const ended = render(
+            createElement(EventCard, {
+                event: { ...EVENT, hasEnded: true, salesState: "OPEN", isSoldOut: false },
+            })
+        );
+
+        expect(ended).toContain("Ditutup");
+        expect(ended).not.toContain("Segera");
+        expect(ended).not.toContain("Tiket habis");
+    });
+
+    it("offers no purchase affordance on a passed event's card", () => {
+        // D, at card level: the ONLY interactive element remains the detail link, and nothing
+        // on the card is written as a buy action.
+        const ended = render(
+            createElement(EventCard, {
+                event: { ...EVENT, hasEnded: true, salesState: "OPEN" },
+            })
+        );
+
+        expect(ended.match(/<a /g) ?? []).toHaveLength(1);
+        expect(ended).not.toContain("<button");
+        expect(ended).not.toContain("Pesan tiket");
+        expect(ended).not.toContain("Beli");
+    });
+
+    it("leaves an upcoming event without a 'Ditutup' badge", () => {
+        const html = render(createElement(EventCard, { event: EVENT }));
+
+        expect(html).not.toContain("Ditutup");
     });
 
     it("degrades to a sport-tinted panel instead of a broken image when there is no banner", () => {

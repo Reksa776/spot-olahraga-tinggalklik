@@ -145,10 +145,20 @@ function Icon({ path }: { path: string }) {
  * `OPEN` is the only state without one: a badge saying "on sale" on every card is noise, and its
  * absence is not ambiguous once the other states are marked. Rendered as a labelling caption next
  * to the price, not a pill over the photograph.
+ *
+ * PHASE B — `hasEnded` is checked FIRST and wins outright. A still-`PUBLISHED` event whose date has
+ * gone by is now kept in the listing, and its `salesState` cannot be trusted to say so: the sales
+ * window defaults to `startAt`, but an explicit `salesEndAt` in the future would classify the event
+ * as `OPEN` even though the event itself is over. "Ditutup" is the only honest label for a card
+ * whose event has already happened, so it outranks every sales-derived state.
  */
 function availabilityBadge(
     event: PublicEventCard
 ): { label: string; className: string } | null {
+    if (event.hasEnded) {
+        return { label: "Ditutup", className: "text-xs font-bold text-ink-500" };
+    }
+
     if (event.isSoldOut || event.salesState === "SOLD_OUT") {
         return { label: "Tiket habis", className: "text-xs font-bold text-red-600" };
     }

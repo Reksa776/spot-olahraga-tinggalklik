@@ -53,6 +53,8 @@ async function seedEvent(params: {
     visibility?: "PUBLIC" | "UNLISTED";
     startAt?: Date;
     endAt?: Date | null;
+    /** PHASE B: an explicit sales window that can outlive the event itself. */
+    salesEndAt?: Date | null;
     sportId?: string;
     venueId?: string | null;
     description?: string;
@@ -71,6 +73,7 @@ async function seedEvent(params: {
             visibility: params.visibility ?? "PUBLIC",
             startAt: params.startAt ?? FUTURE,
             endAt: params.endAt === undefined ? null : params.endAt,
+            salesEndAt: params.salesEndAt ?? null,
             publishedAt: params.status === "PUBLISHED" ? new Date() : null,
             archivedAt: params.status === "ARCHIVED" ? new Date() : null,
             cancelledAt: params.status === "CANCELLED" ? new Date() : null,
@@ -190,6 +193,19 @@ beforeAll(async () => {
         withTicket: { price: 120000, quota: 20 },
     });
 
+    // PHASE B: the event is over, but its SALES window is deliberately still open — the exact
+    // case where `salesState` alone would keep offering a purchase for a finished event.
+    await seedEvent({
+        key: "pastOpenSales",
+        title: `Past Open Sales ${SUFFIX}`,
+        slug: `past-open-sales-${SUFFIX}`,
+        status: "PUBLISHED",
+        startAt: PAST,
+        endAt: new Date(PAST.getTime() + 3 * 60 * 60 * 1000),
+        salesEndAt: LATER,
+        withTicket: { price: 130000, quota: 20 },
+    });
+
     await seedEvent({
         key: "soldout",
         title: `Sold Out ${SUFFIX}`,
@@ -274,10 +290,57 @@ describe("catalog visibility", () => {
         expect(slugsOf(result.items)).not.toContain(seeded.cancelled.slug);
     });
 
-    test("a past event is excluded", async () => {
+    /*
+     * PHASE B — the date filter is gone for PUBLISHED rows.
+     *
+     * This test replaces the old "a past event is excluded". The past event was never hidden by a
+     * frontend or by `EventCard`; it was hidden by this query, and hiding it also deleted a
+     * customer's own history and the organiser's public record from the landing page. It now
+     * stays listed and reports `hasEnded`, which is what the card's "Ditutup" badge reads.
+     */
+    test("PHASE B: a past PUBLISHED event is STILL listed, marked hasEnded", async () => {
+        const result = await listAll({ limit: 50 });
+        const slugs = slugsOf(result.items);
+
+        expect(slugs).toContain(seeded.past.slug);
+        expect(slugs).toContain(seeded.pastOpenSales.slug);
+
+        for (const key of ["past", "pastOpenSales"] as const) {
+            const card = result.items.find((item) => item.slug === seeded[key].slug);
+
+            expect(card).toBeDefined();
+            expect(card?.hasEnded).toBe(true);
+        }
+    });
+
+    test("PHASE B: hasEnded is a separate signal from salesState", async () => {
         const result = await listAll({ limit: 50 });
 
-        expect(slugsOf(result.items)).not.toContain(seeded.past.slug);
+        const defaultWindow = result.items.find(
+            (item) => item.slug === seeded.past.slug
+        );
+        const openSales = result.items.find(
+            (item) => item.slug === seeded.pastOpenSales.slug
+        );
+
+        // No explicit sales window: its default end is `startAt`, so it classifies as CLOSED.
+        expect(defaultWindow?.salesState).toBe("CLOSED");
+        expect(defaultWindow?.hasEnded).toBe(true);
+
+        // An explicit future `salesEndAt` keeps it OPEN — the case `salesState` cannot express,
+        // and the reason the card must ask `hasEnded` rather than the sales state.
+        expect(openSales?.salesState).toBe("OPEN");
+        expect(openSales?.isSoldOut).toBe(false);
+        expect(openSales?.hasEnded).toBe(true);
+    });
+
+    test("PHASE B: an upcoming PUBLISHED event is not marked as ended", async () => {
+        const result = await listAll({ limit: 50 });
+        const upcoming = result.items.find(
+            (item) => item.slug === seeded.published.slug
+        );
+
+        expect(upcoming?.hasEnded).toBe(false);
     });
 
     test("every listed event reports itself as PUBLIC and purchaseable state", async () => {
@@ -366,11 +429,36 @@ describe("catalog filters", () => {
 });
 
 describe("catalog sorting", () => {
-    test("startAt_asc orders earliest first", async () => {
+    test("startAt_asc leads with not-yet-ended events, earliest first", async () => {
+        /*
+         * PHASE B changed this ordering deliberately: a still-listed past event must not occupy
+         * the front of "Event terdekat", so the date sort is two blocks — the live window
+         * ascending, then the finished rows most-recently-started first. The part of the original
+         * assertion that still matters is kept: the upcoming block is ordered BY THE QUERY (an
+         * ascending scan), not by re-sorting a fetched page.
+         */
         const result = await listAll({ sort: "startAt_asc", limit: 50 });
-        const times = result.items.map((i) => new Date(i.startAt).getTime());
+        const firstEndedIndex = result.items.findIndex((item) => item.hasEnded);
 
-        expect(times).toEqual([...times].sort((a, b) => a - b));
+        expect(firstEndedIndex).toBeGreaterThanOrEqual(0);
+
+        for (const [index, item] of result.items.entries()) {
+            if (!item.hasEnded) {
+                expect(index).toBeLessThan(firstEndedIndex);
+            }
+        }
+
+        const upcomingTimes = result.items
+            .filter((item) => !item.hasEnded)
+            .map((item) => new Date(item.startAt).getTime());
+
+        expect(upcomingTimes).toEqual([...upcomingTimes].sort((a, b) => a - b));
+
+        const endedTimes = result.items
+            .filter((item) => item.hasEnded)
+            .map((item) => new Date(item.startAt).getTime());
+
+        expect(endedTimes).toEqual([...endedTimes].sort((a, b) => b - a));
     });
 
     test("price_asc orders by the cheapest active ticket type", async () => {
@@ -458,6 +546,24 @@ describe("public detail", () => {
         const list = await listAll({ limit: 50 });
 
         expect(slugsOf(list.items)).not.toContain(seeded.unlisted.slug);
+    });
+
+    test("PHASE B: a past PUBLISHED event resolves, stays available, and reports hasEnded", async () => {
+        // `isAvailable` is D-14's STATUS question and is untouched: a passed event is not a
+        // DRAFT/CANCELLED event, so its page still renders in full. The purchase side is
+        // suppressed by `hasEnded`, which is what the page combines into `purchasable`.
+        const detail = await getPublicEventBySlug(seeded.pastOpenSales.slug, ORIGIN);
+
+        expect(detail.status).toBe("PUBLISHED");
+        expect(detail.isAvailable).toBe(true);
+        expect(detail.unavailableReason).toBeNull();
+        expect(detail.hasEnded).toBe(true);
+    });
+
+    test("PHASE B: an upcoming event reports hasEnded false", async () => {
+        const detail = await getPublicEventBySlug(seeded.published.slug, ORIGIN);
+
+        expect(detail.hasEnded).toBe(false);
     });
 
     test("a CANCELLED event resolves with a reason and is not available", async () => {

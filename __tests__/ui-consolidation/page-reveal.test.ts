@@ -410,6 +410,7 @@ const EVENT: PublicEventCard = {
     priceTo: 150000,
     salesState: "OPEN",
     isSoldOut: false,
+    hasEnded: false,
     remaining: null,
     shareUrl: "https://tinggalklik.co/e/liga-basket-bandung",
 };

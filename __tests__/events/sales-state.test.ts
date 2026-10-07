@@ -9,6 +9,7 @@
  */
 
 import {
+    isEventEnded,
     remainingFor,
     summarizeSales,
     type EventSalesWindow,
@@ -259,5 +260,75 @@ describe("hasSellableQuota — the design §10.3 publish precondition", () => {
 
         expect(summary.hasSellableQuota).toBe(true);
         expect(summary.isSoldOut).toBe(true);
+    });
+});
+
+/**
+ * ==========================================
+ * PHASE B — `isEventEnded` (the ONE "event sudah lewat" rule)
+ * ==========================================
+ *
+ * The predicate the catalog listing, the card badge, the detail page's purchase card and the
+ * checkout gate all read, so a passed event cannot be visible-as-buyable in one place and refused
+ * in another. Every case here uses the fixed `NOW` above — the third argument (the clock) is what
+ * the function takes, so the boundary is asserted exactly rather than raced.
+ */
+describe("isEventEnded — the canonical 'event sudah lewat' verdict", () => {
+    const start = new Date("2026-09-16T08:00:00.000Z");
+
+    test("H. an event with no fixed end is NOT ended just before its start has passed", () => {
+        const event = { startAt: start, endAt: null };
+
+        expect(isEventEnded(event, new Date(start.getTime() - 1))).toBe(false);
+    });
+
+    test("H/I. an event with no fixed end is ended exactly one millisecond after it starts", () => {
+        // `endAt IS NULL` means "no fixed end", and the listing has always read that as over
+        // once the start has gone by. The boundary is STRICT: the instant of the start itself
+        // is still not ended, matching the catalog's inclusive `gte`.
+        const event = { startAt: start, endAt: null };
+
+        expect(isEventEnded(event, start)).toBe(false);
+        expect(isEventEnded(event, new Date(start.getTime() + 1))).toBe(true);
+    });
+
+    test("H. an event with a fixed end is still live at its end instant", () => {
+        const end = new Date("2026-09-16T11:00:00.000Z");
+
+        expect(isEventEnded({ startAt: start, endAt: end }, end)).toBe(false);
+        expect(
+            isEventEnded({ startAt: start, endAt: end }, new Date(end.getTime() - 1))
+        ).toBe(false);
+    });
+
+    test("I. an event with a fixed end is ended one millisecond later", () => {
+        const end = new Date("2026-09-16T11:00:00.000Z");
+
+        expect(
+            isEventEnded({ startAt: start, endAt: end }, new Date(end.getTime() + 1))
+        ).toBe(true);
+        // `NOW` (2026-09-16T10:00Z) sits inside the window — a live, multi-hour event.
+        expect(isEventEnded({ startAt: start, endAt: end }, NOW)).toBe(false);
+    });
+
+    test("a multi-day event is not ended on its middle day", () => {
+        // `endAt` governs, not `startAt`: a two-day event is buyable on day two.
+        const event = {
+            startAt: new Date("2026-09-15T08:00:00.000Z"),
+            endAt: new Date("2026-09-17T18:00:00.000Z"),
+        };
+
+        expect(isEventEnded(event, NOW)).toBe(false);
+    });
+
+    test("a past event is ended for a later clock but was live for an earlier one", () => {
+        // The clock is the only input that decides it — no cached verdict.
+        const event = {
+            startAt: new Date("2026-09-01T08:00:00.000Z"),
+            endAt: new Date("2026-09-01T11:00:00.000Z"),
+        };
+
+        expect(isEventEnded(event, new Date("2026-09-01T10:00:00.000Z"))).toBe(false);
+        expect(isEventEnded(event, NOW)).toBe(true);
     });
 });

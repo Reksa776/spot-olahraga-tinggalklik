@@ -6,7 +6,6 @@ import EventCard from "@/components/events/EventCard";
 import ShareEventMenu from "@/components/events/ShareEventMenu";
 import TicketPurchaseForm from "@/components/events/TicketPurchaseForm";
 import SiteShell from "@/components/ticketing/SiteShell";
-import StickyBuyBar from "@/components/ticketing/StickyBuyBar";
 import { auth } from "@/auth";
 import { parseOrThrow } from "@/lib/api/validation";
 import { resolvePageFailure } from "@/lib/errors/classify";
@@ -37,12 +36,27 @@ import { sportLabel, sportSolidTint } from "@/lib/ticketing/ui/sport-tint";
  * ── WHAT CHANGED ────────────────────────────────────────────────────────────────
  *   • a hero carries the identity (image, sport, title, date, venue) instead of a small banner
  *     above a text column;
- *   • the ticket picker is a sticky card at `lg`+ and a sticky bottom bar below it, so the
- *     purchase action is never more than one tap away;
  *   • related events are added, filtered from the catalog by the event's own sport — real data, no
  *     "recommended for you" fabrication;
  *   • the share affordance moved into the sidebar beside the purchase card, where the buyer already
  *     is, rather than a separate block far down the page.
+ *
+ * ── PHASE B: THE PURCHASE CARD IS IN NORMAL DOCUMENT FLOW ─────────────────────────
+ * The card used to be `lg:sticky lg:top-24`, with a `fixed inset-x-0 bottom-0` `StickyBuyBar`
+ * below `lg`. Both followed the viewport: the card stayed pinned beside the description while
+ * the page scrolled past it, and the phone bar covered whatever was behind it (the `<article>`
+ * carried `pb-24` purely to clear that bar). A purchase card that tracks the viewport is
+ * indistinguishable from an overlay and can sit on top of other cards, so both affordances are
+ * now ordinary in-flow content: the card scrolls with the page and the bottom bar is gone. The
+ * ticket picker is still in the same right-hand column at `lg`+; it is simply no longer pinned.
+ *
+ * ── PHASE B: A PASSED EVENT RENDERS WITHOUT A PURCHASE ──────────────────────────
+ * `event.hasEnded` is the catalog's own verdict (`isEventEnded`) that the event's schedule has
+ * gone by. It is combined with the D-14 availability check into `purchasable`, which is what
+ * the purchase card reads, and it replaces the sales-derived `closedReason` with "Ditutup" so
+ * the hero badge cannot claim an event is on sale merely because its sales window is still
+ * open. The page itself stays readable (D-14's read-only state is unchanged) — only the buying
+ * affordance is suppressed, and the checkout API refuses the order independently.
  *
  * PIC VERTICAL SLICE — the `?pic=` query parameter travels from a shared link, through this page,
  * into the purchase form as a `shareToken`. The FORM binds it into the checkout payload and
@@ -141,11 +155,25 @@ export default async function EventDetailPage({ params, searchParams }: Props) {
         );
     }
 
-    const closedReason = salesStateLabel(
-        event.sales.salesState,
-        event.sales.isSoldOut,
-        event.isAvailable
-    );
+    /*
+     * A passed event is "closed" no matter what the sales window says. `salesStateLabel`
+     * reads only the sales window (whose default end is `startAt`, but which an explicit
+     * future `salesEndAt` can keep `OPEN`), so on its own it would label a finished event as
+     * buyable. `hasEnded` is the event-level verdict and takes precedence.
+     */
+    const closedReason = event.hasEnded
+        ? "Ditutup"
+        : salesStateLabel(
+              event.sales.salesState,
+              event.sales.isSoldOut,
+              event.isAvailable
+          );
+
+    /**
+     * D-14's availability AND the event's own clock. A passed event still renders in full
+     * (it is not "unavailable" — it happened), but nothing on this page may offer to sell it.
+     */
+    const purchasable = event.isAvailable && !event.hasEnded;
 
     const venueLines = event.venue
         ? [event.venue.name, event.venue.address, event.venue.city, event.venue.province]
@@ -162,7 +190,7 @@ export default async function EventDetailPage({ params, searchParams }: Props) {
 
     return (
         <SiteShell>
-            <article className="pb-24 lg:pb-0">
+            <article>
                 {/* ── Hero ──────────────────────────────────────────────────────── */}
                 <header className="relative isolate overflow-hidden bg-ink-950">
                     {event.bannerUrl ? (
@@ -397,11 +425,18 @@ export default async function EventDetailPage({ params, searchParams }: Props) {
                             </section>
                         </div>
 
-                        {/* ── Sidebar: the purchase card, sticky at `lg`+ ────────── */}
+                        {/* ── Sidebar: the purchase card, in normal flow ───────── */}
                         <aside className="space-y-5">
+                            {/*
+                             * PHASE B — no `lg:sticky lg:top-24` here any more. The card is
+                             * ordinary content in the right-hand column; it scrolls with the
+                             * page and can never overlap the sections beside or below it.
+                             * `scroll-mt-24` is kept so an in-page link (or the browser's own
+                             * anchor jump) still clears the sticky site header.
+                             */}
                             <div
                                 id="beli"
-                                className="scroll-mt-24 rounded-2xl border border-ink-100 bg-white p-5 shadow-card lg:sticky lg:top-24"
+                                className="scroll-mt-24 rounded-2xl border border-ink-100 bg-white p-5 shadow-card"
                             >
                                 <div className="flex items-baseline justify-between gap-3">
                                     <h2 className="text-base font-extrabold text-ink-900">
@@ -425,7 +460,7 @@ export default async function EventDetailPage({ params, searchParams }: Props) {
                                 <TicketPurchaseForm
                                     eventId={event.id}
                                     ticketTypes={event.ticketTypes}
-                                    isAvailable={event.isAvailable}
+                                    isAvailable={purchasable}
                                     shareToken={pic}
                                     defaultBuyer={{
                                         name: session?.user?.name ?? null,
@@ -477,16 +512,6 @@ export default async function EventDetailPage({ params, searchParams }: Props) {
                     ) : null}
                 </div>
             </article>
-
-            {/* The phone-sized purchase bar. Only when the CTA would actually work. */}
-            {event.isAvailable ? (
-                <StickyBuyBar
-                    priceFrom={event.sales.priceFrom}
-                    href="#beli"
-                    ctaLabel="Pilih tiket"
-                    disabledReason={closedReason}
-                />
-            ) : null}
         </SiteShell>
     );
 }

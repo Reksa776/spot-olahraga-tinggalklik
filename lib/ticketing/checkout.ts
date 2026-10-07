@@ -4,6 +4,7 @@ import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import type { AuthzScope } from "@/lib/authz/permissions";
 import {
     classifySalesState,
+    isEventEnded,
     isEventPurchasable,
     type EventSalesWindow,
     type TicketTypeSnapshot,
@@ -299,6 +300,7 @@ export async function createTicketOrder(params: {
             salesStartAt: true,
             salesEndAt: true,
             startAt: true,
+            endAt: true,
             maxTicketsPerOrder: true,
         },
     });
@@ -324,6 +326,34 @@ export async function createTicketOrder(params: {
 
         throw new AppError(ERROR_CODES.NOT_FOUND, {
             message: "Event tidak ditemukan.",
+        });
+    }
+
+    /*
+     * ── The event's own schedule (PHASE B) ───────────────────────────────────────
+     *
+     * A passed event must not accept a new order — brief §5 of the landing-visibility phase:
+     * "Event yang sudah lewat tidak boleh dapat membuat order baru hanya karena user
+     * memanipulasi frontend."
+     *
+     * `isEventPurchasable` above is a STATUS question and deliberately says nothing about the
+     * clock, and the per-ticket-type classifier below would not catch this case on its own: its
+     * window end defaults to `startAt`, but an explicitly configured future `salesEndAt` leaves
+     * the type at `OPEN` even though the event itself is over. So the event-level verdict is
+     * enforced here, BEFORE the per-order ceiling and the pricing walk.
+     *
+     * The verdict is the SAME `isEventEnded` the catalog labels the card with, so what the buyer
+     * was shown and what the server enforces cannot drift apart — and the client's own "Ditutup"
+     * state is never trusted, it is only ever confirmed.
+     *
+     * `ONGOING` is unaffected while it is genuinely running: a multi-day event is not ended until
+     * its `endAt` passes, and an `endAt`-less event is over once its `startAt` has passed — the
+     * same reading the listing has always used.
+     */
+    if (isEventEnded(event, now)) {
+        throw new AppError(ERROR_CODES.SALES_NOT_OPEN, {
+            message: "Event ini sudah selesai dan tidak menerima pesanan baru.",
+            details: { reason: "EVENT_ENDED" },
         });
     }
 
