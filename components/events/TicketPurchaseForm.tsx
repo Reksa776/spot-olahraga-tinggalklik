@@ -1,12 +1,20 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { isSessionExpired, redirectToLoginForExpiredSession } from "@/lib/auth/client-session";
 import type { PublicTicketType } from "@/lib/events/catalog";
 import { createRequestKey } from "@/lib/request-key";
+import {
+    consumeCheckoutDraft,
+    readCheckoutDraft,
+    restoreDraftQuantities,
+    saveCheckoutDraft,
+    type CheckoutDraft,
+} from "@/lib/ticketing/checkout-draft";
 import { formatIdr } from "@/lib/ticketing/ui/format";
+import { useBrowserValue } from "@/lib/ui/browser-value";
 
 /**
  * ==========================================
@@ -47,6 +55,39 @@ import { formatIdr } from "@/lib/ticketing/ui/format";
  * `TypeError: crypto.randomUUID is not a function` before it ever sent a request. The helper keeps
  * this idempotency contract exactly and returns the same 36-character shape. See
  * `lib/request-key.ts`.
+ *
+ * ── THE FORM SURVIVES THE LOGIN DETOUR ─────────────────────────────────────────
+ * A guest who presses "Pesan tiket" is refused with a `401` and sent to
+ * `/login?callbackUrl=%2Fe%2F{slug}` (see `lib/auth/client-session.ts`). The return path was always
+ * correct; what used to be lost was everything the buyer had typed, because leaving this page is a
+ * full document load and the form lives in React state. Two lines of wiring fix that, and they are
+ * the only places this component touches the draft:
+ *
+ *   • BEFORE the redirect, the current selection is written to `sessionStorage`
+ *     (`saveCheckoutDraft`) — the same five fields the request would have carried, so nothing the
+ *     server already refuses to trust is stored;
+ *   • ON MOUNT, `readCheckoutDraft(eventId)` reads it back for THIS event only and
+ *     `restoreDraftQuantities` re-validates the selection against the catalog this page just
+ *     rendered — a tier that closed or sold out while the buyer was signing in is dropped, and a
+ *     quantity beyond its CURRENT `maxPerOrder` is clamped.
+ *
+ * The read goes through `useBrowserValue` (`lib/ui/browser-value.ts`), the project's existing
+ * external-store hook for a client-only value: `useSyncExternalStore` resolves the server snapshot
+ * for the first pass — so the server's HTML and the hydrating client agree, and no hydration
+ * mismatch is possible — and the browser's value in the commit immediately after. The alternative,
+ * `useState` plus `setState` inside an effect, is flagged by this project's lint rules as a
+ * cascading render, which is why the hook exists.
+ *
+ * There is no `useState` for the restored values at all: they are DERIVED (`quantities` merges the
+ * restored selection under the buyer's own edits, and the contact fields prefer an edit, then the
+ * draft, then the signed-in account's defaults). That is what keeps a second render — a remount, a
+ * refresh, a back navigation — from re-applying anything: the draft has already been consumed, so
+ * the derived values simply fall back to the buyer's own state.
+ *
+ * Consuming on read is what makes the rest of the navigation matrix harmless: a refresh after the
+ * restore, a back navigation, or a React remount finds nothing left to re-apply, so the form keeps
+ * whatever the buyer has typed since and a draft can never be applied twice. A record for another
+ * event is refused AND left intact (see `lib/ticketing/checkout-draft.ts`).
  */
 
 type Props = {
@@ -82,15 +123,94 @@ export default function TicketPurchaseForm({
 }: Props) {
     const router = useRouter();
 
-    const [quantities, setQuantities] = useState<Record<string, number>>({});
-    const [buyerName, setBuyerName] = useState(defaultBuyer?.name ?? "");
-    const [buyerEmail, setBuyerEmail] = useState(defaultBuyer?.email ?? "");
-    const [buyerPhone, setBuyerPhone] = useState(defaultBuyer?.phone ?? "");
+    /** The buyer's own quantity edits, layered over whatever the draft restored. */
+    const [quantityEdits, setQuantityEdits] = useState<Record<string, number>>({});
+
+    /*
+     * `null` until the buyer touches a field. `null` is not "empty": it is "not edited", which is
+     * what lets the field fall back to the draft and then to the account defaults without a second
+     * state to keep in sync.
+     */
+    const [nameEdit, setNameEdit] = useState<string | null>(null);
+    const [emailEdit, setEmailEdit] = useState<string | null>(null);
+    const [phoneEdit, setPhoneEdit] = useState<string | null>(null);
+
     const [submitting, setSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     /** One key per submit intent — see the module note above. */
     const pendingIntent = useRef<PendingIntent | null>(null);
+
+    /*
+     * The preserved form, read as an external store so the first pass is the server's snapshot and
+     * the browser's value arrives in the commit straight after (see the module note above).
+     *
+     * `useSyncExternalStore` compares consecutive snapshots with `Object.is`, so the reader MUST
+     * return the same reference for the same stored draft. `draftSnapshot` is that cache, keyed by
+     * `eventId` so a client-side navigation to another event reads (and caches) that event's own
+     * draft rather than reusing this one's.
+     */
+    const draftSnapshot = useRef<{ eventId: string; draft: CheckoutDraft | null } | null>(null);
+
+    const readDraft = useCallback(() => {
+        if (draftSnapshot.current?.eventId === eventId) {
+            return draftSnapshot.current.draft;
+        }
+
+        const draft = readCheckoutDraft(eventId);
+
+        draftSnapshot.current = { eventId, draft };
+
+        return draft;
+    }, [eventId]);
+
+    const draft = useBrowserValue<CheckoutDraft | null>(readDraft, null);
+
+    /*
+     * Consume the draft once it has been applied, so a refresh, a back navigation or a remount can
+     * never apply it a second time. `consumeCheckoutDraft` only removes a record that belongs to
+     * THIS event — a draft for another event is left intact for the buyer still holding it.
+     *
+     * An effect is the right home for this: it is a write to an external system and it sets no
+     * React state, so it neither cascades a render nor can be expressed as derived state.
+     */
+    const consumedFor = useRef<string | null>(null);
+
+    useEffect(() => {
+        if (consumedFor.current === eventId) {
+            return;
+        }
+
+        consumedFor.current = eventId;
+
+        consumeCheckoutDraft(eventId);
+    }, [eventId]);
+
+    /** Re-validated against the catalog THIS render received — see `restoreDraftQuantities`. */
+    const restoredQuantities = useMemo(
+        () =>
+            draft
+                ? restoreDraftQuantities(
+                      draft.items,
+                      ticketTypes,
+                      DEFAULT_MAX_PER_SELECTION
+                  )
+                : {},
+        [draft, ticketTypes]
+    );
+
+    const quantities = useMemo(
+        () => ({ ...restoredQuantities, ...quantityEdits }),
+        [restoredQuantities, quantityEdits]
+    );
+
+    /*
+     * The buyer's OWN typed values win over the account defaults: they are what the flow promises
+     * to put back. An empty saved field falls through to the default rather than blanking it.
+     */
+    const buyerName = nameEdit ?? (draft?.buyerName || defaultBuyer?.name || "");
+    const buyerEmail = emailEdit ?? (draft?.buyerEmail || defaultBuyer?.email || "");
+    const buyerPhone = phoneEdit ?? (draft?.buyerPhone || defaultBuyer?.phone || "");
 
     const sellable = ticketTypes.filter(
         (type) => type.salesState === "OPEN" && !type.isSoldOut
@@ -115,7 +235,7 @@ export default function TicketPurchaseForm({
     );
 
     function setQuantity(ticketTypeId: string, next: number) {
-        setQuantities((current) => ({ ...current, [ticketTypeId]: next }));
+        setQuantityEdits((current) => ({ ...current, [ticketTypeId]: next }));
     }
 
     async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -210,6 +330,25 @@ export default function TicketPurchaseForm({
              * default destination instead.
              */
             if (isSessionExpired(response.status, payload)) {
+                /*
+                 * NOT a failed order, and NOT a place to report one: nothing was refused, no
+                 * quota was held and no order exists. It is a session state, so the buyer is sent
+                 * to sign in with this page as the return path — and the form they filled in is
+                 * preserved first, so the page they come back to is the one they left.
+                 *
+                 * Saving here (rather than at the top of `submit`) is what keeps a draft from
+                 * existing for a purchase that never needed to be interrupted: this branch runs
+                 * only when the server actually asked for a sign-in.
+                 */
+                saveCheckoutDraft({
+                    eventId,
+                    items,
+                    buyerName: buyerName.trim(),
+                    buyerEmail: buyerEmail.trim(),
+                    buyerPhone: buyerPhone.trim(),
+                    shareToken: shareToken?.trim() || null,
+                });
+
                 redirectToLoginForExpiredSession();
                 return;
             }
@@ -408,7 +547,7 @@ export default function TicketPurchaseForm({
                         label="Nama lengkap"
                         type="text"
                         value={buyerName}
-                        onChange={setBuyerName}
+                        onChange={setNameEdit}
                         placeholder="Nama sesuai identitas"
                         autoComplete="name"
                     />
@@ -417,7 +556,7 @@ export default function TicketPurchaseForm({
                         label="Email"
                         type="email"
                         value={buyerEmail}
-                        onChange={setBuyerEmail}
+                        onChange={setEmailEdit}
                         placeholder="nama@email.com"
                         autoComplete="email"
                     />
@@ -426,11 +565,21 @@ export default function TicketPurchaseForm({
                         label="Nomor WhatsApp"
                         type="tel"
                         value={buyerPhone}
-                        onChange={setBuyerPhone}
+                        onChange={setPhoneEdit}
                         placeholder="08xxxxxxxxxx"
                         autoComplete="tel"
                     />
                 </fieldset>
+            ) : null}
+
+            {draft ? (
+                <p
+                    role="status"
+                    className="rounded-xl border border-brand-200 bg-brand-50/60 px-3.5 py-2.5 text-xs leading-relaxed font-semibold text-brand-800"
+                >
+                    Data pembelian Anda dipulihkan setelah login. Periksa kembali
+                    lalu lanjutkan pemesanan.
+                </p>
             ) : null}
 
             {selectedCount > 0 ? (
