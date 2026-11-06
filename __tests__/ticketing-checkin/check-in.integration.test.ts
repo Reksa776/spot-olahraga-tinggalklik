@@ -61,6 +61,8 @@ let fetchSpy: jest.SpyInstance;
 let staffA: { id: string };
 let staffB: { id: string };
 let financeA: { id: string };
+let picUser: { id: string };
+let picProfile: { id: string };
 
 let orderA: { orderNumber: string; orderId: string; total: string };
 
@@ -193,6 +195,29 @@ beforeAll(async () => {
         },
     });
 
+    // A real PIC account/profile/assignment. The PIC path is exercised against MariaDB, not
+    // a mocked Prisma lookup: the same `requireEventCheckInAccess` fallback must find this row
+    // and then refuse eventB because no assignment exists there.
+    picUser = await createUser("p13-pic");
+    picProfile = await prisma.pICProfile.create({
+        data: {
+            userId: picUser.id,
+            picCode: `P13-PIC-${SUFFIX}`,
+            displayName: `P13 PIC ${SUFFIX}`,
+            status: "ACTIVE",
+        },
+        select: { id: true },
+    });
+    await prisma.pICEventAssignment.create({
+        data: {
+            picProfileId: picProfile.id,
+            eventId: f.eventA.id,
+            organizerId: f.orgA.id,
+            assignedByUserId: f.ownerA.id,
+            isActive: true,
+        },
+    });
+
     // The pooled, real, paid orders the individual tests draw their tickets from.
     orderA = await createPaidOrder({
         buyerId: f.buyerA.id,
@@ -271,6 +296,13 @@ afterAll(async () => {
     await prisma.staffEventAssignment.deleteMany({
         where: { eventId: { in: eventIds } },
     });
+    // The PIC assignment/profile are this suite's fixture too. Delete children before the
+    // parent teardown removes the organizer and user they reference.
+    await prisma.pICEventAssignment.deleteMany({
+        where: { picProfileId: picProfile.id },
+    });
+    await prisma.pICProfile.delete({ where: { id: picProfile.id } });
+    await prisma.user.delete({ where: { id: picUser.id } });
 
     // A refund claim would block the ticket delete below. This suite's refund assertion is
     // expected to be REFUSED, so this only guarantees the ordering if that ever changes.
@@ -522,6 +554,44 @@ describe("P13-B. a ticket is admitted once", () => {
 
         expect(row.status).toBe("CHECKED_IN");
     });
+
+    it("rolls the ticket update back when the accepted evidence cannot be written", async () => {
+        const ticket = nextTicket();
+
+        // Force the accepted `CheckIn.create` to violate the UNIQUE `ticketId` after the CAS
+        // has already succeeded. The transaction must roll the ticket back to ISSUED; a
+        // committed CHECKED_IN with no accepted evidence would be an unrepairable inconsistency.
+        await prisma.checkIn.create({
+            data: {
+                ticketId: ticket.id,
+                eventId: f.eventA.id,
+                organizerId: f.orgA.id,
+                checkedInByUserId: f.ownerA.id,
+                method: "MANUAL",
+                result: "SUCCESS",
+            },
+        });
+
+        signInAs(f.ownerA.id);
+
+        await expect(
+            checkInTicket({
+                eventId: f.eventA.id,
+                input: { code: ticket.ticketCode } as never,
+                request: nextRequest(),
+            })
+        ).rejects.toMatchObject({ code: "P2002" });
+
+        const row = await prisma.ticket.findUniqueOrThrow({
+            where: { id: ticket.id },
+            select: { status: true, checkedInAt: true },
+        });
+
+        expect(row).toEqual({ status: "ISSUED", checkedInAt: null });
+        expect(
+            await prisma.checkIn.count({ where: { ticketId: ticket.id } })
+        ).toBe(1);
+    });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -617,6 +687,48 @@ describe("P13-C. who may open the gate", () => {
 
         // Tenant B's order is untouched by a scan attempt from tenant A.
         expect((await orderState(eventBOrder.orderId)).status).toBe("PAID");
+    });
+
+    it("authorizes a PIC against the real assignment, and refuses an unassigned event", async () => {
+        const ticket = nextTicket();
+
+        signInAs(picUser.id);
+
+        const admitted = await checkInTicket({
+            eventId: f.eventA.id,
+            input: { code: ticket.ticketCode } as never,
+            request: nextRequest(),
+        });
+
+        expect(admitted.result).toBe("SUCCESS");
+        expect(admitted.method).toBe("MANUAL");
+
+        // The audit row carries the server-derived PIC identity, not anything the request
+        // could have supplied. This is the durable attribution the Phase 3F migration added.
+        const audit = await prisma.adminAuditLog.findFirstOrThrow({
+            where: { action: "checkin.success", entityRef: ticket.ticketCode },
+            select: { actorUserId: true, organizerId: true, afterState: true },
+        });
+
+        expect(audit.actorUserId).toBe(picUser.id);
+        expect(audit.organizerId).toBe(f.orgA.id);
+        expect(audit.afterState).toMatchObject({
+            actorKind: "PIC",
+            picProfileId: picProfile.id,
+        });
+
+        // Same ACTIVE PIC, no assignment for eventB: the real compound lookup must refuse
+        // with the masked 404, before it can read eventB's ticket.
+        await expect(
+            checkInTicket({
+                eventId: f.eventB.id,
+                input: { code: ticketB.ticketCode } as never,
+                request: nextRequest(),
+            })
+        ).rejects.toMatchObject({
+            code: "ORGANIZER_ACCESS_DENIED",
+            status: 404,
+        });
     });
 
     it("answers an unknown and a malformed code identically, and admits neither", async () => {

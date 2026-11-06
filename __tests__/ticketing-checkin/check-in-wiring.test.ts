@@ -11,6 +11,7 @@ import {
     checkInRequestSchema,
 } from "@/lib/ticketing/checkin/validation";
 import { normalizeCode } from "@/lib/ticketing/checkin/service";
+import { resolveCheckInMethod } from "@/lib/ticketing/checkin/method";
 import { isEventCheckInOpen } from "@/lib/events/sales-state";
 
 /**
@@ -349,7 +350,11 @@ describe("P13-4. the service is the only writer, and it is CAS-guarded", () => {
         // projection field or a comparison operand.
         expect(service).not.toMatch(/qrTokenHash\s*:/);
         expect(service).not.toMatch(/hashQrToken/);
-        expect(service).toContain('const CHECK_IN_METHOD: CheckInMethod = "MANUAL"');
+        // PHASE 3C: the label is no longer a bare literal. It is the Phase 3B resolver's
+        // answer for the one credential this gate has — the public ticket code — asserted
+        // both at the call site and at runtime so a literal cannot quietly reappear.
+        expect(service).toContain('resolveCheckInMethod("PUBLIC_TICKET_CODE")');
+        expect(resolveCheckInMethod("PUBLIC_TICKET_CODE")).toBe("MANUAL");
         expect(service).not.toContain('"QR_SCAN"');
     });
 
@@ -434,7 +439,9 @@ describe("P13-6 / PHASE 21. the only scanner dependency is the intentional jsQR 
     });
 
     it("uses the wallet QR payload's existing prefix rather than a second encoding", () => {
-        expect(code(read("lib/ticketing/checkin/service.ts"))).toContain(
+        // PHASE 3C: the prefix and the parsing now live together in the Phase 3B parser, and
+        // the service calls it instead of re-implementing the namespace.
+        expect(code(read("lib/ticketing/checkin/qr-payload.ts"))).toContain(
             "TICKET_QR_PREFIX"
         );
         expect(read("lib/ticketing/tickets/reference.ts")).toContain(

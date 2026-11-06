@@ -714,6 +714,18 @@ async function PicSelfServiceSection({
                                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                                         {assignment.eventSlug}
                                     </p>
+                                    {assignment.isActive ? (
+                                        <div className="mt-1">
+                                            <TextLink
+                                                href={`/dashboard/pic/scan/${assignment.eventId}`}
+                                            >
+                                                Pindai tiket
+                                            </TextLink>
+                                            <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`}>
+                                                Kirim dokumen peserta
+                                            </TextLink>
+                                        </div>
+                                    ) : null}
                                 </div>,
                                 <StatusBadge
                                     key="status"

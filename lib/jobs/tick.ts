@@ -1,4 +1,5 @@
 import { advanceEventLifecycleBatch } from "@/lib/events/lifecycle";
+import { runH36ReminderSweep } from "@/lib/notifications/h36-reminder";
 import { expireDueReservations } from "@/lib/ticketing/reservations";
 
 import {
@@ -21,13 +22,14 @@ import {
  *
  *   VPS crontab (every minute)  →  POST /api/internal/jobs/tick  →  runJobsTick()
  *                                                                    ├── JOB 1 event lifecycle
- *                                                                    └── JOB 2 reservation expiry
+ *                                                                    ├── JOB 2 reservation expiry
+ *                                                                    └── JOB 3 H-36 reminder (enqueue only)
  *
  *   • Business logic NEVER lives in cron. The scheduler only triggers; every predicate,
  *     CAS, transaction and audit row belongs to the service it calls.
- *   • TWO jobs, no more (P14-D10). Notification dispatch, counters and cleanup are other
- *     phases' concerns; declaring them here would be the "vocabulary invented for symmetry"
- *     earlier phases rejected.
+ *   • THREE jobs. Phase 15 pinned two (P14-D10); Phase 4 adds the H-36 reminder as an
+ *     enqueue-only producer for the existing notification outbox. It does not send, claim
+ *     or retry — the worker owns that — and it is still a named job, not a hidden rule.
  *   • ONE `now` for the whole tick. Both jobs receive the same instant, so no boundary
  *     (`startAt`, `endAt + 30m`, a reservation TTL) can be straddled mid-run.
  *   • Each job is isolated: its own lease, its own try/catch, its own outcome. A failure in
@@ -62,6 +64,23 @@ export type ReservationReaperJobOutcome = {
     error?: string;
 };
 
+export type H36ReminderJobOutcome = {
+    job: JobName;
+    ran: boolean;
+    ok: boolean;
+    scannedEvents: number;
+    scannedTickets: number;
+    enqueued: number;
+    existing: number;
+    skippedNoContact: number;
+    skippedInvalidContact: number;
+    skippedDuplicateRecipient: number;
+    skippedIneligible: number;
+    superseded: number;
+    failed: number;
+    error?: string;
+};
+
 export type TickResult = {
     /** True only when every job that ran succeeded. A skipped job is not a failure. */
     ok: boolean;
@@ -69,6 +88,7 @@ export type TickResult = {
     jobs: {
         eventLifecycle: EventLifecycleJobOutcome;
         reservationExpiry: ReservationReaperJobOutcome;
+        h36Reminder: H36ReminderJobOutcome;
     };
     durationMs: number;
 };
@@ -143,6 +163,14 @@ export async function runJobsTick(
         () => expireDueReservations({ now, batchSize: 100 })
     );
 
+    // Phase 4 — enqueue only. The worker owns rendering, claiming, retrying and sending;
+    // this job's whole effect is idempotent outbox rows.
+    const reminder = await runLeasedJob(
+        JOB_NAMES.H36_REMINDER,
+        now,
+        () => runH36ReminderSweep({ now, maxEvents: 25 })
+    );
+
     const eventLifecycle: EventLifecycleJobOutcome = {
         job: JOB_NAMES.EVENT_LIFECYCLE,
         ran: lifecycle.ran,
@@ -165,10 +193,28 @@ export async function runJobsTick(
         ...(reaper.error ? { error: reaper.error } : {}),
     };
 
+    const h36Reminder: H36ReminderJobOutcome = {
+        job: JOB_NAMES.H36_REMINDER,
+        ran: reminder.ran,
+        ok: reminder.ok,
+        scannedEvents: reminder.data?.scannedEvents ?? 0,
+        scannedTickets: reminder.data?.scannedTickets ?? 0,
+        enqueued: reminder.data?.enqueued ?? 0,
+        existing: reminder.data?.existing ?? 0,
+        skippedNoContact: reminder.data?.skippedNoContact ?? 0,
+        skippedInvalidContact: reminder.data?.skippedInvalidContact ?? 0,
+        skippedDuplicateRecipient:
+            reminder.data?.skippedDuplicateRecipient ?? 0,
+        skippedIneligible: reminder.data?.skippedIneligible ?? 0,
+        superseded: reminder.data?.superseded ?? 0,
+        failed: reminder.data?.failed ?? 0,
+        ...(reminder.error ? { error: reminder.error } : {}),
+    };
+
     return {
-        ok: eventLifecycle.ok && reservationExpiry.ok,
+        ok: eventLifecycle.ok && reservationExpiry.ok && h36Reminder.ok,
         now: now.toISOString(),
-        jobs: { eventLifecycle, reservationExpiry },
+        jobs: { eventLifecycle, reservationExpiry, h36Reminder },
         durationMs: Date.now() - startedAt,
     };
 }

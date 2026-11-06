@@ -26,10 +26,17 @@ import { prisma } from "@/lib/prisma";
  * the past, which is what lets a stale lease be taken over without operator action.
  */
 
-/** The two jobs, and only two (P14-D10). The string is the `joblock.name` primary key. */
+/**
+ * The three jobs. The string is the `joblock.name` primary key.
+ *
+ * Phase 15 pinned TWO jobs (P14-D10). Phase 4 deliberately widens the vocabulary by one:
+ * `h36-reminder` is an enqueue-only scheduler job, not an ad-hoc place to hide business
+ * rules. The tick's own tests are updated to expect three rather than bypassed.
+ */
 export const JOB_NAMES = {
     EVENT_LIFECYCLE: "event-lifecycle",
     RESERVATION_REAPER: "reservation-reaper",
+    H36_REMINDER: "h36-reminder",
 } as const;
 
 export type JobName = (typeof JOB_NAMES)[keyof typeof JOB_NAMES];

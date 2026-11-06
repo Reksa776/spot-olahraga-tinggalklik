@@ -32,9 +32,27 @@ jest.mock("@/lib/ticketing/reservations", () => {
     };
 });
 
+// Phase 4 — the H-36 reminder job hits the database; the tick suite injects its outcome so the
+// lease/tick contract can be tested without depending on reminder fixtures.
+jest.mock("@/lib/notifications/h36-reminder", () => ({
+    runH36ReminderSweep: jest.fn(async () => ({
+        scannedEvents: 0,
+        scannedTickets: 0,
+        enqueued: 0,
+        existing: 0,
+        skippedNoContact: 0,
+        skippedInvalidContact: 0,
+        skippedDuplicateRecipient: 0,
+        skippedIneligible: 0,
+        superseded: 0,
+        failed: 0,
+    })),
+}));
+
 import { prisma } from "@/lib/prisma";
 import { advanceEventLifecycleBatch } from "@/lib/events/lifecycle";
 import { expireDueReservations } from "@/lib/ticketing/reservations";
+import { runH36ReminderSweep } from "@/lib/notifications/h36-reminder";
 import {
     acquireJobLock,
     JOB_LEASE_MS,
@@ -47,6 +65,7 @@ import { POST } from "@/app/api/internal/jobs/tick/route";
 
 const lifecycleMock = advanceEventLifecycleBatch as unknown as jest.Mock;
 const reaperMock = expireDueReservations as unknown as jest.Mock;
+const reminderMock = runH36ReminderSweep as unknown as jest.Mock;
 
 jest.setTimeout(120_000);
 
@@ -269,9 +288,10 @@ describe("P15-E. the job lease is DB-backed and single-flight", () => {
         expect(row?.lastStatus).toBe("OK");
     });
 
-    test("only the two declared jobs exist", () => {
+    test("only the three declared jobs exist", () => {
         expect(Object.values(JOB_NAMES).sort()).toEqual([
             "event-lifecycle",
+            "h36-reminder",
             "reservation-reaper",
         ]);
     });
@@ -291,20 +311,26 @@ describe("P15-F. runJobsTick runs both jobs with one instant", () => {
         expect(result.ok).toBe(true);
         expect(result.jobs.eventLifecycle.job).toBe("event-lifecycle");
         expect(result.jobs.reservationExpiry.job).toBe("reservation-reaper");
+        expect(result.jobs.h36Reminder.job).toBe("h36-reminder");
 
         // One instant for the whole tick: no boundary can be straddled mid-run.
         expect(lifecycleMock).toHaveBeenCalledTimes(1);
         expect(reaperMock).toHaveBeenCalledTimes(1);
+        expect(reminderMock).toHaveBeenCalledTimes(1);
         expect(lifecycleMock.mock.calls[0][0].now.toISOString()).toBe(
             now.toISOString()
         );
         expect(reaperMock.mock.calls[0][0].now.toISOString()).toBe(
             now.toISOString()
         );
+        expect(reminderMock.mock.calls[0][0].now.toISOString()).toBe(
+            now.toISOString()
+        );
 
         // Batch ceilings are bounded (P14-D10).
         expect(lifecycleMock.mock.calls[0][0].batchSize).toBe(200);
         expect(reaperMock.mock.calls[0][0].batchSize).toBe(100);
+        expect(reminderMock.mock.calls[0][0].maxEvents).toBe(25);
     });
 
     test("JOB 2 is the EXISTING reaper: a real due reservation is expired", async () => {

@@ -822,6 +822,17 @@ export function recordLoginGlobalFailure(): number {
     return recordRateLimitFailure(LOGIN_GLOBAL_LABEL, LOGIN_GLOBAL_WINDOW_MS);
 }
 
+/**
+ * PHASE 3F — PIC gate scanning.
+ *
+ * 120 requests per rolling minute per (PIC user id, event id). The identity is two
+ * server-derived values, never a client-supplied field; see
+ * `lib/ticketing/checkin/pic-rate-limit.ts` for why the key is built here rather than
+ * at the call site.
+ */
+export const PIC_SCAN_MAX_REQUESTS = 120;
+export const PIC_SCAN_WINDOW_MS = 60 * 1000;
+
 export const rateLimiters = {
     /**
      * Credential failures per client bucket.
@@ -873,6 +884,14 @@ export const rateLimiters = {
         throttleMs: () => loginGlobalThrottleMs(),
         recordFailure: () => recordLoginGlobalFailure(),
     },
+
+    /** PIC check-in: keyed by the authenticated user and the authorized event. */
+    checkInScan: (userId: string, eventId: string) =>
+        checkRateLimit(
+            `checkin:pic:${userId}:${eventId}`,
+            PIC_SCAN_MAX_REQUESTS,
+            PIC_SCAN_WINDOW_MS
+        ),
 
     register: (clientKey: string) =>
         checkRateLimit(`register:${clientKey}`, 3, 60 * 60 * 1000), // 3 per hour

@@ -499,6 +499,11 @@ type VideoSize = { width: number; height: number };
 
 type Props = {
     eventId: string;
+    /**
+     * PHASE 3E — the authenticated route this device posts to. Defaults to the organizer
+     * gate, so the staff scanner page is unchanged; the PIC page passes its own endpoint.
+     */
+    endpoint?: string;
     /** `checkin.log.read` — the admissions list. The scanner works without it. */
     canReadLog: boolean;
     initialItems: CheckInListItem[];
@@ -524,13 +529,16 @@ function detailText(
 
 export default function TicketScanner({
     eventId,
+    endpoint: endpointProp,
     canReadLog,
     initialItems,
     initialTotal,
     gateState,
     requiresCheckIn,
 }: Props) {
-    const endpoint = `/api/organizer/events/${eventId}/check-in`;
+    // PHASE 3E — one device, two authorized routes. Nothing else about the check-in call
+    // changes: the endpoint is the only thing a PIC surface overrides.
+    const endpoint = endpointProp ?? `/api/organizer/events/${eventId}/check-in`;
 
     const [gateLabel, setGateLabel] = useState("");
     const [manualCode, setManualCode] = useState("");

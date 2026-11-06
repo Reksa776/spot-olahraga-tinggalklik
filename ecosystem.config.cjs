@@ -56,6 +56,26 @@
  *     operator concern: `pm2 install pm2-logrotate`.
  *   * NO scheduler. The job tick is a separate, separately-gated decision — see the
  *     "Scheduler gate" section of the runbook.
+ *
+ * ── THE NOTIFICATION WORKER (PHASE P1) ────────────────────────────────────────────
+ * `tinggalklik-worker` is a SEPARATE process, not an extra Next.js instance. It owns the
+ * notification queue loop and is deliberately a single forked instance: the queue's CAS and
+ * the `joblock: notification-dispatch` lease are what make overlap safe, but one poller is
+ * what keeps the daily WhatsApp cap and the 5-second send cadence meaningful. It never binds
+ * a port, never serves HTTP, and never opens a WhatsApp socket in this phase.
+ *
+ * `kill_timeout: 30000` is larger than the web app's 10 seconds because SIGTERM must let the
+ * worker finish the delivery it has already claimed. The entrypoint handles SIGTERM/SIGINT
+ * and calls `worker.stop()`, which stops claiming and awaits the in-flight batch. PM2 sends
+ * SIGINT first and only escalates to SIGKILL after this window.
+ *
+ * `restart_delay` + `min_uptime` prevent a crash loop from hammering MariaDB. If the worker
+ * reaches its restart limit, fix the cause and `pm2 restart tinggalklik-worker` explicitly;
+ * do not mask it with an unbounded restart policy.
+ *
+ * This app inherits the host environment. No secret, database URL or notification switch is
+ * written here: an operator enables the worker in the host environment, and the existing
+ * Phase 1 transport clamp still refuses SMTP/Baileys.
  */
 
 module.exports = {
@@ -86,6 +106,64 @@ module.exports = {
             kill_timeout: 10000,
             max_memory_restart: "512M",
             // Timestamps on every line, so a log can be correlated with an incident.
+            time: true,
+            merge_logs: true,
+        },
+        {
+            name: "tinggalklik-worker",
+            cwd: __dirname,
+            // Run the installed tsx CLI directly. `npx` would add a resolver process between
+            // PM2 and the worker and could fetch a package at start-up; both are wrong for a
+            // supervised production process.
+            script: "node_modules/tsx/dist/cli.mjs",
+            args: "scripts/notification-worker.ts",
+            interpreter: "node",
+            instances: 1,
+            exec_mode: "fork",
+            env: {
+                NODE_ENV: "production",
+            },
+            autorestart: true,
+            // A crash loop must be visible as `errored`, not hidden by endless restarts.
+            min_uptime: "30s",
+            max_restarts: 10,
+            restart_delay: 5000,
+            // Longer than the worker's graceful-shutdown window: it awaits the claimed batch.
+            kill_timeout: 30000,
+            max_memory_restart: "256M",
+            time: true,
+            merge_logs: true,
+        },
+        {
+            // PHASE P2 — THE ISOLATED WHATSAPP GATEWAY.
+            //
+            // A third process, never a Next.js instance. It owns at most one Baileys socket,
+            // binds loopback only, and keeps its encrypted session outside the repository. It
+            // is DISABLED by default: with `WA_GATEWAY_ENABLED` unset it exits 0 immediately.
+            // `stop_exit_codes: [0]` makes that a clean stopped state rather than a restart
+            // loop; a real crash (non-zero) still restarts with the guard below.
+            //
+            // No token, key, session path or database URL is written here. Enable it in the
+            // host environment, then `pm2 restart tinggalklik-wa`. P2 does not pair an account
+            // and does not send a real message; do not start this app expecting a live socket.
+            name: "tinggalklik-wa",
+            cwd: __dirname,
+            script: "node_modules/tsx/dist/cli.mjs",
+            args: "scripts/whatsapp-gateway.ts",
+            interpreter: "node",
+            instances: 1,
+            exec_mode: "fork",
+            env: {
+                NODE_ENV: "production",
+            },
+            autorestart: true,
+            stop_exit_codes: [0],
+            min_uptime: "30s",
+            max_restarts: 10,
+            restart_delay: 5000,
+            // Must exceed the gateway's graceful-shutdown window (10s default).
+            kill_timeout: 30000,
+            max_memory_restart: "256M",
             time: true,
             merge_logs: true,
         },

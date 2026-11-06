@@ -7,10 +7,9 @@
  *   npm run worker:notifications -- --once  # one batch, then exit
  *
  * This is a SEPARATE OS process from Next.js, by design. It does not listen on a port, does not
- * import the Next runtime, and never depends on a request to run. Starting it is an explicit
- * operator action; `ecosystem.config.cjs` intentionally does not define it yet (see the Phase 1
- * report — adding a second PM2 app would activate a process on the next deploy, which is an
- * owner decision even in dry-run mode).
+ * import the Next runtime, and never depends on a request to run. Phase P1 declares it as the
+ * `tinggalklik-worker` app in `ecosystem.config.cjs`; starting that app remains an explicit
+ * operator action, and the kill switch still defaults to disabled.
  *
  * DEFAULT BEHAVIOUR WITH NO CONFIGURATION: `NOTIFICATIONS_ENABLED` unset → disabled. The worker
  * starts, logs its resolved configuration, performs no database write, and keeps polling. That

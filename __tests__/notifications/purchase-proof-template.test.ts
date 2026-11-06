@@ -163,10 +163,12 @@ describe("store contact is optional and never invented", () => {
 });
 
 describe("purchase-proof.v1 content", () => {
-    test("is registered and is the only Phase 2 business template", () => {
+    test("is registered; later phases register their own templates", () => {
         expect(hasTemplate(PURCHASE_PROOF_TEMPLATE_KEY)).toBe(true);
         expect(hasTemplate("purchase-proof.v2")).toBe(false);
-        expect(hasTemplate("reminder.h36.v1")).toBe(false);
+        // Phase 4 registers its own reminder; Phase 5's document template stays absent.
+        expect(hasTemplate("reminder.h36.v1")).toBe(true);
+        expect(hasTemplate("event-document.v1")).toBe(false);
     });
 
     test("opens with the owner's sentence, verbatim", () => {

@@ -9,8 +9,9 @@
  *
  * Phase 1 shipped ONE synthetic template — `phase1.dry-run.v1`. Phase 2 adds exactly TWO
  * business templates — `purchase-proof.v1` (settlement) and `ticket-issued.v1` (post-issuance) —
- * and nothing else. The H-36 reminder and post-event document templates belong to Phases 4/5
- * and remain unregistered, so "no Phase 4/5 message can be enqueued" stays checkable.
+ * and nothing else. Phase 4 registers `reminder.h36.v1`; the post-event document template still
+ * belongs to Phase 5 and remains unregistered, so "no Phase 5 message can be enqueued" stays
+ * checkable.
  *
  * Unknown keys are a terminal, non-retryable condition: retrying cannot make a deleted template
  * reappear, and a silent fallback body would be worse than a recorded failure.
@@ -21,9 +22,14 @@ import {
     renderPurchaseProof,
 } from "./purchase-proof-template";
 import {
+    H36_REMINDER_TEMPLATE_KEY,
+    renderH36Reminder,
+} from "./h36-reminder-template";
+import {
     TICKET_ISSUED_TEMPLATE_KEY,
     renderTicketIssued,
 } from "./ticket-issued-template";
+import { POST_EVENT_DOCUMENT_TEMPLATE_KEY, renderPostEventDocument } from "./post-event-document-template";
 
 export const PHASE_1_DRY_RUN_TEMPLATE_KEY = "phase1.dry-run.v1";
 
@@ -79,6 +85,8 @@ const TEMPLATES: Record<string, (payload: Record<string, unknown>) => RenderedNo
     [PHASE_1_DRY_RUN_TEMPLATE_KEY]: renderDryRun,
     [PURCHASE_PROOF_TEMPLATE_KEY]: renderPurchaseProof,
     [TICKET_ISSUED_TEMPLATE_KEY]: renderTicketIssued,
+    [H36_REMINDER_TEMPLATE_KEY]: renderH36Reminder,
+    [POST_EVENT_DOCUMENT_TEMPLATE_KEY]: renderPostEventDocument,
 };
 
 export function hasTemplate(templateKey: string): boolean {

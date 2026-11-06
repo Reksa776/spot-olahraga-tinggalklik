@@ -92,10 +92,15 @@ function sanitizeValue(key: string, value: unknown): unknown {
     if (typeof value === "string") {
         // Defence in depth: a credential pasted into a message, or a connection string smuggled
         // into a field whose name does not look secret.
-        const withCredentialsStripped = value.replace(
-            /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi,
-            "$1[redacted]@"
-        );
+        const withCredentialsStripped = value
+            .replace(
+                /([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi,
+                "$1[redacted]@"
+            )
+            // PII can be pasted into an otherwise innocent string field. Redact the
+            // address shapes this application handles without mangling ids or timestamps.
+            .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
+            .replace(/(?:\+?62|0)8\d{7,11}/g, "[redacted-phone]");
 
         return withCredentialsStripped.slice(0, MAX_STRING_LENGTH);
     }

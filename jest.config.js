@@ -68,6 +68,9 @@ module.exports = {
         // database (idempotency, CAS claim, retry gating, ambiguous-lease recovery and
         // legacy exclusion), the standalone worker, and log redaction.
         "**/__tests__/notifications/*.test.ts",
+        // Phase P2 — the isolated WhatsApp gateway: mocked sockets and the real test
+        // database. This namespace never pairs an account or sends a real message.
+        "**/__tests__/whatsapp-gateway/*.test.ts",
         // Phase 9 — the public discovery UI, the ticket wallet/e-ticket presentation, and the
         // static guards over the UI's architectural boundaries.
         //

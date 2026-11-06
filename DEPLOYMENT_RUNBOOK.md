@@ -136,6 +136,11 @@ PM2 note: PM2 must be installed and started **under the same Node** (`nvm exec` 
 installed while `.nvmrc`'s version is active), otherwise `pm2 startup` will resurrect the app
 on a different runtime after a reboot.
 
+**Worker runtime dependency (P1):** `tsx` and `dotenv` are direct production dependencies, not
+`devDependencies`. The worker is executed as `node_modules/tsx/dist/cli.mjs`, and `npm ci` with
+`NODE_ENV=production` must therefore install both. `package.json` no longer relies on `npx`
+fetching a TypeScript runner at process start.
+
 ---
 
 ## 3. Environment contract
@@ -517,6 +522,121 @@ pm2 status
 acceptable (a few hundred milliseconds) but it is not zero-downtime; do not describe it as
 such to users. Zero-downtime would require clustering, which the in-memory limiter forbids.
 
+### 7.1 Notification worker (P1)
+
+`ecosystem.config.cjs` now declares `tinggalklik-worker` as a second, forked, single-instance
+process. It has no port and no HTTP server. It inherits the host environment; no secret or
+notification switch is stored in the repository.
+
+```bash
+pm2 start ecosystem.config.cjs --only tinggalklik-worker
+pm2 restart tinggalklik-worker       # code or environment change
+pm2 stop tinggalklik-worker          # graceful: finishes the claimed batch
+pm2 logs tinggalklik-worker          # timestamps are enabled
+pm2 save
+```
+
+| Concern | Value |
+|---|---|
+| Process | `tinggalklik-worker` |
+| Entrypoint | `node_modules/tsx/dist/cli.mjs scripts/notification-worker.ts` |
+| Instances | **1**, fork mode — the queue and daily cap assume one poller |
+| Port | none |
+| Logs | `~/.pm2/logs/tinggalklik-worker-{out,error}.log` |
+| Graceful signal | SIGTERM/SIGINT handled; `kill_timeout: 30000` follows |
+| Restart guard | `min_uptime: 30s`, `max_restarts: 10`, `restart_delay: 5000` |
+
+**Health probe.** Run it in the same environment as the worker:
+
+```bash
+npm run health:worker
+```
+
+- Exit `0` with `"status":"disabled"` when `NOTIFICATIONS_ENABLED` is off. That is healthy:
+  the worker is intentionally idle and no queue heartbeat is expected.
+- Exit `0` with `"status":"ok"` when the `notification-dispatch` lease has recent activity,
+  or a batch currently holds a live lease.
+- Exit `1` with `"status":"unhealthy"` when the heartbeat is missing/stale or MariaDB cannot
+  be read. Alert on this; do not restart-loop the web app because of it.
+
+The probe is read-only and never prints a database URL, recipient, phone number or token. It
+does not replace the public web health endpoints: a notification outage must not take the
+site out of rotation.
+
+**Operator check after a deploy:**
+
+```bash
+pm2 status
+npm run health:worker
+```
+
+If the worker is `errored`, read its log and fix the cause before restarting it. Do not raise
+`max_restarts` to hide a persistent database or configuration failure.
+
+### 7.2 WhatsApp gateway (P2) — disabled by default
+
+`ecosystem.config.cjs` declares `tinggalklik-wa` as a third, forked, single-instance process.
+It owns the Baileys socket lifecycle and the gateway dispatch ledger. It does **not** process
+`Notification` or `NotificationDelivery`; the P1 worker remains the only queue owner.
+
+**P2 does not pair an account and does not send a real message.** There is no QR route, no
+pairing command and no public endpoint. If no encrypted session exists, the gateway reports
+`PAIRING_REQUIRED` and waits; pairing is a later, explicit operator phase.
+
+```bash
+# Disabled by default: exits 0 without opening a socket.
+pm2 start ecosystem.config.cjs --only tinggalklik-wa
+pm2 logs tinggalklik-wa
+
+# Only after the host environment is configured:
+#   WA_GATEWAY_ENABLED=true
+#   WA_GATEWAY_TOKEN=<32+ random characters>
+#   WA_SESSION_ENCRYPTION_KEY=<32 bytes, base64 or hex>
+#   WA_AUTH_DIR=/var/lib/tinggalklik/whatsapp-auth
+pm2 restart tinggalklik-wa
+pm2 save
+```
+
+| Concern | Value |
+|---|---|
+| Process | `tinggalklik-wa` |
+| Entrypoint | `node_modules/tsx/dist/cli.mjs scripts/whatsapp-gateway.ts` |
+| Instances | **1**, fork mode — the DB lease and local lock make a second owner stop |
+| Bind | `127.0.0.1:3100` by default; non-loopback values are refused |
+| HTTP auth | `Authorization: Bearer $WA_GATEWAY_TOKEN` on every route |
+| Session | AES-256-GCM `auth.enc` under `WA_AUTH_DIR`; `0700` directory, `0600` file |
+| Graceful signal | SIGTERM/SIGINT; awaits the in-flight dispatch, then releases ownership |
+| Restart guard | `min_uptime: 30s`, `max_restarts: 10`, `restart_delay: 5000` |
+
+**Session custody.** Create the directory on the host, outside the checkout and web root:
+
+```bash
+sudo install -d -m 0700 -o <service-user> -g <service-user> /var/lib/tinggalklik/whatsapp-auth
+```
+
+Store `WA_SESSION_ENCRYPTION_KEY` in the host secret manager/environment, separately from a
+backup of the session directory. Losing the key, or the session, requires re-pairing. Do not
+copy either into the repository. Rotate the key only with an explicit re-encryption procedure;
+P2 does not implement rotation.
+
+**Health.** Every route is authenticated, including health:
+
+```bash
+read -rsp 'gateway token: ' WA_GATEWAY_TOKEN; echo
+curl -sS -H "Authorization: Bearer $WA_GATEWAY_TOKEN" http://127.0.0.1:3100/healthz
+curl -sS -H "Authorization: Bearer $WA_GATEWAY_TOKEN" http://127.0.0.1:3100/readyz
+unset WA_GATEWAY_TOKEN
+```
+
+`healthz` is liveness (`state`, `connected`). `readyz` is 200 only when the gateway is
+`CONNECTED` and owns the lease/lock; it is 503 in `PAIRING_REQUIRED`, `DISCONNECTED`,
+`LOGGED_OUT`, `CONFLICT` or `ERROR`. Neither response contains a token, QR, JID, phone number,
+session path or message body.
+
+**Rollback.** See the P2 report. In short: `pm2 stop tinggalklik-wa`, revert the process
+revision, and leave the additive `whatsappgatewaymessage` table in place; do not drop it during
+an incident. No production migration was run as part of P2.
+
 ---
 
 ## 8. Prisma migration deployment contract
@@ -648,12 +768,25 @@ Then, by hand (they need a session):
 
 ```bash
 cd /srv/tinggalklik
+# Stop the worker first: it must not claim from a checkout that is being replaced.
+pm2 stop tinggalklik-worker
+
 git checkout <previous-release-sha>
 npm ci
 npm run build
 pm2 reload tinggalklik
 curl -fsS https://HOST/api/health/ready
+
+# If the rollback target includes P1, start the worker from that release's config.
+pm2 start ecosystem.config.cjs --only tinggalklik-worker
+# If the rollback target PREDATES P1, there is no worker app in the old config:
+# pm2 delete tinggalklik-worker
 ```
+
+Stopping or deleting the worker does **not** delete `Notification` or `NotificationDelivery`
+rows. Leave queued work in place; do not reset the queue as part of a rollback. A delivery
+left in `SENDING` becomes `FAILED/AMBIGUOUS_DELIVERY` after its lease expires and is not
+retried automatically. Investigate it explicitly before re-enabling the worker.
 
 **Database:** there is no rollback. Either accept the migration (the usual answer — Prisma
 migrations in this repository are additive except the one drop in §8.1) or restore the

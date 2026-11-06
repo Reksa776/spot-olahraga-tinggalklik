@@ -18,7 +18,9 @@
     "seed:organizer": "npx tsx prisma/seed-organizer.ts",
     "test": "jest",
     "test:db:setup": "npx tsx scripts/setup-test-db.ts",
-    "worker:notifications": "npx tsx scripts/notification-worker.ts",
+    "health:worker": "tsx scripts/notification-worker-health.ts",
+    "worker:notifications": "tsx scripts/notification-worker.ts",
+    "gateway:whatsapp": "tsx scripts/whatsapp-gateway.ts",
     "sweep:purchase-proof": "npx tsx scripts/purchase-proof-sweep.ts",
     "sweep:ticket-issued": "npx tsx scripts/ticket-issued-sweep.ts"
   },
@@ -47,6 +49,7 @@
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dotenv": "^16.6.1",
     "jsqr": "^1.4.0",
     "lucide-react": "^1.46.0",
     "next": "^16.4.3",
@@ -63,6 +66,7 @@
     "react-icons": "^5.7.0",
     "recharts": "^3.10.1",
     "tailwind-merge": "^3.6.0",
+    "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -2,10 +2,15 @@ import type { CheckInMethod, CheckInResult, Prisma } from "@prisma/client";
 
 import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import {
+    AuthzError,
+    AuthzErrorCode,
     PERMISSIONS,
     decideOrganizerPermission,
+    isAuthzError,
+    requireAuth,
     type AuthzScope,
 } from "@/lib/authz";
+import { decidePicEventPermission } from "@/lib/authz/pic-assignment";
 import { requireEventAccess } from "@/lib/events/access";
 import { isEventCheckInOpen } from "@/lib/events/sales-state";
 import { prisma } from "@/lib/prisma";
@@ -13,7 +18,9 @@ import { getClientIp } from "@/lib/rate-limit";
 import { publishTicketCheckedIn } from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
-import { TICKET_QR_PREFIX, isTicketCode } from "../tickets/reference";
+import { resolveCheckInMethod } from "./method";
+import { enforcePicScanRateLimit } from "./pic-rate-limit";
+import { parseCheckInQrPayload } from "./qr-payload";
 import type { CheckInRequestInput } from "./validation";
 
 /**
@@ -61,8 +68,15 @@ import type { CheckInRequestInput } from "./validation";
  * gets a deterministic `TICKET_ALREADY_CHECKED_IN` carrying the original timestamp and staff.
  */
 
-/** The one method this phase records. `QR_SCAN` awaits D-46. */
-const CHECK_IN_METHOD: CheckInMethod = "MANUAL";
+/**
+ * The one method this gate records: `MANUAL`.
+ *
+ * PHASE 3C: chosen by the Phase 3B resolver from the credential that actually exists here —
+ * the PUBLIC ticket code, whether it was typed, pasted, or decoded from the wallet QR by a
+ * camera. A camera scan proves nothing about a secret, so it must not be labelled `QR_SCAN`.
+ * That value is unreachable until a scanner secret is genuinely verified (D-46).
+ */
+const CHECK_IN_METHOD: CheckInMethod = resolveCheckInMethod("PUBLIC_TICKET_CODE");
 
 /**
  * Refund states that mean "this ticket is claimed by an open request" (P14-D15 — D-28).
@@ -158,6 +172,21 @@ export type CheckInAccess = {
     event: { id: string; organizerId: string };
     /** The actor's `OrganizerMember` row for the event's organizer, when one exists. */
     memberId: string | null;
+    /**
+     * Which gate admitted the actor. PIC responses must never disclose another operator's
+     * identity (B-4), so this decides whether `firstCheckedInBy` may be populated.
+     */
+    actorKind: "ORGANIZER" | "PIC";
+    /**
+     * The PIC profile that admitted, when the actor came through the PIC gate.
+     *
+     * PHASE 3F: durable attribution already exists in `CheckIn.checkedInByUserId` (always
+     * the session user) and `PICProfile.userId` is `@unique`, so the PIC is fully
+     * recoverable without a schema change. This field carries the profile id into the
+     * immutable audit metadata, where it can be joined to the profile even after an
+     * assignment is revoked. `null` for organizers.
+     */
+    picProfileId: string | null;
 };
 
 /**
@@ -167,7 +196,7 @@ export type CheckInAccess = {
  *   1. `checkin.scan` inside the event's own organizer (cross-tenant = 404);
  *   2. for a member without `checkin.override`, an active `StaffEventAssignment`.
  */
-export async function requireEventCheckInAccess(
+async function requireOrganizerCheckInAccess(
     eventId: string
 ): Promise<CheckInAccess> {
     const { scope, event } = await requireEventAccess(
@@ -211,7 +240,158 @@ export async function requireEventCheckInAccess(
         }
     }
 
-    return { scope, event, memberId: member?.id ?? null };
+    return {
+        scope,
+        event,
+        memberId: member?.id ?? null,
+        actorKind: "ORGANIZER",
+        picProfileId: null,
+    };
+}
+
+/**
+ * Refusal codes that mean "this actor is not allowed here", as opposed to "something broke".
+ *
+ * Only these may trigger the PIC fallback: a database outage or a programming error must keep
+ * propagating, so it can never be turned into a second authorization attempt.
+ */
+const ACCESS_REFUSAL_CODES: ReadonlySet<string> = new Set([
+    ERROR_CODES.UNAUTHORIZED,
+    ERROR_CODES.FORBIDDEN,
+    ERROR_CODES.ORGANIZER_ACCESS_DENIED,
+    ERROR_CODES.PIC_ACCESS_DENIED,
+    ERROR_CODES.NOT_FOUND,
+]);
+
+function isAccessRefusal(error: unknown): boolean {
+    if (isAuthzError(error)) {
+        return true;
+    }
+
+    return error instanceof AppError && ACCESS_REFUSAL_CODES.has(error.code);
+}
+
+/**
+ * ==========================================
+ * PHASE 3D — THE PIC FRONT DOOR TO THE SAME ADMISSION
+ * ==========================================
+ *
+ * A PIC is a platform role with NO `OrganizerMember` row, so the tenant guard above can never
+ * authorize one — that is structural, not a bug. Duplicating the admission writer instead would
+ * split the lock, the refund guard, the CAS and the UNIQUE insert into two implementations, which
+ * is exactly what the phase forbids.
+ *
+ * So the organizer refusal is caught (ONLY when it is an authorization refusal) and the question
+ * is asked again the way the Phase 3A contract asks it: an ACTIVE `PICProfile` belonging to the
+ * session user, plus an active, non-revoked `PICEventAssignment` for THIS event, decided by
+ * `decidePicEventPermission`. An actor who is neither staff nor a PIC gets the ORIGINAL refusal
+ * rethrown, so the 404 masking of the tenant guard is preserved exactly.
+ */
+async function requirePicCheckInAccess(
+    eventId: string,
+    organizerRefusal: unknown
+): Promise<CheckInAccess> {
+    const scope = await requireAuth();
+
+    const event = await prisma.event.findUnique({
+        where: { id: eventId },
+        select: { id: true, organizerId: true },
+    });
+
+    if (!event) {
+        throw organizerRefusal;
+    }
+
+    const picProfile = await prisma.pICProfile.findUnique({
+        where: { userId: scope.userId },
+        select: { id: true, userId: true, status: true },
+    });
+
+    if (!picProfile) {
+        // Not a PIC either — the organizer refusal is the true, masked answer.
+        throw organizerRefusal;
+    }
+
+    const assignment = await prisma.pICEventAssignment.findUnique({
+        where: {
+            picProfileId_eventId: {
+                picProfileId: picProfile.id,
+                eventId,
+            },
+        },
+        select: {
+            picProfileId: true,
+            eventId: true,
+            isActive: true,
+            revokedAt: true,
+        },
+    });
+
+    const decision = decidePicEventPermission({
+        userId: scope.userId,
+        eventId,
+        picProfile,
+        assignment,
+    });
+
+    if (!decision.allowed) {
+        throw new AuthzError(decision.code, decision.reason);
+    }
+
+    return {
+        scope,
+        event,
+        memberId: null,
+        actorKind: "PIC",
+        picProfileId: picProfile.id,
+    };
+}
+
+/**
+ * Resolve the actor's authority to admit at one event.
+ *
+ * Two independent gates, both database-derived:
+ *   1. the organizer path (unchanged): `checkin.scan` inside the event's own organizer, and for a
+ *      member without `checkin.override` an active `StaffEventAssignment`;
+ *   2. the PIC path (Phase 3D): only after an authorization refusal above, an ACTIVE PIC profile
+ *      with an active, non-revoked assignment for this exact event.
+ */
+export async function requireEventCheckInAccess(
+    eventId: string
+): Promise<CheckInAccess> {
+    try {
+        return await requireOrganizerCheckInAccess(eventId);
+    } catch (error) {
+        if (!isAccessRefusal(error)) {
+            throw error;
+        }
+
+        return requirePicCheckInAccess(eventId, error);
+    }
+}
+
+/**
+ * ==========================================
+ * PHASE 3E — THE SCANNER PAGE'S SERVER-SIDE GATE
+ * ==========================================
+ *
+ * A page cannot call `requireEventCheckInAccess`: that guard prefers the organizer path and
+ * only falls back to PIC after a tenant refusal, which is right for the API but would let an
+ * organizer member open the PIC scanner page. This entry point asks ONLY the PIC question —
+ * the session user's own ACTIVE profile plus an active, non-revoked assignment for this event,
+ * decided by the Phase 3A decider — and answers a masked 404 for every refusal, so the page
+ * never reveals whether an event exists.
+ */
+export async function requirePicScanAccess(
+    eventId: string
+): Promise<CheckInAccess> {
+    return requirePicCheckInAccess(
+        eventId,
+        new AuthzError(
+            AuthzErrorCode.ORGANIZER_ACCESS_DENIED,
+            "PIC scanner page: no access to this event"
+        )
+    );
 }
 
 /**
@@ -222,15 +402,12 @@ export async function requireEventCheckInAccess(
  * so that "malformed" and "unknown" are indistinguishable (design §20.2 check 1).
  */
 export function normalizeCode(raw: string): string | null {
-    let value = raw.trim();
+    // PHASE 3C: the parsing is the Phase 3B parser's — one implementation, so the gate and
+    // this compatibility surface cannot disagree about what a ticket reference is. The `null`
+    // collapse is kept because that is the contract Phase 13's tests and callers pin.
+    const parsed = parseCheckInQrPayload(raw);
 
-    if (value.toUpperCase().startsWith(TICKET_QR_PREFIX)) {
-        value = value.slice(TICKET_QR_PREFIX.length).trim();
-    }
-
-    value = value.toUpperCase();
-
-    return isTicketCode(value) ? value : null;
+    return parsed.valid ? parsed.ticketCode : null;
 }
 
 export type CheckInSuccess = {
@@ -298,9 +475,21 @@ export async function checkInTicket(params: {
     input: CheckInRequestInput;
     request?: Request;
 }): Promise<CheckInSuccess> {
-    const { scope, event, memberId } = await requireEventCheckInAccess(
-        params.eventId
-    );
+    const { scope, event, memberId, actorKind, picProfileId } =
+        await requireEventCheckInAccess(params.eventId);
+
+    /*
+     * PHASE 3F: the PIC scan allowance is spent before the first ticket query. The key
+     * is the authenticated user and the authorized event only — `params.input` is never
+     * part of it, so client-controlled fields cannot choose or reset a bucket. The
+     * organizer path is deliberately untouched.
+     */
+    if (actorKind === "PIC") {
+        enforcePicScanRateLimit({
+            userId: scope.userId,
+            eventId: event.id,
+        });
+    }
 
     const gate = await prisma.event.findUniqueOrThrow({
         where: { id: event.id },
@@ -352,7 +541,12 @@ export async function checkInTicket(params: {
             entityType: "Ticket",
             entityRef: input.note,
             description: `Check-in ditolak: ${input.reason}`,
-            afterState: { reason: input.reason, result: input.result },
+            afterState: {
+                reason: input.reason,
+                result: input.result,
+                actorKind,
+                picProfileId,
+            },
             reason: input.reason,
             request: params.request,
         });
@@ -375,9 +569,12 @@ export async function checkInTicket(params: {
         });
     }
 
-    const code = normalizeCode(params.input.code);
+    const presented = parseCheckInQrPayload(params.input.code);
 
-    if (!code) {
+    if (!presented.valid) {
+        // Every refusal reason gets the SAME answer. The classification exists for operators
+        // reading the audit row; the caller must not be able to tell a malformed payload from
+        // an unknown ticket (design §20.2 check 1), or the error shape becomes an oracle.
         throw await refuse({
             result: "INVALID_TICKET",
             note: "UNRECOGNIZED_CODE_FORMAT",
@@ -385,6 +582,8 @@ export async function checkInTicket(params: {
             error: AppError.notFound("Tiket tidak ditemukan."),
         });
     }
+
+    const code = presented.ticketCode;
 
     const ticket: CheckInTicketRow | null = await prisma.ticket.findUnique({
         where: { ticketCode: code },
@@ -519,7 +718,10 @@ export async function checkInTicket(params: {
                         reason: "ALREADY_CHECKED_IN",
                         ticketCode: ticket.ticketCode,
                         firstCheckedInAt: first?.checkedInAt?.toISOString() ?? null,
-                        firstCheckedInBy: first?.checkedInBy?.name ?? null,
+                        firstCheckedInBy:
+                            actorKind === "PIC"
+                                ? null
+                                : (first?.checkedInBy?.name ?? null),
                         firstGateLabel: first?.gateLabel ?? null,
                     },
                 }),
@@ -571,6 +773,10 @@ export async function checkInTicket(params: {
             eventId: gate.id,
             method: CHECK_IN_METHOD,
             gateLabel,
+            // PHASE 3F: durable, server-derived attribution. No participant data, no
+            // photo, no raw QR payload and no token is added here.
+            actorKind,
+            picProfileId,
         },
         request: params.request,
     });

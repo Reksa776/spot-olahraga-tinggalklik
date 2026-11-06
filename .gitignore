@@ -34,3 +34,11 @@ next-env.d.ts
 
 # WhatsApp auth state (legacy)
 #data/whatsapp-auth/
+
+# WhatsApp gateway runtime/session material. The gateway refuses a repository path at startup,
+# but keep an accidental copy out of Git as well. The session file is encrypted at rest; the key
+# lives only in the host environment.
+storage/whatsapp-gateway/
+data/whatsapp-gateway/
+**/whatsapp-auth/
+*.wa-session
