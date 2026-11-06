@@ -1,93 +1,226 @@
 /**
- * ==========================================
- * DEDICATED TEST DATABASE — URL RESOLUTION
- * ==========================================
- *
- * Phase 22 Part 12. The ticketing integration suites run against a REAL MySQL, and they
- * used to run against the DEVELOPMENT database. That is why residue from an aborted test
- * (`P6 …` events, test sports, stranded orders and payments) appeared in the running
- * application: the suites and the app were writing to the same schema, and once a fixture
- * had been published through the real services it was indistinguishable from live data on
- * every public surface.
- *
- * The fix is to stop sharing the schema. Jest runs against `<appdb>_test` on the same
- * server, derived deterministically from `DATABASE_URL` so there is no second secret to
- * configure and no way for the two to drift apart. The development database is never
- * written to by a test again.
- *
- * ── WHY THE NAME IS DERIVED AND NOT CONFIGURED ──────────────────────────────────
- * A `TEST_DATABASE_URL` variable would be a second source of truth for the same server,
- * credentials, charset and migration history — and, in practice, one that gets set on the
- * developer's machine and forgotten in CI, which silently reintroduces the shared schema.
- * Appending a fixed suffix to the path can only ever point at a sibling database on the
- * same server.
- *
- * ── WHY IT IS IDEMPOTENT ────────────────────────────────────────────────────────
- * `testDatabaseUrl` returns its input unchanged when the name already ends in `_test`, so
- * a worker that resolves the URL twice, or an operator who exports the test URL directly,
- * cannot end up at `<appdb>_test_test`.
+ * Resolve and enforce the only database target allowed for Jest.
+ * A `_test` suffix is an additional convention, not the safety check: the URL must be
+ * explicit, parseable, point to a test-named MySQL schema, and differ from the application
+ * schema on the same normalized server identity.
  */
-
-/*
- * Imported for its side effect, and it has to stay at the top of the file: Prisma Client is
- * what reads `.env` into `process.env`.
- *
- * `applyTestDatabaseUrl` runs as a Jest `setupFiles` entry, i.e. in a worker BEFORE the test
- * module graph is imported. Without this import `DATABASE_URL` would still be undefined at
- * that moment and the redirect to the test database would quietly not happen — which is the
- * exact failure this whole module exists to prevent.
- */
-import "@prisma/client";
-
-/** The reserved suffix that marks the test database. */
 export const TEST_DATABASE_SUFFIX = "_test";
 
-/**
- * The test-database URL for an application URL.
- *
- * @throws when `appUrl` is not a parseable absolute URL — a malformed `DATABASE_URL` should
- *         fail loudly here rather than turn into a confusing connection error later.
- */
-export function testDatabaseUrl(appUrl: string): string {
-    const parsed = new URL(appUrl);
-    const name = parsed.pathname.replace(/^\//, "");
+export type TestDatabaseEnvironment = Record<string, string | undefined>;
 
-    if (!name) {
-        throw new Error(
-            `DATABASE_URL has no database name in its path: '${parsed.pathname}'`
-        );
+type MysqlIdentity = {
+    database: string;
+    host: string;
+    port: number;
+};
+
+function mysqlIdentity(rawUrl: string, variableName: string): MysqlIdentity {
+    let parsed: URL;
+    try {
+        parsed = new URL(rawUrl);
+    } catch {
+        throw new Error(`${variableName} must be an absolute MySQL URL.`);
     }
 
-    if (name.endsWith(TEST_DATABASE_SUFFIX)) {
-        return appUrl;
+    if (parsed.protocol !== "mysql:" || !parsed.hostname || !parsed.username) {
+        throw new Error(`${variableName} must identify a MySQL server and database.`);
     }
 
-    parsed.pathname = `/${name}${TEST_DATABASE_SUFFIX}`;
+    let database: string;
+    try {
+        database = decodeURIComponent(parsed.pathname.slice(1));
+    } catch {
+        throw new Error(`${variableName} has an invalid database name.`);
+    }
 
-    return parsed.toString();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_$-]{0,63}$/.test(database)) {
+        throw new Error(`${variableName} must contain one unambiguous MySQL database name.`);
+    }
+
+    return {
+        database: database.toLowerCase(),
+        host: parsed.hostname.toLowerCase(),
+        port: parsed.port ? Number(parsed.port) : 3306,
+    };
+}
+
+function sameServerTarget(left: MysqlIdentity, right: MysqlIdentity): boolean {
+    return left.host === right.host && left.port === right.port;
+}
+
+/** Validate explicit test and application identities without opening a database connection. */
+export function resolveTestDatabaseUrl(env: TestDatabaseEnvironment): string {
+    const testUrl = env.TEST_DATABASE_URL?.trim();
+    const applicationUrl = env.DATABASE_URL?.trim();
+
+    if (!testUrl) {
+        throw new Error("TEST_DATABASE_URL is required; Jest will not derive or fall back to DATABASE_URL.");
+    }
+    if (!applicationUrl) {
+        throw new Error("DATABASE_URL is required to prove TEST_DATABASE_URL is not the application database.");
+    }
+
+    const test = mysqlIdentity(testUrl, "TEST_DATABASE_URL");
+    const application = mysqlIdentity(applicationUrl, "DATABASE_URL");
+
+    if (!sameServerTarget(test, application)) {
+        throw new Error("TEST_DATABASE_URL must use the same explicit MySQL host and port as DATABASE_URL; server identity is otherwise ambiguous.");
+    }
+    if (test.database === application.database) {
+        throw new Error("TEST_DATABASE_URL resolves to the application database; refusing to connect.");
+    }
+    if (!test.database.endsWith(TEST_DATABASE_SUFFIX)) {
+        throw new Error(`TEST_DATABASE_URL database name must end in '${TEST_DATABASE_SUFFIX}'.`);
+    }
+    if (application.database.endsWith(TEST_DATABASE_SUFFIX)) {
+        throw new Error("DATABASE_URL is ambiguous because its database name uses the reserved test suffix.");
+    }
+
+    for (const alias of ["DIRECT_URL", "SHADOW_DATABASE_URL"] as const) {
+        const aliasUrl = env[alias];
+        if (!aliasUrl) continue;
+        const aliasIdentity = mysqlIdentity(aliasUrl, alias);
+        if (!sameServerTarget(aliasIdentity, test) || aliasIdentity.database !== test.database) {
+            throw new Error(`${alias} must not override the isolated Jest database target.`);
+        }
+    }
+
+    return testUrl;
 }
 
 /**
- * Point this process at the test database.
+ * The original application URL, remembered for the lifetime of a Jest worker.
  *
- * The absence of `DATABASE_URL` is an error rather than a no-op: silently keeping the
- * application database is the outcome this function exists to prevent.
- *
- * @returns the URL the process was pointed at.
+ * `setupFiles` runs again for every test FILE, and `DATABASE_URL` has already been redirected
+ * by the previous file, so the worker must remember what the application URL was rather than
+ * re-reading a value it has itself replaced. Without this, the second file would compare the
+ * test URL with itself and fail closed for the wrong reason.
  */
-export function applyTestDatabaseUrl(): string {
-    const appUrl = process.env.DATABASE_URL;
+const APPLICATION_URL_STATE = Symbol.for("tinggalklik.jest.applicationDatabaseUrl");
 
-    if (!appUrl) {
-        throw new Error(
-            "DATABASE_URL is not set. Jest needs it to resolve the test database " +
-                "(<DATABASE_URL database>_test). Add it to .env."
-        );
+type ApplicationUrlState = { applicationUrl: string | undefined };
+
+/** Redirect Prisma's normal datasource to an explicitly validated test URL. */
+export function applyTestDatabaseUrl(env: TestDatabaseEnvironment = process.env): string {
+    const state = globalThis as unknown as Record<symbol, ApplicationUrlState | undefined>;
+    const remembered = state[APPLICATION_URL_STATE];
+    const applicationUrl = remembered ? remembered.applicationUrl : env.DATABASE_URL;
+
+    if (!applicationUrl) {
+        throw new Error("DATABASE_URL is required to prove Jest is isolated from the application database.");
     }
 
-    const resolved = testDatabaseUrl(appUrl);
+    const testUrl = resolveTestDatabaseUrl({
+        ...env,
+        DATABASE_URL: applicationUrl,
+        TEST_DATABASE_URL: env.TEST_DATABASE_URL,
+    });
 
-    process.env.DATABASE_URL = resolved;
+    env.DATABASE_URL = testUrl;
+    installTestDatabasePrismaGuard(testUrl, applicationUrl);
+    installIsolatedProcessEnvironment(testUrl, applicationUrl);
+    state[APPLICATION_URL_STATE] = { applicationUrl };
 
-    return resolved;
+    return testUrl;
+}
+
+/**
+ * Patch the @prisma/client export before test modules are evaluated. Test code may still
+ * supply Prisma datasource overrides; those are rejected unless they identify the exact
+ * validated test database. The wrapper then pins every instance to that URL.
+ */
+export function installIsolatedProcessEnvironment(
+    testUrl: string,
+    applicationUrl = process.env.DATABASE_URL
+): void {
+    if (!applicationUrl) {
+        throw new Error("DATABASE_URL is required to prove Jest is isolated from the application database.");
+    }
+    resolveTestDatabaseUrl({
+        ...process.env,
+        DATABASE_URL: applicationUrl,
+        TEST_DATABASE_URL: testUrl,
+    });
+    // Prisma is the only database client used by this project’s tests. Its constructor guard
+    // checks DATABASE_URL on every instantiation and pins every datasource override; do not
+    // make process.env itself immutable because config tests intentionally replace env objects.
+    Object.assign(process.env, {
+        DATABASE_URL: testUrl,
+        TEST_DATABASE_URL: testUrl,
+        ...(process.env.DIRECT_URL ? { DIRECT_URL: testUrl } : {}),
+        ...(process.env.SHADOW_DATABASE_URL ? { SHADOW_DATABASE_URL: testUrl } : {}),
+    });
+}
+
+export function installTestDatabasePrismaGuard(
+    testUrl: string,
+    applicationUrl = process.env.DATABASE_URL
+): void {
+    if (!applicationUrl) {
+        throw new Error("DATABASE_URL is required to prove Jest is isolated from the application database.");
+    }
+    const validatedUrl = resolveTestDatabaseUrl({
+        ...process.env,
+        DATABASE_URL: applicationUrl,
+        TEST_DATABASE_URL: testUrl,
+    });
+    const configuredDatabaseUrl = process.env.DATABASE_URL;
+    const configuredTestUrl = process.env.TEST_DATABASE_URL;
+    const configuredDirectUrl = process.env.DIRECT_URL;
+    const configuredShadowUrl = process.env.SHADOW_DATABASE_URL;
+    const prismaModule = requireFromModule();
+    const NativePrismaClient = prismaModule.PrismaClient as {
+        new (options?: unknown): object;
+    };
+    type PrismaOptions = ConstructorParameters<typeof NativePrismaClient>[0];
+
+    class IsolatedTestPrismaClient extends (NativePrismaClient as new (options?: PrismaOptions) => object) {
+        constructor(options?: PrismaOptions) {
+            const supplied = (options ?? {}) as {
+                datasourceUrl?: unknown;
+                datasources?: { db?: { url?: unknown }; [name: string]: unknown };
+                [name: string]: unknown;
+            };
+            const explicitUrl =
+                supplied.datasourceUrl ?? supplied.datasources?.db?.url;
+            if (explicitUrl !== undefined && explicitUrl !== validatedUrl) {
+                throw new Error("A Jest PrismaClient cannot override TEST_DATABASE_URL.");
+            }
+            if (
+                process.env.DATABASE_URL !== configuredDatabaseUrl ||
+                process.env.TEST_DATABASE_URL !== configuredTestUrl ||
+                process.env.DIRECT_URL !== configuredDirectUrl ||
+                process.env.SHADOW_DATABASE_URL !== configuredShadowUrl
+            ) {
+                throw new Error("Database environment changed after Jest isolation was established.");
+            }
+
+            const { datasourceUrl: _datasourceUrl, ...rest } = supplied;
+            const datasources = (rest.datasources ?? {}) as Record<string, unknown>;
+            const dbOptions = (datasources.db ?? {}) as Record<string, unknown>;
+            super({
+                ...rest,
+                datasources: {
+                    ...datasources,
+                    db: { ...dbOptions, url: validatedUrl },
+                },
+            } as PrismaOptions);
+        }
+    }
+
+    Object.defineProperty(prismaModule, "PrismaClient", {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: IsolatedTestPrismaClient,
+    });
+}
+
+function requireFromModule(): { PrismaClient: new (...args: never[]) => object } {
+    // `@prisma/client` is generated CommonJS; resolve the module through Node’s native loader.
+    return createRequireFromHere()("@prisma/client") as { PrismaClient: new (...args: never[]) => object };
+}
+
+function createRequireFromHere(): (id: string) => unknown {
+    return require("node:module").createRequire(__filename) as (id: string) => unknown;
 }

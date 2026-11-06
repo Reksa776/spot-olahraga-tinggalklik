@@ -63,6 +63,11 @@ module.exports = {
         // Phase 15 — the job runner: the DB lease, the two-job tick (including the real
         // reservation reaper), job isolation, and the machine-authenticated tick route.
         "**/__tests__/jobs/*.test.ts",
+        // Phase 1 — the notification foundation: the kill switch and transport clamp, the
+        // dry-run transports (no SMTP, no Baileys), the delivery queue against the real
+        // database (idempotency, CAS claim, retry gating, ambiguous-lease recovery and
+        // legacy exclusion), the standalone worker, and log redaction.
+        "**/__tests__/notifications/*.test.ts",
         // Phase 9 — the public discovery UI, the ticket wallet/e-ticket presentation, and the
         // static guards over the UI's architectural boundaries.
         //
@@ -116,19 +121,9 @@ module.exports = {
     // it is deliberately not attempted here.)
     maxWorkers: 1,
     forceExit: true,
-    // ── ISOLATION FROM DEVELOPMENT DATA (Phase 22 Part 12) ────────────────────────
-    //
-    // The integration suites run against a REAL MySQL. They used to run against the
-    // DEVELOPMENT one, which is how an aborted test could leave a `PUBLISHED + PUBLIC`
-    // fixture event on the public catalogue: the suites and the application were writing
-    // to the same schema.
-    //
-    // `setupFiles` runs in every worker BEFORE the test module graph is imported — the only
-    // point at which `DATABASE_URL` can be redirected before `lib/prisma.ts` builds its
-    // `PrismaClient`. It points the worker at `<DATABASE_URL database>_test`.
-    //
-    // `globalSetup` runs once before the workers and refuses to start a run whose test
-    // database does not exist or is behind, with the exact command that fixes it.
+    // ── FAIL-CLOSED TEST DATABASE ISOLATION ────────────────────────────────────────
+    // Every worker validates an explicit TEST_DATABASE_URL before importing test modules.
+    // The setup guard also pins PrismaClient datasource overrides and environment changes.
     setupFiles: ["<rootDir>/jest.setup-env.ts"],
     // Runs inside every test file's own sandbox and therefore shares that file's
     // `@/lib/prisma` instance, disconnecting its connection pool when the file ends. Without
@@ -138,12 +133,8 @@ module.exports = {
     // `jest.teardown-env.ts`.
     setupFilesAfterEnv: ["<rootDir>/jest.teardown-env.ts"],
     globalSetup: "<rootDir>/__tests__/support/global-setup.ts",
-    // Safety net for the integration suites: after the whole run, archive any stranded fixture
-    // event and deactivate any stranded fixture sport, so a test that aborts before its own
-    // cleanup can never leave a `PUBLISHED + PUBLIC` event (or an active test sport) on a public
-    // surface. Identification is by reserved fixture prefix + reserved email domain; it never
-    // deletes. It neutralises BOTH databases: the test one (where fixtures are created now) and
-    // the development one (which still holds residue from before the isolation existed).
+    // The post-run cleanup is guarded independently and can only construct a Prisma client
+    // using the validated TEST_DATABASE_URL. It never adds DATABASE_URL as a cleanup target.
     // See `__tests__/support/fixture-teardown.ts`.
     globalTeardown: "<rootDir>/__tests__/support/fixture-teardown.ts",
     transform: {

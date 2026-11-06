@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 
-import { testDatabaseUrl } from "./test-database";
+import { resolveTestDatabaseUrl } from "./test-database";
 
 /**
  * ==========================================
@@ -28,14 +28,17 @@ import { testDatabaseUrl } from "./test-database";
  * for organizers, and only the reserved test-sport prefixes. It cannot touch a real tenant, a real
  * sport, or any financial row. It never deletes, never resets, never truncates.
  *
- * ── WHY IT SWEEPS TWO DATABASES (Phase 22 Part 12) ─────────────────────────────
- * Jest now runs against `<appdb>_test`, so that is where NEW fixtures land. The development
- * database is still swept as well, because it holds residue from every run that predates the
- * isolation — and every one of those stranded events is one careless query away from being
- * listed publicly again. Neutralising both is idempotent and costs one connection.
+ * ── IT ONLY EVER TOUCHES THE EXPLICIT TEST DATABASE (Phase 0A) ──────────────────
+ * The application database was previously swept as well, which made a test run write to
+ * production-shaped data. That is gone: the target is resolved once by
+ * `resolveTestDatabaseUrl`, which fails closed unless an explicit `TEST_DATABASE_URL` points at
+ * a different, test-named schema on the same MySQL server. The application URL is never added
+ * as a cleanup target.
  *
- * Failures are swallowed: this runs after the tests that matter, and a database hiccup must not
- * turn a passing suite red.
+ * A validation failure (missing, ambiguous, or equal to the application database) throws BEFORE
+ * a Prisma client is constructed, so no query can run. Once the target is validated, a cleanup
+ * error is only a warning: the tests already ran, and a transient database hiccup must not turn
+ * their result red.
  */
 
 /** Organizer slugs created only by fixtures. */
@@ -96,31 +99,19 @@ async function neutralize(url: string): Promise<void> {
 }
 
 export default async function globalTeardown(): Promise<void> {
-    const appUrl = process.env.DATABASE_URL;
+    // Resolve and validate before constructing Prisma or issuing any query. Missing, malformed,
+    // ambiguous, or application-equal test URLs fail closed; cleanup errors after the validated
+    // connection is selected remain warnings so the original test result is preserved.
+    const url = resolveTestDatabaseUrl(process.env);
+    const name = decodeURIComponent(new URL(url).pathname.slice(1));
 
-    if (!appUrl) {
-        return;
-    }
-
-    // The test database first (where this run's fixtures are), then the application database
-    // (where the earlier runs' fixtures are). Deduplicated so pointing Jest at the application
-    // database deliberately still sweeps it exactly once.
-    const targets = Array.from(
-        new Set([testDatabaseUrl(appUrl), appUrl])
-    );
-
-    for (const url of targets) {
-        const name = new URL(url).pathname.replace(/^\//, "");
-
-        try {
-            await neutralize(url);
-        } catch (error) {
-            // The tests already ran; cleanup must not fail the process.
-            console.warn(
-                `[fixture-teardown] skipped '${name}': ${
-                    error instanceof Error ? error.message : String(error)
-                }`
-            );
-        }
+    try {
+        await neutralize(url);
+    } catch (error) {
+        console.warn(
+            `[fixture-teardown] skipped '${name}': ${
+                error instanceof Error ? error.message : String(error)
+            }`
+        );
     }
 }
