@@ -26,14 +26,24 @@ import type { NextRequest } from "next/server";
  * - `localhost` / loopback variants, for development
  * - One hardcoded deployment domain (see `buildAllowedHosts`)
  */
-export function getAppOrigin(request: NextRequest): string {
+export function getConfiguredAppOrigin(): string {
     const envUrl = process.env.NEXT_PUBLIC_APP_URL;
 
+    if (envUrl && /^https?:\/\//.test(envUrl)) {
+        return envUrl.replace(/\/+$/, "");
+    }
+
+    return "";
+}
+
+export function getAppOrigin(request: NextRequest): string {
     // ==========================================
     // PRIMARY: Use env var (trusted source)
     // ==========================================
-    if (envUrl && /^https?:\/\//.test(envUrl)) {
-        return envUrl.replace(/\/+$/, "");
+    const configured = getConfiguredAppOrigin();
+
+    if (configured) {
+        return configured;
     }
 
     // ==========================================

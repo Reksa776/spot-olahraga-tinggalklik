@@ -179,9 +179,17 @@ enum Role {
 ///
 /// This row used to be written by the retail order-status notifier, which is why it carried
 /// `orderId` (the retail order), a free-text `notificationType` and a `Notification_status`
-/// enqueue state. All three were removed with that writer: the ticketing side is described by the
-/// typed columns below (`category`, `recipientType`, `eventOrderId`, `ticketId`, `eventId`,
-/// `organizerId`, `picProfileId`) and per-channel state lives on `NotificationDelivery`.
+/// enqueue state. Those columns were removed from this model with that writer: the ticketing side
+/// is described by the typed columns below (`category`, `recipientType`, `eventOrderId`,
+/// `ticketId`, `eventId`, `organizerId`, `picProfileId`) and per-channel state lives on
+/// `NotificationDelivery`.
+///
+/// PHASE 1 — `notificationType` is mapped back for compatibility ONLY. The live MariaDB column
+/// remains `VARCHAR(191) NOT NULL` with no database default (migration
+/// `20260820000000_add_notification_tables`), so an INSERT that omits it fails. Mapping it with a
+/// client-side default makes the model describe the database it actually talks to without any
+/// DDL. A future migration should either give the column a database default or drop it together
+/// with the other retail remnants; that migration is deliberately NOT created or run in Phase 1.
 ///
 /// No ticketing code writes this table yet — it is the documented delivery foundation (design §22),
 /// kept because `NotificationDelivery` references it and because deleting it would remove that
@@ -189,6 +197,9 @@ enum Role {
 model Notification {
   id                Int      @id @default(autoincrement())
   userId            String?
+  /// Legacy retail column, retained ONLY because the live database still requires it.
+  /// Not a ticketing concept; read it as "SYSTEM" for every Phase 1 row.
+  notificationType  String   @default("SYSTEM")
   channel           String
   recipient         String
   idempotencyKey    String   @unique

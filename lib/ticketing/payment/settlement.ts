@@ -1,6 +1,8 @@
 import { Prisma, type PaymentTransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { structuredLog, sanitizeErrorMessage } from "@/lib/notifications/logger";
+import { enqueuePurchaseProof } from "@/lib/notifications/purchase-proof";
 import {
     publishPaymentFailed,
     publishPaymentPaid,
@@ -609,6 +611,30 @@ export async function settleVerifiedPayment(
             },
             reason: "LATE_SETTLEMENT_AFTER_TERMINAL_STATE",
         });
+    }
+
+    /*
+     * ── PURCHASE PROOF, AFTER THE COMMIT, ONLY FOR A REAL SETTLEMENT (PHASE 2) ─────
+     *
+     * This is the ONE integration point, and it is deliberately here rather than in the webhook
+     * or the operator-reconciliation route: both callers reach a successful settlement through
+     * this function, so both produce the buyer's proof exactly once. `ALREADY_PAID` (a duplicate
+     * webhook or a repeat reconciliation) does not enter this branch, and `LATE_SETTLEMENT`
+     * cannot either — the buyer is not being told a cancelled order was successfully fulfilled.
+     *
+     * `enqueuePurchaseProof` is contractually non-throwing, and the catch is belt-and-braces: a
+     * notification failure must never turn a committed payment into an error response that asks
+     * the provider to redeliver it.
+     */
+    if (settled.outcome === "SETTLED") {
+        try {
+            await enqueuePurchaseProof(input.orderId);
+        } catch (error) {
+            structuredLog("error", "notification.purchase_proof.hook_failed", {
+                orderNumber: settled.orderNumber,
+                error: sanitizeErrorMessage(error),
+            });
+        }
     }
 
     return settled;

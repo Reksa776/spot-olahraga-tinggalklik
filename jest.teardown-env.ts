@@ -41,5 +41,28 @@ import { prisma } from "./lib/prisma";
  */
 
 afterAll(async () => {
+    /*
+     * PHASE 2 — KEEP THE SHARED TEST QUEUE ISOLATED PER FILE.
+     *
+     * Settlement now enqueues a purchase proof after it commits (the production behaviour under
+     * test). A payment suite therefore leaves real QUEUED rows behind after it deletes its orders.
+     * Phase 1's queue suite asserts GLOBAL claim/recovery facts (`claimDueDeliveries` has no
+     * template filter), so those rows would make its counts depend on which suite ran first.
+     *
+     * Removing only this template's rows from the isolated TEST database restores the isolation
+     * the suite assumes. It asserts nothing, weakens nothing, and cannot touch the application
+     * database: `prisma` is pinned to the validated TEST_DATABASE_URL by `jest.setup-env.ts`.
+     */
+    await prisma.notification
+        .deleteMany({ where: { templateKey: "purchase-proof.v1" } })
+        .catch(() => undefined);
+
+    // The post-issuance ticket notification is the same kind of residue: an issuance suite
+    // leaves QUEUED rows behind after its own teardown sets the order/event references to null.
+    // It is removed for the same isolation reason as the purchase proof above.
+    await prisma.notification
+        .deleteMany({ where: { templateKey: "ticket-issued.v1" } })
+        .catch(() => undefined);
+
     await prisma.$disconnect();
 });

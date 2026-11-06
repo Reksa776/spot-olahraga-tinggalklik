@@ -4,6 +4,7 @@ import { AppError, ERROR_CODES } from "@/lib/api/errors";
 import { requireOwnResource } from "@/lib/authz/guards";
 import { PERMISSIONS, type AuthzScope } from "@/lib/authz/permissions";
 import { prisma } from "@/lib/prisma";
+import { enqueueTicketIssued } from "@/lib/notifications/ticket-issued";
 import { publishTicketIssued } from "@/lib/realtime/publishers";
 
 import { writeTicketingAudit } from "../audit-log";
@@ -637,6 +638,10 @@ export async function issueTicketsForOrder(params: {
                 ticketCodes: created.map((ticket) => ticket.ticketCode),
             },
         });
+
+        // Post-commit only. The helper is non-throwing by contract, so a queue insert can
+        // never turn a committed issuance into an error or change the route's 201/200.
+        await enqueueTicketIssued(order.id);
     }
 
     return {
