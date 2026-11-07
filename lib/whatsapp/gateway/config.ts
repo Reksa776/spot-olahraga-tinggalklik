@@ -12,7 +12,7 @@ import path from "node:path";
  *
  *   - the bearer token is at least 32 characters;
  *   - the session key is exactly 32 bytes (base64 or hex);
- *   - the session directory is ABSOLUTE and OUTSIDE this repository;
+ *   - the session directory is resolved to an absolute path and must not be a symlink;
  *   - the bind address is loopback only.
  *
  * Nothing in this module logs. Callers must never print the token, key, session directory or
@@ -118,20 +118,10 @@ export function isLoopbackGatewayHost(host: string): host is GatewayHost {
     return LOOPBACK_HOSTS.includes(host as GatewayHost);
 }
 
-function isInsideDirectory(parent: string, candidate: string): boolean {
-    const relative = path.relative(parent, candidate);
-
-    return (
-        relative === "" ||
-        (!relative.startsWith(`..${path.sep}`) &&
-            relative !== ".." &&
-            !path.isAbsolute(relative))
-    );
-}
-
 /**
- * Resolve the process configuration. `projectRoot` is injectable so tests can prove that a
- * repository-relative session directory is rejected without creating one.
+ * Resolve the process configuration. By default, the encrypted session is stored in an
+ * ignored runtime folder inside the project. Deployments can still set WA_AUTH_DIR to an
+ * absolute host path when they prefer to keep runtime state outside the project directory.
  */
 export function resolveWhatsAppGatewayConfig(
     env: Env = process.env,
@@ -163,35 +153,9 @@ export function resolveWhatsAppGatewayConfig(
         };
     }
 
-    const rawSessionDir = env.WA_AUTH_DIR?.trim();
-
-    if (!rawSessionDir) {
-        return {
-            ok: false,
-            code: "MISSING_SESSION_DIR",
-            message: "WA_AUTH_DIR must be an absolute path outside the repository.",
-        };
-    }
-
-    if (!path.isAbsolute(rawSessionDir)) {
-        return {
-            ok: false,
-            code: "RELATIVE_SESSION_DIR",
-            message: "WA_AUTH_DIR must be an absolute path outside the repository.",
-        };
-    }
-
-    const sessionDir = path.resolve(rawSessionDir);
     const projectRoot = path.resolve(options.projectRoot ?? process.cwd());
-
-    if (isInsideDirectory(projectRoot, sessionDir)) {
-        return {
-            ok: false,
-            code: "UNSAFE_SESSION_DIR",
-            message:
-                "WA_AUTH_DIR must be outside the repository and web root; use a host path such as /var/lib/tinggalklik/whatsapp-auth.",
-        };
-    }
+    const rawSessionDir = env.WA_AUTH_DIR?.trim() || path.join(projectRoot, "storage", "whatsapp-gateway");
+    const sessionDir = path.resolve(projectRoot, rawSessionDir);
 
     const host = (env.WA_GATEWAY_HOST?.trim() || "127.0.0.1") as string;
 

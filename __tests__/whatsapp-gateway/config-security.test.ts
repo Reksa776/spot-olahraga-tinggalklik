@@ -64,7 +64,7 @@ describe("gateway configuration fails closed", () => {
         ).toMatchObject({ ok: false, code: "MISSING_OR_WEAK_TOKEN" });
     });
 
-    test("the session key must be exactly 32 bytes and the path must be absolute and outside the repo", async () => {
+    test("the session key must be exactly 32 bytes and the session defaults inside ignored project storage", async () => {
         const dir = await tempDir();
 
         expect(parseSessionKey(Buffer.alloc(31, 1).toString("base64"))).toBeNull();
@@ -77,18 +77,20 @@ describe("gateway configuration fails closed", () => {
         };
 
         expect(resolveWhatsAppGatewayConfig(base)).toMatchObject({
-            ok: false,
-            code: "MISSING_SESSION_DIR",
+            ok: true,
+            config: {
+                enabled: true,
+                sessionDir: path.join(process.cwd(), "storage", "whatsapp-gateway"),
+            },
         });
-        expect(
-            resolveWhatsAppGatewayConfig({ ...base, WA_AUTH_DIR: "relative/session" })
-        ).toMatchObject({ ok: false, code: "RELATIVE_SESSION_DIR" });
-        expect(
-            resolveWhatsAppGatewayConfig({
-                ...base,
-                WA_AUTH_DIR: path.join(process.cwd(), "inside-repo-session"),
-            })
-        ).toMatchObject({ ok: false, code: "UNSAFE_SESSION_DIR" });
+        expect(resolveWhatsAppGatewayConfig({ ...base, WA_AUTH_DIR: "relative/session" })).toMatchObject({
+            ok: true,
+            config: { enabled: true, sessionDir: path.join(process.cwd(), "relative/session") },
+        });
+        expect(resolveWhatsAppGatewayConfig({ ...base, WA_AUTH_DIR: path.join(process.cwd(), "inside-repo-session") })).toMatchObject({
+            ok: true,
+            config: { enabled: true, sessionDir: path.join(process.cwd(), "inside-repo-session") },
+        });
 
         // A host path outside the checkout is accepted.
         expect(
