@@ -268,6 +268,17 @@ export class WhatsAppGateway implements GatewayOperations {
         if (!this.ownershipHeld || this.snapshot().connected || (this.socket && !this.pairingMode)) {
             return { started: false };
         }
+
+        // WhatsApp has invalidated the stored credentials. Reusing them only produces
+        // another 401 and leaves the dashboard without a fresh QR.
+        if (this.lifecycle.state === "LOGGED_OUT") {
+            await this.sessionStore.remove();
+            this.sessionPresent = false;
+            this.lastErrorCode = null;
+            this.reconnectPolicy.reset();
+            this.logger("info", "whatsapp_gateway_logged_out_session_cleared", {});
+        }
+
         this.pairingMode = true;
         this.pairingQr = null;
         this.lifecycle.transition("STARTING", "PAIRING_STARTED");

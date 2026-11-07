@@ -243,4 +243,24 @@ export class EncryptedJsonStore<T> {
             throw error;
         }
     }
+
+    async remove(): Promise<void> {
+        await this.ensureDirectory();
+
+        try {
+            const stat = await fs.lstat(this.filePath);
+
+            if (!stat.isFile() || stat.isSymbolicLink()) {
+                throw new SessionStorageError(
+                    "The WhatsApp session file must be a regular file, not a symlink."
+                );
+            }
+
+            await fs.unlink(this.filePath);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                throw error;
+            }
+        }
+    }
 }

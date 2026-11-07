@@ -22,7 +22,8 @@ export function WhatsAppSettingsPanel() {
   }
   return <div className="space-y-6">
     <section className="space-y-3"><h2 className="text-lg font-semibold">WhatsApp Baileys</h2><p>Status: <strong>{state.state ?? "Memeriksa…"}</strong>{state.connected ? " · Terhubung" : ""}</p>
-      {!state.connected ? <button disabled={busy || state.state === "UNAVAILABLE" || state.state === "STARTING"} onClick={() => void pair()} className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50">{busy || state.state === "STARTING" ? "Menyambungkan…" : "Hubungkan WhatsApp"}</button> : null}
+      {!state.connected ? <button disabled={busy || state.state === "UNAVAILABLE" || state.state === "STARTING"} onClick={() => void pair()} className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50">{busy || state.state === "STARTING" ? "Menyambungkan…" : state.state === "LOGGED_OUT" ? "Hubungkan ulang WhatsApp" : "Hubungkan WhatsApp"}</button> : null}
+      {state.state === "LOGGED_OUT" ? <p className="text-sm text-muted-foreground">Sesi WhatsApp sebelumnya sudah keluar. Hubungkan ulang untuk membuat QR baru, lalu pindai dari Perangkat tertaut.</p> : null}
       {state.state === "STARTING" ? <p className="text-sm text-muted-foreground">WhatsApp sedang menyelesaikan koneksi perangkat tertaut. Halaman akan memperbarui status otomatis.</p> : null}
       {state.state === "UNAVAILABLE" ? <p className="text-sm text-muted-foreground">Gateway WhatsApp belum berjalan atau konfigurasinya belum lengkap.</p> : null}
       {state.state === "CONFLICT" ? <p className="text-sm text-destructive">Gateway WhatsApp lain masih memegang koneksi. Hentikan proses gateway lama lalu muat ulang halaman.</p> : null}
