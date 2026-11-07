@@ -573,69 +573,34 @@ npm run health:worker
 If the worker is `errored`, read its log and fix the cause before restarting it. Do not raise
 `max_restarts` to hide a persistent database or configuration failure.
 
-### 7.2 WhatsApp gateway (P2) — disabled by default
+### 7.2 WhatsApp gateway — hosted by the web application
 
-`ecosystem.config.cjs` declares `tinggalklik-wa` as a third, forked, single-instance process.
-It owns the Baileys socket lifecycle and the gateway dispatch ledger. It does **not** process
-`Notification` or `NotificationDelivery`; the P1 worker remains the only queue owner.
+The single Next.js Node.js process owns the Baileys socket and dispatch ledger. Dashboard
+pairing calls the gateway directly in-process. The notification worker stays separate and
+dispatches through the token-protected `/api/internal/whatsapp/dispatch` route on the app's
+loopback address, normally port `3003`. There is no WhatsApp listener on port `3100`.
 
-**P2 does not pair an account and does not send a real message.** There is no QR route, no
-pairing command and no public endpoint. If no encrypted session exists, the gateway reports
-`PAIRING_REQUIRED` and waits; pairing is a later, explicit operator phase.
+Set `WA_GATEWAY_ENABLED=true` and `WA_GATEWAY_TOKEN` in the server environment. The web server
+creates a private encryption key automatically and stores it beside the encrypted Baileys
+session under the ignored project folder `storage/whatsapp-gateway`. Do not commit that folder.
+The default app URL for the notification worker is `http://127.0.0.1:3003`; override it with
+`INTERNAL_APP_URL` only when the app uses a different local address.
 
-```bash
-# Disabled by default: exits 0 without opening a socket.
-pm2 start ecosystem.config.cjs --only tinggalklik-wa
-pm2 logs tinggalklik-wa
+Pair the account from Dashboard → Settings → WhatsApp dan email. On the phone, open WhatsApp →
+Perangkat tertaut and scan the QR shown in the dashboard. QR data is short-lived and returned
+only to a signed-in platform admin. No QR or credential is written to logs.
 
-# Only after the host environment is configured:
-#   WA_GATEWAY_ENABLED=true
-#   WA_GATEWAY_TOKEN=<32+ random characters>
-#   WA_SESSION_ENCRYPTION_KEY=<32 bytes, base64 or hex>
-#   WA_AUTH_DIR=/var/lib/tinggalklik/whatsapp-auth
-pm2 restart tinggalklik-wa
-pm2 save
-```
-
-| Concern | Value |
-|---|---|
-| Process | `tinggalklik-wa` |
-| Entrypoint | `node_modules/tsx/dist/cli.mjs scripts/whatsapp-gateway.ts` |
-| Instances | **1**, fork mode — the DB lease and local lock make a second owner stop |
-| Bind | `127.0.0.1:3100` by default; non-loopback values are refused |
-| HTTP auth | `Authorization: Bearer $WA_GATEWAY_TOKEN` on every route |
-| Session | AES-256-GCM `auth.enc` under `WA_AUTH_DIR`; `0700` directory, `0600` file |
-| Graceful signal | SIGTERM/SIGINT; awaits the in-flight dispatch, then releases ownership |
-| Restart guard | `min_uptime: 30s`, `max_restarts: 10`, `restart_delay: 5000` |
-
-**Session custody.** Create the directory on the host, outside the checkout and web root:
+If migrating from the old separate gateway process, stop and remove `tinggalklik-wa` once so
+it releases the database lease and local session lock:
 
 ```bash
-sudo install -d -m 0700 -o <service-user> -g <service-user> /var/lib/tinggalklik/whatsapp-auth
+pm2 delete tinggalklik-wa
+pm2 restart tinggalklik --update-env
 ```
 
-Store `WA_SESSION_ENCRYPTION_KEY` in the host secret manager/environment, separately from a
-backup of the session directory. Losing the key, or the session, requires re-pairing. Do not
-copy either into the repository. Rotate the key only with an explicit re-encryption procedure;
-P2 does not implement rotation.
-
-**Health.** Every route is authenticated, including health:
-
-```bash
-read -rsp 'gateway token: ' WA_GATEWAY_TOKEN; echo
-curl -sS -H "Authorization: Bearer $WA_GATEWAY_TOKEN" http://127.0.0.1:3100/healthz
-curl -sS -H "Authorization: Bearer $WA_GATEWAY_TOKEN" http://127.0.0.1:3100/readyz
-unset WA_GATEWAY_TOKEN
-```
-
-`healthz` is liveness (`state`, `connected`). `readyz` is 200 only when the gateway is
-`CONNECTED` and owns the lease/lock; it is 503 in `PAIRING_REQUIRED`, `DISCONNECTED`,
-`LOGGED_OUT`, `CONFLICT` or `ERROR`. Neither response contains a token, QR, JID, phone number,
-session path or message body.
-
-**Rollback.** See the P2 report. In short: `pm2 stop tinggalklik-wa`, revert the process
-revision, and leave the additive `whatsappgatewaymessage` table in place; do not drop it during
-an incident. No production migration was run as part of P2.
+The app must be rebuilt from the deployed revision before restarting it. Keep the
+`whatsappgatewaymessage` table; it stores dispatch idempotency and must not be dropped during
+an incident.
 
 ---
 

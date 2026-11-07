@@ -103,7 +103,8 @@ module.exports = {
             autorestart: true,
             // Give in-flight requests (a payment callback, a checkout) time to finish before
             // SIGKILL. PM2 sends SIGINT first and escalates after this window.
-            kill_timeout: 10000,
+            // Allow the embedded gateway to finish its graceful shutdown as well.
+            kill_timeout: 30000,
             max_memory_restart: "512M",
             // Timestamps on every line, so a log can be correlated with an incident.
             time: true,
@@ -129,39 +130,6 @@ module.exports = {
             max_restarts: 10,
             restart_delay: 5000,
             // Longer than the worker's graceful-shutdown window: it awaits the claimed batch.
-            kill_timeout: 30000,
-            max_memory_restart: "256M",
-            time: true,
-            merge_logs: true,
-        },
-        {
-            // PHASE P2 — THE ISOLATED WHATSAPP GATEWAY.
-            //
-            // A third process, never a Next.js instance. It owns at most one Baileys socket,
-            // binds loopback only, and keeps its encrypted session outside the repository. It
-            // is DISABLED by default: with `WA_GATEWAY_ENABLED` unset it exits 0 immediately.
-            // `stop_exit_codes: [0]` makes that a clean stopped state rather than a restart
-            // loop; a real crash (non-zero) still restarts with the guard below.
-            //
-            // No token, key, session path or database URL is written here. Enable it in the
-            // host environment, then `pm2 restart tinggalklik-wa`.
-            // Pairing QR is served only through the authenticated ADMIN dashboard proxy.
-            name: "tinggalklik-wa",
-            cwd: __dirname,
-            script: "node_modules/tsx/dist/cli.mjs",
-            args: "scripts/whatsapp-gateway.ts",
-            interpreter: "node",
-            instances: 1,
-            exec_mode: "fork",
-            env: {
-                NODE_ENV: "production",
-            },
-            autorestart: true,
-            stop_exit_codes: [0],
-            min_uptime: "30s",
-            max_restarts: 10,
-            restart_delay: 5000,
-            // Must exceed the gateway's graceful-shutdown window (10s default).
             kill_timeout: 30000,
             max_memory_restart: "256M",
             time: true,

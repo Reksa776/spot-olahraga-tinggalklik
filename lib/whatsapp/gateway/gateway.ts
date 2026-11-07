@@ -47,6 +47,7 @@ export type WhatsAppGatewayDependencies = {
     socketFactory?: SocketFactory;
     logger?: Logger;
     now?: () => Date;
+    serveHttp?: boolean;
 };
 
 function defaultLogger(
@@ -69,6 +70,7 @@ export class WhatsAppGateway implements GatewayOperations {
     private readonly socketFactory: SocketFactory;
     private readonly logger: Logger;
     private readonly now: () => Date;
+    private readonly serveHttp: boolean;
     private readonly sessionStore: EncryptedJsonStore<unknown>;
     private readonly dispatchService: WhatsAppGatewayDispatchService;
     private readonly reconnectPolicy: ReconnectPolicy;
@@ -99,6 +101,7 @@ export class WhatsAppGateway implements GatewayOperations {
         this.socketFactory = dependencies.socketFactory ?? createBaileysSocket;
         this.logger = dependencies.logger ?? defaultLogger;
         this.now = dependencies.now ?? (() => new Date());
+        this.serveHttp = dependencies.serveHttp ?? true;
         this.sessionStore = new EncryptedJsonStore<unknown>({
             directory: config.sessionDir,
             key: config.sessionKey,
@@ -187,13 +190,15 @@ export class WhatsAppGateway implements GatewayOperations {
 
             this.sessionPresent = await this.sessionStore.exists();
 
-            const server = new GatewayHttpServer(
-                this,
-                this.config.token,
-                this.config.maxBodyBytes
-            );
-            await server.start(this.config.port, this.config.host);
-            this.server = server;
+            if (this.serveHttp) {
+                const server = new GatewayHttpServer(
+                    this,
+                    this.config.token,
+                    this.config.maxBodyBytes
+                );
+                await server.start(this.config.port, this.config.host);
+                this.server = server;
+            }
 
             this.leaseTimer = setInterval(() => {
                 void this.renewLease().catch(() =>
@@ -203,7 +208,7 @@ export class WhatsAppGateway implements GatewayOperations {
             this.leaseTimer.unref?.();
 
             this.logger("info", "whatsapp_gateway_started", {
-                port: this.config.port,
+                httpEnabled: this.serveHttp,
                 sessionPresent: this.sessionPresent,
             });
 

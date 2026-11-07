@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
-type State = { state?: string; connected?: boolean; ready?: boolean; sessionPresent?: boolean; qr?: string | null; expiresAt?: string | null; smtp?: { configured: boolean; secure: boolean; from: string | null } };
+type State = { state?: string; connected?: boolean; ready?: boolean; sessionPresent?: boolean; lastErrorCode?: string | null; qr?: string | null; expiresAt?: string | null; smtp?: { configured: boolean; secure: boolean; from: string | null } };
 
 export function WhatsAppSettingsPanel() {
   const [state, setState] = useState<State>({});
@@ -24,6 +24,7 @@ export function WhatsAppSettingsPanel() {
     <section className="space-y-3"><h2 className="text-lg font-semibold">WhatsApp Baileys</h2><p>Status: <strong>{state.state ?? "Memeriksa…"}</strong>{state.connected ? " · Terhubung" : ""}</p>
       {!state.connected ? <button disabled={busy || state.state === "UNAVAILABLE"} onClick={() => void pair()} className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50">{busy ? "Memulai…" : "Hubungkan WhatsApp"}</button> : null}
       {state.state === "UNAVAILABLE" ? <p className="text-sm text-muted-foreground">Gateway WhatsApp belum berjalan atau konfigurasinya belum lengkap.</p> : null}
+      {state.state === "CONFLICT" ? <p className="text-sm text-destructive">Gateway WhatsApp lain masih memegang koneksi. Hentikan proses gateway lama lalu muat ulang halaman.</p> : null}
       {state.qr ? <div className="space-y-2"><p>Pindai QR ini dari WhatsApp → Perangkat tertaut. QR hanya tampil sebentar dan jangan bagikan ke siapa pun.</p><div className="inline-block rounded bg-white p-3"><QRCodeSVG value={state.qr} size={240} /></div><p className="text-sm">QR kedaluwarsa: {state.expiresAt ? new Date(state.expiresAt).toLocaleTimeString("id-ID") : "—"}</p></div> : null}
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     </section>

@@ -20,7 +20,6 @@
     "test:db:setup": "npx tsx scripts/setup-test-db.ts",
     "health:worker": "tsx scripts/notification-worker-health.ts",
     "worker:notifications": "tsx scripts/notification-worker.ts",
-    "gateway:whatsapp": "tsx scripts/whatsapp-gateway.ts",
     "sweep:purchase-proof": "npx tsx scripts/purchase-proof-sweep.ts",
     "sweep:ticket-issued": "npx tsx scripts/ticket-issued-sweep.ts"
   },
