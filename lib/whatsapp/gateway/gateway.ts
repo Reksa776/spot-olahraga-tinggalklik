@@ -270,6 +270,7 @@ export class WhatsAppGateway implements GatewayOperations {
         }
         this.pairingMode = true;
         this.pairingQr = null;
+        this.lifecycle.transition("STARTING", "PAIRING_STARTED");
         if (this.socket) await this.closeSocket();
         await this.connect(true);
         return { started: true };
@@ -448,6 +449,12 @@ export class WhatsAppGateway implements GatewayOperations {
             this.lastErrorCode = event.reason === "restart-required"
                 ? "RESTART_REQUIRED"
                 : "CONNECTION_LOST";
+            if (event.reason === "restart-required") {
+                // The QR has been accepted; do not keep showing a code that is no longer valid
+                // while Baileys reconnects with the credentials just persisted by the socket.
+                this.pairingQr = null;
+                this.pairingQrExpiresAt = null;
+            }
             this.lifecycle.transition("DISCONNECTED", this.lastErrorCode);
             this.logger("warn", "whatsapp_gateway_disconnected", {
                 code: this.lastErrorCode,

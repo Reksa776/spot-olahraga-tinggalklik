@@ -90,6 +90,7 @@ export async function createBaileysSocket(options: {
     }, { allowPairing: options.allowPairing });
 
     const listeners = new Set<(event: SocketConnectionEvent) => void>();
+    let pendingCredentialSave: Promise<void> = Promise.resolve();
     const emit = (event: SocketConnectionEvent) => {
         for (const listener of listeners) {
             listener(event);
@@ -124,7 +125,8 @@ export async function createBaileysSocket(options: {
     });
 
     sock.ev.on("creds.update", () => {
-        void saveCreds()
+        pendingCredentialSave = pendingCredentialSave
+            .then(() => saveCreds())
             .then(() => emit({ type: "creds" }))
             .catch(() => undefined);
     });
@@ -162,6 +164,10 @@ export async function createBaileysSocket(options: {
             return { messageId: result?.key?.id ?? null };
         },
         async end() {
+            // QR pairing can immediately produce a 515 restart-required close. Flush the
+            // credentials emitted during linking before the gateway opens the replacement
+            // socket, or the new socket may incorrectly behave as unpaired.
+            await pendingCredentialSave;
             try {
                 sock.end(undefined);
             } catch {

@@ -27,7 +27,9 @@ const TRANSITIONS: Record<GatewayState, readonly GatewayState[]> = {
         "ERROR",
         "STOPPED",
     ],
-    PAIRING_REQUIRED: ["STARTING", "CONNECTED", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
+    // Baileys closes the first socket with restart-required (515) after QR pairing. That is
+    // an expected handoff to the authenticated socket, so pairing must allow reconnect.
+    PAIRING_REQUIRED: ["STARTING", "CONNECTED", "DISCONNECTED", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
     CONNECTED: ["DISCONNECTED", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
     DISCONNECTED: ["STARTING", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
     LOGGED_OUT: ["STARTING", "CONFLICT", "ERROR", "STOPPED"],
