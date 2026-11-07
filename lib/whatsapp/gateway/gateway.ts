@@ -79,6 +79,9 @@ export class WhatsAppGateway implements GatewayOperations {
     private localLockHeld = false;
     private ownershipHeld = false;
     private sessionPresent = false;
+    private pairingQr: string | null = null;
+    private pairingQrExpiresAt: Date | null = null;
+    private pairingMode = false;
     private lastErrorCode: string | null = null;
     private server: GatewayHttpServer | null = null;
     private socket: WhatsAppSocketLike | null = null;
@@ -237,6 +240,8 @@ export class WhatsAppGateway implements GatewayOperations {
         }
 
         this.stopping = true;
+        this.pairingQr = null;
+        this.pairingQrExpiresAt = null;
         this.clearTimers();
 
         // Stop accepting new work first, but do not wait for the active HTTP connection
@@ -252,6 +257,26 @@ export class WhatsAppGateway implements GatewayOperations {
         }
 
         this.logger("info", "whatsapp_gateway_stopped", {});
+    }
+
+    async beginPairing(): Promise<{ started: boolean }> {
+        if (!this.ownershipHeld || this.snapshot().connected || (this.socket && !this.pairingMode)) {
+            return { started: false };
+        }
+        this.pairingMode = true;
+        this.pairingQr = null;
+        if (this.socket) await this.closeSocket();
+        await this.connect(true);
+        return { started: true };
+    }
+
+    pairingStatus(): { qr: string | null; expiresAt: string | null } {
+        if (!this.pairingQr || !this.pairingQrExpiresAt || this.pairingQrExpiresAt <= this.now()) {
+            this.pairingQr = null;
+            this.pairingQrExpiresAt = null;
+            return { qr: null, expiresAt: null };
+        }
+        return { qr: this.pairingQr, expiresAt: this.pairingQrExpiresAt.toISOString() };
     }
 
     async dispatchText(input: TextDispatchRequest): Promise<GatewayDispatchResult> {
@@ -315,7 +340,7 @@ export class WhatsAppGateway implements GatewayOperations {
         return { messageId: result.messageId };
     }
 
-    private async connect(): Promise<void> {
+    private async connect(allowPairing = false): Promise<void> {
         if (this.stopping || !this.ownershipHeld) {
             return;
         }
@@ -326,6 +351,7 @@ export class WhatsAppGateway implements GatewayOperations {
             const socket = await this.socketFactory({
                 sessionDir: this.config.sessionDir,
                 sessionKey: this.config.sessionKey,
+                allowPairing,
             });
             this.socket = socket;
             this.sessionPresent = true;
@@ -352,6 +378,9 @@ export class WhatsAppGateway implements GatewayOperations {
         }
 
         if (event.type === "connection" && event.status === "open") {
+            this.pairingQr = null;
+            this.pairingQrExpiresAt = null;
+            this.pairingMode = false;
             if (this.lifecycle.state !== "CONNECTED") {
                 this.lifecycle.transition("CONNECTED", "SOCKET_OPEN");
             }
@@ -366,13 +395,9 @@ export class WhatsAppGateway implements GatewayOperations {
         }
 
         if (event.type === "qr") {
-            if (this.lifecycle.state !== "PAIRING_REQUIRED") {
-                this.lifecycle.transition("PAIRING_REQUIRED", "QR_RECEIVED");
-            }
-            this.logger("warn", "whatsapp_gateway_pairing_required", {
-                action: "QR discarded; pairing is deferred",
-            });
-            await this.closeSocket();
+            if (!this.pairingMode) return;
+            this.pairingQr = event.value;
+            this.pairingQrExpiresAt = new Date(this.now().getTime() + 90_000);
             return;
         }
 

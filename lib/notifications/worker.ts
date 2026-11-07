@@ -20,6 +20,8 @@ import {
     createDryRunEmailTransport,
     createDryRunWhatsAppTransport,
 } from "./transports/dry-run";
+import { createSmtpEmailTransport } from "./transports/smtp";
+import { createBaileysWhatsAppTransport } from "./transports/baileys";
 import type { EmailTransport, WhatsAppTransport } from "./types";
 import {
     acquireNotificationWorkerLease,
@@ -42,8 +44,8 @@ import {
  *   1. kill switch OFF?                        → do nothing at all (no writes)
  *   2. acquire `joblock: notification-dispatch` → held by another instance? skip the batch
  *   3. recover expired SENDING leases           → FAILED/AMBIGUOUS_DELIVERY (never resent)
- *   4. claim EMAIL rows with CAS                → send via dry-run, concurrency 3
- *   5. claim WHATSAPP rows with CAS             → send via dry-run, concurrency 1
+ *   4. claim EMAIL rows with CAS                → configured adapter, concurrency 3
+ *   5. claim WHATSAPP rows with CAS             → configured gateway, concurrency 1
  *   6. release lease with OK/FAILED             → heartbeat updated
  *
  * ── WHY EMAIL 3 AND WHATSAPP 1 ───────────────────────────────────────────────────────
@@ -52,10 +54,8 @@ import {
  * expressed in `config.ts` and applied here, not left to the transport to remember.
  *
  * ── THE DRY-RUN RULE ─────────────────────────────────────────────────────────────────
- * The transports this worker can instantiate are the dry-run pair. A simulated result is written
- * as `SKIPPED / DRY_RUN_SIMULATED`, and the log event says `simulated`. There is no Phase 1 code
- * path that writes `SENT` or a `providerMessageId`, because no Phase 1 transport can produce one.
- * If a future phase adds one, `markDeliverySent` is already the only method that records it.
+ * Dry-run remains the default. Explicit SMTP/Baileys results use the same durable delivery state
+ * machine and idempotent dispatch boundaries.
  *
  * ── GRACEFUL SHUTDOWN ────────────────────────────────────────────────────────────────
  * `stop()` stops the loop, wakes the poll sleep, and awaits the in-flight batch. A delivery that
@@ -388,19 +388,24 @@ export async function processNotificationBatch(
 
     const summary = emptySummary(true);
 
-    const emailTransport =
-        dependencies.transports?.email ?? createDryRunEmailTransport();
-    const whatsappTransport =
-        dependencies.transports?.whatsapp ?? createDryRunWhatsAppTransport();
+    const disabledTransport = {
+        name: "disabled",
+        kind: "disabled" as const,
+        async send() { return { simulated: true as const }; },
+    };
+    const emailTransport = dependencies.transports?.email ??
+        (config.emailTransport === "smtp" ? createSmtpEmailTransport() :
+         config.emailTransport === "disabled" ? disabledTransport : createDryRunEmailTransport());
+    const whatsappTransport = dependencies.transports?.whatsapp ??
+        (config.whatsappTransport === "baileys" ? createBaileysWhatsAppTransport() :
+         config.whatsappTransport === "disabled" ? disabledTransport : createDryRunWhatsAppTransport());
 
-    // Defence in depth: the config resolver cannot produce these, but if an injected transport
-    // claims to be a live adapter, refuse it rather than let Phase 1 send.
-    if (emailTransport.kind === "smtp" || whatsappTransport.kind === "baileys") {
+    if (
+        (emailTransport.kind === "smtp" && config.emailTransport !== "smtp") ||
+        (whatsappTransport.kind === "baileys" && config.whatsappTransport !== "baileys")
+    ) {
         await releaseNotificationWorkerLease({ status: "FAILED", now });
-
-        throw new Error(
-            "Phase 1 refuses to run with a live SMTP or Baileys transport."
-        );
+        throw new Error("A live notification transport requires an explicit matching environment setting.");
     }
 
     const dispatchDeps: DispatchDeps = {

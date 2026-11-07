@@ -69,6 +69,8 @@ export type GatewaySnapshot = {
 
 export interface GatewayOperations {
     snapshot(): GatewaySnapshot;
+  beginPairing?(): Promise<{ started: boolean }>;
+  pairingStatus?(): { qr: string | null; expiresAt: string | null };
     dispatchText(input: TextDispatchRequest): Promise<GatewayDispatchResult>;
     getDelivery(deliveryId: string): Promise<GatewayDeliveryView | null>;
     reconcileDelivery(

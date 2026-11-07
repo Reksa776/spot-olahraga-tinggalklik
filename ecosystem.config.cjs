@@ -62,7 +62,7 @@
  * notification queue loop and is deliberately a single forked instance: the queue's CAS and
  * the `joblock: notification-dispatch` lease are what make overlap safe, but one poller is
  * what keeps the daily WhatsApp cap and the 5-second send cadence meaningful. It never binds
- * a port, never serves HTTP, and never opens a WhatsApp socket in this phase.
+ * a port, never serves HTTP, and never owns the WhatsApp socket.
  *
  * `kill_timeout: 30000` is larger than the web app's 10 seconds because SIGTERM must let the
  * worker finish the delivery it has already claimed. The entrypoint handles SIGTERM/SIGINT
@@ -75,7 +75,7 @@
  *
  * This app inherits the host environment. No secret, database URL or notification switch is
  * written here: an operator enables the worker in the host environment, and the existing
- * Phase 1 transport clamp still refuses SMTP/Baileys.
+ * SMTP/Baileys or dry-run is selected explicitly in the host environment.
  */
 
 module.exports = {
@@ -144,8 +144,8 @@ module.exports = {
             // loop; a real crash (non-zero) still restarts with the guard below.
             //
             // No token, key, session path or database URL is written here. Enable it in the
-            // host environment, then `pm2 restart tinggalklik-wa`. P2 does not pair an account
-            // and does not send a real message; do not start this app expecting a live socket.
+            // host environment, then `pm2 restart tinggalklik-wa`.
+            // Pairing QR is served only through the authenticated ADMIN dashboard proxy.
             name: "tinggalklik-wa",
             cwd: __dirname,
             script: "node_modules/tsx/dist/cli.mjs",

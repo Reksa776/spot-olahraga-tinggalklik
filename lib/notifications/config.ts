@@ -1,6 +1,6 @@
 /**
  * ==========================================
- * NOTIFICATION CONFIGURATION (PHASE 1 — DRY RUN ONLY)
+ * NOTIFICATION CONFIGURATION
  * ==========================================
  *
  * `NOTIFICATIONS_ENABLED` is a kill switch, and it is OFF unless the value is exactly "true"
@@ -8,34 +8,26 @@
  * follows the repository's existing fail-closed habit in `lib/payment/config.ts` rather than
  * the usual `Boolean(process.env.X)` trap, where the string "false" is truthy.
  *
- * ── THE HARD PART: A REAL TRANSPORT CANNOT BE SELECTED ────────────────────────────────
- * The owner approved SMTP as the target architecture and Baileys as a prepared adapter, but
- * ONLY as structure. Phase 1 may not open an SMTP connection, authenticate, pair WhatsApp, or
- * send anything. So configuration is resolved in two layers:
+ * Transports stay dry-run by default. SMTP and Baileys are selected only through explicit
+ * environment values; the worker is a separate process and does not read dashboard secrets.
  *
  *   requested  — what the environment asks for (`smtp`, `baileys`, …)
  *   effective  — what this build will actually instantiate
  *
- * `PHASE_1_DRY_RUN_ONLY` is a compile-time constant in this file, not an environment variable,
- * so no deployment can flip it. The effective transport is therefore always `dry-run` or
- * `disabled`; a request for `smtp`/`baileys` is RECORDED as a refusal (visible in the worker's
- * startup log) and downgraded. `transports/smtp.ts` and `transports/baileys.ts` exist, but both
- * throw on construction — there is no code path in Phase 1 that can produce a live transport.
- *
  * ── WHY NUMBERS FALL BACK INSTEAD OF THROWING ────────────────────────────────────────
  * A malformed `NOTIFICATION_WORKER_POLL_MS` must not take the worker down: the safe direction
- * for a polling process is to run with a conservative default and say so. The kill switch and
- * the transport clamp are the safety-critical values, and those never fall back to "on".
+ * for a polling process is to run with a conservative default and say so. The kill switch
+ * never falls back to "on".
  */
 
 export type RequestedEmailTransport = "disabled" | "dry-run" | "smtp";
 export type RequestedWhatsAppTransport = "disabled" | "dry-run" | "baileys";
 
-/** What the build can actually run in Phase 1. Never a network transport. */
-export type EffectiveTransport = "disabled" | "dry-run";
+/** Selected transport. */
+export type EffectiveTransport = RequestedEmailTransport | RequestedWhatsAppTransport;
 
-/** Phase 1 constant. Changing it is a code change and an owner decision, not a deployment one. */
-export const PHASE_1_DRY_RUN_ONLY = true;
+/** Compatibility field for startup logs; live transport selection remains explicit. */
+export const PHASE_1_DRY_RUN_ONLY = false;
 
 export type NotificationConfig = {
     /** The kill switch as requested. When false, the worker claims nothing. */
@@ -142,10 +134,8 @@ function readInteger(
 /**
  * Resolve the runtime configuration.
  *
- * The transports are clamped independently of the kill switch: even with
- * `NOTIFICATIONS_ENABLED=true`, `EMAIL_TRANSPORT=smtp` yields the dry-run transport. SMTP
- * environment variables are never read here at all — they belong to an adapter that Phase 1
- * refuses to construct.
+ * A live transport is selected only when requested explicitly. Missing or invalid values
+ * resolve to dry-run, and the kill switch remains off unless exactly true.
  */
 export function resolveNotificationConfig(
     env: NotificationEnvironment = process.env
@@ -170,27 +160,8 @@ export function resolveNotificationConfig(
         refusals
     );
 
-    const emailTransport: EffectiveTransport =
-        requestedEmailTransport === "smtp"
-            ? "dry-run"
-            : requestedEmailTransport;
-
-    const whatsappTransport: EffectiveTransport =
-        requestedWhatsAppTransport === "baileys"
-            ? "dry-run"
-            : requestedWhatsAppTransport;
-
-    if (requestedEmailTransport === "smtp") {
-        refusals.push(
-            "EMAIL_TRANSPORT=smtp refused: Phase 1 is dry-run only (SMTP is never contacted)."
-        );
-    }
-
-    if (requestedWhatsAppTransport === "baileys") {
-        refusals.push(
-            "WHATSAPP_TRANSPORT=baileys refused: Phase 1 is dry-run only (no pairing, no socket)."
-        );
-    }
+    const emailTransport: EffectiveTransport = requestedEmailTransport;
+    const whatsappTransport: EffectiveTransport = requestedWhatsAppTransport;
 
     return {
         enabled,

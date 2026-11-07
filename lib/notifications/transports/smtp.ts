@@ -1,36 +1,6 @@
 import type { EmailTransport } from "../types";
 
-/**
- * ==========================================
- * SMTP ADAPTER — STRUCTURE ONLY, ALWAYS REFUSES (PHASE 1)
- * ==========================================
- *
- * The owner approved SMTP as the production target. Phase 1's obligation is to prepare the
- * adapter's SHAPE without activating it, and the security constraint is absolute: no connection,
- * no authentication, no send.
- *
- * This file therefore contains NO `nodemailer` import. That is not an oversight and not a stub
- * waiting for a commented-out call: importing the library here would put a vulnerable parser
- * (audit B1: nodemailer 8.0.11 has four High advisories) on the worker's import graph for no
- * Phase 1 benefit. The documented Phase 2 contract is:
- *
- *   nodemailer.createTransport({
- *     host, port, secure,
- *     auth: { user, pass },                 // from the host environment, never the database
- *     tls: { rejectUnauthorized: true },
- *     connectionTimeout: 10_000,
- *     socketTimeout: 20_000,
- *     disableFileAccess: true,              // no `file:` content
- *     disableUrlAccess: true,               // no SSRF via URL content
- *   })
- *
- * with `from` fixed from configuration, plain text only, no `raw`, no attachments, recipient
- * taken from the queue row rather than a request. Activation also requires an owner decision on
- * the nodemailer path (audit §2.4) — it is not an implementation choice.
- *
- * Every factory below THROWS. There is no flag, environment variable or argument that makes this
- * module return a usable transport in Phase 1.
- */
+/** SMTP adapter. Credentials are read from the worker environment, never the database. */
 
 export class Phase1TransportRefusedError extends Error {
     readonly code = "PHASE_1_TRANSPORT_REFUSED";
@@ -47,23 +17,24 @@ export type SmtpAdapterConfig = {
     secure: boolean;
     user: string | null;
     from: string;
+    pass?: string;
 };
 
 /**
- * Read the SMTP configuration WITHOUT contacting anything.
+ * Read SMTP configuration without contacting the provider.
  *
  * Missing host/from is a configuration error, not a reason to guess an identity. Values are
- * returned only so a later phase can validate them; Phase 1 never logs them and never uses them
- * to connect. The password is deliberately NOT part of this type: only the adapter that actually
- * authenticates should be able to read it.
+ * Secrets are read only in the worker process and are never returned to the dashboard.
  */
 export function readSmtpAdapterConfig(
     env: Record<string, string | undefined> = process.env
 ): SmtpAdapterConfig | null {
     const host = env.SMTP_HOST?.trim();
     const from = env.EMAIL_FROM?.trim();
+    const user = env.SMTP_USER?.trim() || null;
+    const pass = env.SMTP_PASS?.trim() || undefined;
 
-    if (!host || !from) {
+    if (!host || !from || (user && !pass) || (!user && pass)) {
         return null;
     }
 
@@ -74,23 +45,37 @@ export function readSmtpAdapterConfig(
         host,
         port: Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : 587,
         secure,
-        user: env.SMTP_USER?.trim() || null,
+        user,
         from,
+        pass,
     };
 }
 
 /**
- * Phase 1: refuse to construct an SMTP transport.
- *
- * Throwing rather than returning a disabled object is intentional: a disabled object can be
- * handed to a future caller and quietly accepted, while a throw cannot be ignored. The worker
- * never calls this function, and the config resolver can never select the smtp transport, but
- * the guard exists so a future edit that tries to wire it fails loudly during Phase 1.
+ * Construct a transport only when host and sender settings are present.
  */
 export function createSmtpEmailTransport(
-    _config: SmtpAdapterConfig | null = readSmtpAdapterConfig()
+    config: SmtpAdapterConfig | null = readSmtpAdapterConfig()
 ): EmailTransport {
-    throw new Phase1TransportRefusedError(
-        "SMTP is not active in Phase 1: no connection, authentication or send is permitted."
-    );
+    if (!config) throw new Phase1TransportRefusedError("SMTP_HOST and EMAIL_FROM must be configured.");
+    return {
+        name: "smtp",
+        kind: "smtp",
+        async send(message, context) {
+            const nodemailer = await import("nodemailer");
+            const transporter = nodemailer.createTransport({
+                host: config.host,
+                port: config.port,
+                secure: config.secure,
+                auth: config.user ? { user: config.user, pass: config.pass ?? "" } : undefined,
+                tls: { rejectUnauthorized: true },
+                connectionTimeout: 10_000,
+                socketTimeout: 20_000,
+                disableFileAccess: true,
+                disableUrlAccess: true,
+            });
+            const result = await transporter.sendMail({ from: config.from, to: message.to, subject: message.subject, text: message.text, headers: { "X-TinggalKlik-Delivery": context.deliveryId } });
+            return { simulated: false, providerMessageId: result.messageId };
+        },
+    };
 }

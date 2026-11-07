@@ -4,8 +4,8 @@
  * ==========================================
  *
  * The scheduler job that materialises "this event starts in 36 hours" into the EXISTING
- * notification outbox. It does not render, claim, send or retry — the worker already owns all
- * of that, and `PHASE_1_DRY_RUN_ONLY` keeps the effective transport in dry-run.
+ * notification outbox. It does not render, claim, send or retry — the notification worker owns
+ * delivery through the configured transport.
  *
  * ── WHY ENQUEUE AT DUE TIME (AND NO NEW COLUMN) ─────────────────────────────────────
  * `Notification.idempotencyKey` is unique. A reminder occurrence is fully identified by

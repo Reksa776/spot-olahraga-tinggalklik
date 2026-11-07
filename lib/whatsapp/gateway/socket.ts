@@ -25,7 +25,7 @@ export type SocketConnectionEvent =
               | "network"
               | "bad-session";
       }
-    | { type: "qr" }
+    | { type: "qr"; value: string }
     | { type: "creds" }
     | { type: "receipt"; messageId: string; ack: "delivered" | "read" | "failed" };
 
@@ -38,6 +38,7 @@ export type WhatsAppSocketLike = {
 export type SocketFactory = (options: {
     sessionDir: string;
     sessionKey: Buffer;
+    allowPairing?: boolean;
 }) => Promise<WhatsAppSocketLike>;
 
 function disconnectReason(code: number | undefined): "logged-out" | "replaced" | "restart-required" | "network" | "bad-session" {
@@ -72,6 +73,7 @@ const silentLogger = {
 export async function createBaileysSocket(options: {
     sessionDir: string;
     sessionKey: Buffer;
+    allowPairing?: boolean;
 }): Promise<WhatsAppSocketLike> {
     const baileys = await import("@whiskeysockets/baileys");
 
@@ -85,7 +87,7 @@ export async function createBaileysSocket(options: {
     const { state, saveCreds } = await openEncryptedBaileysAuthState(store, {
         BufferJSON: baileys.BufferJSON,
         initAuthCreds: baileys.initAuthCreds,
-    });
+    }, { allowPairing: options.allowPairing });
 
     const listeners = new Set<(event: SocketConnectionEvent) => void>();
     const emit = (event: SocketConnectionEvent) => {
@@ -117,7 +119,7 @@ export async function createBaileysSocket(options: {
             });
         } else if (update.qr) {
             // The QR itself never leaves this function and is never logged.
-            emit({ type: "qr" });
+            emit({ type: "qr", value: update.qr });
         }
     });
 

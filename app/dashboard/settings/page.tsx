@@ -89,6 +89,15 @@ export default async function DashboardSettingsPage() {
                             />
                         ) : null}
 
+                        {capabilities.canManageApplicationSettings ? (
+                            <DataRow
+                                divider={capabilities.canManageApplicationSettings || capabilities.canManageUsers}
+                                title={<TextLink href="/dashboard/settings/whatsapp">WhatsApp dan email</TextLink>}
+                                meta="Pairing akun WA, status gateway, dan kesiapan SMTP"
+                                trailing="Kelola"
+                            />
+                        ) : null}
+
                         {capabilities.canManageBranding ? (
                             <DataRow
                                 divider={capabilities.canManageApplicationSettings}

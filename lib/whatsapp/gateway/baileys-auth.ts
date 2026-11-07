@@ -37,7 +37,8 @@ export class MissingBaileysSessionError extends Error {
 
 export async function openEncryptedBaileysAuthState(
     store: EncryptedJsonStore<StoredBaileysAuth>,
-    runtime: BaileysAuthRuntime
+    runtime: BaileysAuthRuntime,
+    options: { allowPairing?: boolean } = {}
 ): Promise<{
     state: AuthenticationState;
     saveCreds: () => Promise<void>;
@@ -45,13 +46,11 @@ export async function openEncryptedBaileysAuthState(
     const stored = await store.read();
 
     if (!stored) {
-        // P2 never creates a fresh credential set: pairing is an explicit, host-only act in
-        // P3. Starting from `initAuthCreds()` here would silently begin a new pairing.
-        throw new MissingBaileysSessionError();
+        if (!options.allowPairing) throw new MissingBaileysSessionError();
     }
 
-    const creds = stored.creds;
-    const keys = stored.keys ?? {};
+    const creds = stored?.creds ?? runtime.initAuthCreds();
+    const keys = stored?.keys ?? {};
 
     const persist = async (): Promise<void> => {
         await store.write({ creds, keys });

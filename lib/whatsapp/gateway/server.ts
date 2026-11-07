@@ -213,6 +213,19 @@ export class GatewayHttpServer {
             return;
         }
 
+        if (pathname === "/v1/pairing/start") {
+            if (req.method !== "POST") throw new HttpError(405, "METHOD_NOT_ALLOWED", "Use POST to begin pairing.");
+            if (!this.operations.beginPairing) throw new HttpError(404, "NOT_SUPPORTED", "Pairing is unavailable.");
+            sendJson(res, 200, await this.operations.beginPairing());
+            return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/pairing/status") {
+            if (!this.operations.pairingStatus) throw new HttpError(404, "NOT_SUPPORTED", "Pairing is unavailable.");
+            sendJson(res, 200, { ...this.operations.pairingStatus(), ...this.operations.snapshot() });
+            return;
+        }
+
         if (pathname === "/v1/messages/text") {
             if (req.method !== "POST") {
                 throw new HttpError(405, "METHOD_NOT_ALLOWED", "Use POST for dispatch.");
