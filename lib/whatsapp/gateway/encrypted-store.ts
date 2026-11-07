@@ -10,12 +10,13 @@ import path from "node:path";
 /**
  * AES-256-GCM encrypted JSON storage for Baileys auth state.
  *
- * The encrypted file lives outside the repository (`WA_AUTH_DIR`), the directory is `0700`
+ * The encrypted file lives in the private session directory (`WA_AUTH_DIR`), the directory is `0700`
  * and the file is `0600`. Writes are atomic: a freshly-created `0600` temp file in the same
  * directory is fsynced and renamed over the target. No plaintext auth material is ever
  * written to disk.
  *
- * The key is supplied by the host environment (`WA_SESSION_ENCRYPTION_KEY`). Loss of the key
+ * The key is supplied by the host environment (`WA_SESSION_ENCRYPTION_KEY`) or generated once
+ * by the gateway and stored as a private file beside the session. Loss of the key
  * is equivalent to losing the session and requires re-pairing; the key must not be committed
  * or copied into the repository.
  */
