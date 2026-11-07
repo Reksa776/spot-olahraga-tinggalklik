@@ -71,6 +71,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
     poweredByHeader: false,
+    // Baileys dynamically imports optional media processors (Jimp/Sharp). This app only uses
+    // text messaging and QR pairing, so leave Baileys as a Node runtime dependency instead of
+    // asking Turbopack to resolve its optional image-processing imports into route bundles.
+    serverExternalPackages: ["@whiskeysockets/baileys"],
     allowedDevOrigins: [
         "192.168.2.49",
         "103.93.132.214",
