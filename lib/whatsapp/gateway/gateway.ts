@@ -211,7 +211,7 @@ export class WhatsAppGateway implements GatewayOperations {
                 this.lifecycle.transition("PAIRING_REQUIRED", "NO_SESSION");
                 this.logger("warn", "whatsapp_gateway_pairing_required", {
                     // No directory, JID, QR or credential is ever logged.
-                    action: "operator pairing is deferred to a later phase",
+                    action: "start pairing from the authenticated dashboard",
                 });
                 return this.snapshot();
             }

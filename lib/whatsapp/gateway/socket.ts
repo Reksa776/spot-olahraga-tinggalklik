@@ -9,8 +9,8 @@ import { EncryptedJsonStore } from "./encrypted-store";
  * code that imports Baileys at runtime is `createBaileysSocket`, and it uses a dynamic import
  * so the mocked tests never load the real socket library.
  *
- * QR payloads are deliberately dropped here. Only the fact that pairing is required crosses
- * the boundary, and even that is not reachable from a web route.
+ * QR payloads stay in memory and are passed to the gateway orchestrator for the short-lived,
+ * authenticated dashboard pairing flow. They are never written to logs or session storage.
  */
 
 export type SocketConnectionEvent =

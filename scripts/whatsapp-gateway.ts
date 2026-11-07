@@ -2,14 +2,14 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveWhatsAppGatewayConfig } from "../lib/whatsapp/gateway/config";
+import { parseSessionKey, resolveWhatsAppGatewayConfig } from "../lib/whatsapp/gateway/config";
 import { WhatsAppGateway } from "../lib/whatsapp/gateway/gateway";
 import { structuredLog } from "../lib/notifications/logger";
 
 /** Create a private persistent key on first startup so operators do not need to hand-copy one. */
 async function ensureSessionEncryptionKey(): Promise<void> {
     if (process.env.WA_GATEWAY_ENABLED?.trim().toLowerCase() !== "true") return;
-    if (process.env.WA_SESSION_ENCRYPTION_KEY?.trim()) return;
+    if (parseSessionKey(process.env.WA_SESSION_ENCRYPTION_KEY)) return;
 
     const sessionDir = path.resolve(
         process.cwd(),
@@ -62,7 +62,8 @@ async function ensureSessionEncryptionKey(): Promise<void> {
  *
  * Disabled by default: with `WA_GATEWAY_ENABLED` unset/false this process validates nothing
  * else and exits 0 without opening a socket. When enabled it binds loopback only and waits for
- * SIGTERM/SIGINT. There is no pairing command, QR route or real message in this phase.
+ * SIGTERM/SIGINT. Pairing is started from the authenticated dashboard; QR data is returned
+ * only through the token-protected loopback route and never written to logs.
  */
 
 async function main(): Promise<void> {

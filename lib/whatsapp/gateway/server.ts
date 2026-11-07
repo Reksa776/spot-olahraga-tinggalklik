@@ -17,8 +17,9 @@ import {
  * Internal gateway HTTP server.
  *
  * It binds loopback only, requires `Authorization: Bearer <WA_GATEWAY_TOKEN>` on every route
- * (including health), caps the body at `maxBodyBytes`, and returns only safe status fields.
- * There is no route that returns a QR, session file, phone number or message body.
+ * (including health), and caps the body at `maxBodyBytes`. Pairing status returns the
+ * short-lived QR only to the authenticated dashboard; it never returns session files, phone
+ * numbers or message bodies.
  */
 
 class HttpError extends Error {
