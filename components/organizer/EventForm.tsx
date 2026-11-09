@@ -1,12 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { CalendarDays } from "lucide-react";
 
 import { apiFetch, ClientApiError } from "./api";
 import { Alert, AlertDescription, AlertTitle } from "@/components/dashboard/ui/alert";
 import { Button } from "@/components/dashboard/ui/button";
 import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
+import {
+    defaultEventSchedule,
+    eventTimingErrors,
+    formatWibDateTime,
+    toWibInputValue,
+    wibDateTimeMin,
+    wibInputToIso,
+} from "@/lib/events/datetime";
 import {
     Select,
     SelectContent,
@@ -29,16 +38,17 @@ import {
  * `publishedAt`, or any price field. Publication goes through the dedicated publish
  * endpoint so the preconditions cannot be bypassed by a crafted PATCH.
  *
- * Datetime inputs are `datetime-local`, which yields a local wall-clock string. It is
- * converted to a full ISO timestamp before sending, so the server receives an
- * unambiguous instant.
+ * Datetime inputs are `datetime-local` and are read as WIB (Asia/Jakarta) regardless of
+ * the browser's own timezone. The WIB wall clock is converted to a full ISO instant
+ * before sending, so the server stores an unambiguous UTC value, and the input is filled
+ * from the stored UTC instant in WIB again. A readable WIB preview sits under each field.
  *
  * ---------------------------------------------------------------------------
  * PHASE (shadcn migration): presentation only.
  *
- * Preserved exactly: `EMPTY`, `toLocalInput` / `toIso` (and their `NaN` guards), the initial-state
- * spread, `update`, and `onSubmit` in full — the same field list, the same `|| null` optionals, the
- * same `toIso(values.startAt)` vs `toIso(values.endAt) ?? null` asymmetry, the create-mode
+ * Preserved exactly: `EMPTY`, the initial-state spread, `update`, and `onSubmit` in full — the same
+ * field list, the same `|| null` optionals, the same required `startAt` vs optional `endAt`, the
+ * same WIB ↔ ISO conversion (now `wibInputToIso` / `toWibInputValue`), the create-mode
  * `POST /api/organizer/events` with `{ ...payload, organizerId }` and its
  * `router.push(\`/dashboard/events/${created.id}\`)` early return, the edit-mode
  * `PATCH /api/organizer/events/${eventId}` with `setNotice("Perubahan tersimpan.")` and
@@ -103,25 +113,85 @@ const EMPTY: EventFormValues = {
     requiresCheckIn: true,
 };
 
-/** `datetime-local` value ↔ ISO. */
-function toLocalInput(iso: string | undefined): string {
-    if (!iso) return "";
+function DateTimeField({
+    id,
+    label,
+    required,
+    hint,
+    error,
+    value,
+    min,
+    max,
+    onChange,
+}: {
+    id: string;
+    label: string;
+    required?: boolean;
+    hint?: React.ReactNode;
+    error?: string;
+    value: string;
+    min?: string;
+    max?: string;
+    onChange: (value: string) => void;
+}) {
+    return (
+        <Field
+            label={`${label} (WIB)`}
+            required={required}
+            htmlFor={id}
+            hint={hint}
+            error={error}
+        >
+            <div className="flex items-stretch gap-2">
+                <Input
+                    id={id}
+                    type="datetime-local"
+                    step={60}
+                    required={required}
+                    min={min}
+                    max={max}
+                    value={value}
+                    aria-invalid={error ? true : undefined}
+                    className="[color-scheme:light] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 dark:[color-scheme:dark]"
+                    onChange={(event) => onChange(event.currentTarget.value)}
+                />
 
-    const date = new Date(iso);
+                {/* A visible affordance for the native picker: the indicator alone is
+                 * easy to miss at this height, and `showPicker` is the documented way
+                 * to open the calendar from a button. */}
+                <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="shrink-0"
+                    aria-label={`Buka kalender ${label.toLowerCase()}`}
+                    onClick={() => {
+                        const input = document.getElementById(
+                            id
+                        ) as HTMLInputElement | null;
 
-    if (Number.isNaN(date.getTime())) return "";
+                        try {
+                            input?.showPicker();
+                        } catch {
+                            input?.focus();
+                        }
+                    }}
+                >
+                    <CalendarDays aria-hidden />
+                </Button>
+            </div>
 
-    const offsetMs = date.getTimezoneOffset() * 60_000;
-
-    return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
-}
-
-function toIso(local: string): string | undefined {
-    if (!local) return undefined;
-
-    const date = new Date(local);
-
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+            {value ? (
+                <p className="text-xs font-medium text-muted-foreground">
+                    {formatWibDateTime(value)}
+                </p>
+            ) : (
+                <p className="text-xs text-muted-foreground">
+                    Klik ikon kalender atau ketik langsung, contoh 19:30.
+                </p>
+            )}
+        </Field>
+    );
 }
 
 export default function EventForm({
@@ -137,10 +207,10 @@ export default function EventForm({
     const [values, setValues] = useState<EventFormValues>({
         ...EMPTY,
         ...initial,
-        startAt: toLocalInput(initial?.startAt),
-        endAt: toLocalInput(initial?.endAt),
-        salesStartAt: toLocalInput(initial?.salesStartAt),
-        salesEndAt: toLocalInput(initial?.salesEndAt),
+        startAt: toWibInputValue(initial?.startAt),
+        endAt: toWibInputValue(initial?.endAt),
+        salesStartAt: toWibInputValue(initial?.salesStartAt),
+        salesEndAt: toWibInputValue(initial?.salesEndAt),
         maxTicketsPerOrder:
             initial?.maxTicketsPerOrder === undefined ||
             initial?.maxTicketsPerOrder === null
@@ -152,6 +222,42 @@ export default function EventForm({
     const [error, setError] = useState<string | null>(null);
     const [fieldErrors, setFieldErrors] = useState<string[]>([]);
     const [notice, setNotice] = useState<string | null>(null);
+
+    /**
+     * Create mode starts from a usable slot (a week ahead, 19:00–22:00 WIB) instead of
+     * four empty inputs. Seeded after mount so the server and the browser cannot disagree
+     * about "today" during hydration.
+     */
+    useEffect(() => {
+        if (mode !== "create" || initial?.startAt) return;
+
+        setValues((current) => {
+            if (current.startAt || current.endAt) return current;
+
+            const schedule = defaultEventSchedule();
+
+            return {
+                ...current,
+                startAt: schedule.startAt,
+                endAt: schedule.endAt,
+            };
+        });
+    }, [mode, initial?.startAt]);
+
+    const originalStartAt = initial?.startAt
+        ? toWibInputValue(initial.startAt)
+        : undefined;
+
+    // Live, field-level schedule errors. The submit path re-checks the same function.
+    const timingErrors = eventTimingErrors(
+        {
+            startAt: values.startAt,
+            endAt: values.endAt,
+            salesStartAt: values.salesStartAt,
+            salesEndAt: values.salesEndAt,
+        },
+        { mode, originalStartAt }
+    );
 
     function update<K extends keyof EventFormValues>(
         key: K,
@@ -167,20 +273,10 @@ export default function EventForm({
         setFieldErrors([]);
         setNotice(null);
 
-        // Client-side guard so an obviously inverted window fails instantly with a
-        // readable message. The server re-validates against the stored value, so this
-        // is convenience, never the control.
-        const salesStartIso = toIso(values.salesStartAt);
-        const salesEndIso = toIso(values.salesEndAt);
-
-        if (
-            salesStartIso &&
-            salesEndIso &&
-            new Date(salesEndIso).getTime() < new Date(salesStartIso).getTime()
-        ) {
-            setError(
-                "Waktu berakhir penjualan tidak boleh sebelum waktu mulai penjualan."
-            );
+        // The same rules the fields already show under each input. The server re-validates
+        // (and against the stored values), so this is convenience, never the control.
+        if (Object.keys(timingErrors).length > 0) {
+            setError("Periksa kembali tanggal dan jam event.");
             return;
         }
 
@@ -195,12 +291,12 @@ export default function EventForm({
             description: values.description || null,
             rules: values.rules || null,
             bannerUrl: values.bannerUrl.trim() || null,
-            startAt: toIso(values.startAt),
-            endAt: toIso(values.endAt) ?? null,
+            startAt: wibInputToIso(values.startAt),
+            endAt: wibInputToIso(values.endAt) ?? null,
             // `null` clears the column, `undefined` would leave it untouched; the form
             // always sends an explicit value so clearing works (see event validation).
-            salesStartAt: salesStartIso ?? null,
-            salesEndAt: salesEndIso ?? null,
+            salesStartAt: wibInputToIso(values.salesStartAt) ?? null,
+            salesEndAt: wibInputToIso(values.salesEndAt) ?? null,
             maxTicketsPerOrder: maxTickets === "" ? null : Number(maxTickets),
             contactName: values.contactName || null,
             contactPhone: values.contactPhone || null,
@@ -345,73 +441,64 @@ export default function EventForm({
             </div>
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                <Field label="Mulai" required htmlFor="event-start">
-                    <Input
-                        id="event-start"
-                        required
-                        type="datetime-local"
-                        value={values.startAt}
-                        onChange={(event) => update("startAt", event.currentTarget.value)}
-                    />
-                </Field>
+                <DateTimeField
+                    id="event-start"
+                    label="Mulai"
+                    required
+                    value={values.startAt}
+                    min={mode === "create" ? wibDateTimeMin() : undefined}
+                    error={timingErrors.startAt}
+                    hint="Tidak boleh di masa lalu. Pilih tanggal dan jam, atau ketik langsung."
+                    onChange={(value) => update("startAt", value)}
+                />
 
-                <Field
+                {/*
+                 * PHASE 20B (D-P19-05 = A): `endAt` is what makes the event completable, and
+                 * publication is refused without it (`publishEvent`'s preconditions, the
+                 * readiness checklist, and the disabled publish button all enforce the same
+                 * rule). The field itself stays optional for a draft — a schedule is often not
+                 * settled when the draft is first saved — so the label must not claim the field
+                 * is required while the copy still says when it becomes required.
+                 */}
+                <DateTimeField
+                    id="event-end"
                     label="Selesai"
-                    htmlFor="event-end"
-                    /*
-                     * PHASE 20B (D-P19-05 = A): `endAt` is what makes the event completable, and
-                     * publication is refused without it (`publishEvent`'s preconditions, the
-                     * readiness checklist, and the disabled publish button all enforce the same
-                     * rule). The field itself stays optional for a draft — a schedule is often not
-                     * settled when the draft is first saved — so the label must not claim the field
-                     * is required while the copy still says when it becomes required.
-                     */
+                    value={values.endAt}
+                    min={values.startAt || undefined}
+                    error={timingErrors.endAt}
                     hint="Opsional saat masih draft, tetapi wajib diisi sebelum publikasi: event tanpa waktu selesai tidak dapat diselesaikan."
-                >
-                    <Input
-                        id="event-end"
-                        type="datetime-local"
-                        value={values.endAt}
-                        onChange={(event) => update("endAt", event.currentTarget.value)}
-                    />
-                </Field>
+                    onChange={(value) => update("endAt", value)}
+                />
             </div>
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
-                <Field
-                    label="Mulai penjualan (opsional)"
-                    htmlFor="event-sales-start"
-                    hint="Kosong = langsung dibuka setelah event dipublikasikan."
-                >
-                    <Input
-                        id="event-sales-start"
-                        type="datetime-local"
-                        value={values.salesStartAt}
-                        onChange={(event) =>
-                            update("salesStartAt", event.currentTarget.value)
-                        }
-                    />
-                </Field>
+                <DateTimeField
+                    id="event-sales-start"
+                    label="Mulai penjualan"
+                    value={values.salesStartAt}
+                    min={mode === "create" ? wibDateTimeMin() : undefined}
+                    max={values.startAt || undefined}
+                    error={timingErrors.salesStartAt}
+                    hint="Opsional. Kosong = langsung dibuka setelah event dipublikasikan."
+                    onChange={(value) => update("salesStartAt", value)}
+                />
 
-                <Field
-                    label="Akhir penjualan (opsional)"
-                    htmlFor="event-sales-end"
-                    hint="Kosong = penjualan berhenti saat event dimulai."
-                >
-                    <Input
-                        id="event-sales-end"
-                        type="datetime-local"
-                        value={values.salesEndAt}
-                        onChange={(event) =>
-                            update("salesEndAt", event.currentTarget.value)
-                        }
-                    />
-                </Field>
+                <DateTimeField
+                    id="event-sales-end"
+                    label="Akhir penjualan"
+                    value={values.salesEndAt}
+                    min={values.salesStartAt || undefined}
+                    max={values.startAt || undefined}
+                    error={timingErrors.salesEndAt}
+                    hint="Opsional. Kosong = penjualan berhenti saat event dimulai."
+                    onChange={(value) => update("salesEndAt", value)}
+                />
             </div>
 
             <p className="text-xs text-muted-foreground">
-                Jendela ini berlaku sebagai bawaan untuk semua jenis tiket. Jenis tiket
-                dapat menimpa jendela ini dengan jendela miliknya sendiri.
+                Semua waktu di atas dalam WIB (Asia/Jakarta, UTC+7), berapa pun zona waktu
+                perangkatmu. Jendela ini berlaku sebagai bawaan untuk semua jenis tiket.
+                Jenis tiket dapat menimpa jendela ini dengan jendela miliknya sendiri.
             </p>
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { parseEventDateTime } from "./datetime";
+
 /**
  * ==========================================
  * EVENT / VENUE INPUT VALIDATION
@@ -26,20 +28,24 @@ import { z } from "zod";
 /**
  * ISO date-time, parsed into a `Date`.
  *
- * Accepts the wire format only (an ISO string). A numeric timestamp is rejected so
- * seconds-vs-milliseconds ambiguity cannot silently shift an event by decades.
+ * Accepts an ISO 8601 string and the `datetime-local` form (`YYYY-MM-DDTHH:mm`). A bare
+ * local value is read as WIB — the operating timezone — rather than as the server
+ * process's local time, so both the form and a hand-written API call mean the same
+ * instant. A numeric timestamp is rejected so seconds-vs-milliseconds ambiguity cannot
+ * silently shift an event by decades.
  */
 const isoDateTime = z
     .string()
     .trim()
     .min(1, "Tanggal wajib diisi.")
     .transform((value, ctx) => {
-        const parsed = new Date(value);
+        const parsed = parseEventDateTime(value);
 
-        if (Number.isNaN(parsed.getTime())) {
+        if (!parsed) {
             ctx.addIssue({
                 code: "custom",
-                message: "Format tanggal tidak valid (gunakan ISO 8601).",
+                message:
+                    "Format tanggal tidak valid (gunakan ISO 8601 atau YYYY-MM-DDTHH:mm).",
             });
             return z.NEVER;
         }
@@ -198,20 +204,65 @@ const eventVisibility = z.enum(["PUBLIC", "UNLISTED"]);
 const timezone = z.string().trim().min(1).max(64).optional();
 
 /**
- * Cross-field sales-window rule, applied to both schemas.
+ * Cross-field schedule rules, applied to both schemas.
  *
  * Design §10.2 defines the event window as the **default** that a ticket type inherits
  * (`null` salesStartAt = immediately after publish; `null` salesEndAt = until event
- * start). A contradictory pair is the only thing that is wrong here — absence is
- * legitimate — so only "end before start" is refused, exactly as the ticket-type schema
- * refuses it. The authoritative check against the *stored* value on update lives in the
- * service (a partial PATCH can move one end of the window without the other).
+ * start). Absence is legitimate, so only a *contradictory* combination is refused. Those
+ * combinations are: an event ending before it starts, a sale opening at/after the event,
+ * a sale closing after the event has started, and a sale closing before it opens.
+ *
+ * The messages are the ones the operator sees, so they name the field rather than saying
+ * "invalid input". The authoritative check against the *stored* value on update lives in
+ * the service (a partial PATCH can move one end of a window without the other); this
+ * catches everything that is wrong inside a single payload.
  */
-function checkSalesWindow(
-    value: { salesStartAt?: Date | null; salesEndAt?: Date | null },
+function checkEventSchedule(
+    value: {
+        startAt?: Date;
+        endAt?: Date | null;
+        salesStartAt?: Date | null;
+        salesEndAt?: Date | null;
+    },
     ctx: z.RefinementCtx
 ): void {
-    const { salesStartAt, salesEndAt } = value;
+    const { startAt, endAt, salesStartAt, salesEndAt } = value;
+
+    if (
+        startAt instanceof Date &&
+        endAt instanceof Date &&
+        endAt.getTime() <= startAt.getTime()
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["endAt"],
+            message: "Tanggal selesai harus setelah tanggal mulai.",
+        });
+    }
+
+    if (
+        startAt instanceof Date &&
+        salesStartAt instanceof Date &&
+        salesStartAt.getTime() >= startAt.getTime()
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["salesStartAt"],
+            message: "Penjualan harus dimulai sebelum event.",
+        });
+    }
+
+    if (
+        startAt instanceof Date &&
+        salesEndAt instanceof Date &&
+        salesEndAt.getTime() > startAt.getTime()
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["salesEndAt"],
+            message: "Penjualan harus berakhir sebelum event dimulai.",
+        });
+    }
 
     if (
         salesStartAt instanceof Date &&
@@ -221,7 +272,29 @@ function checkSalesWindow(
         ctx.addIssue({
             code: "custom",
             path: ["salesEndAt"],
-            message: "Waktu berakhir penjualan tidak boleh sebelum waktu mulai.",
+            message: "Penjualan harus berakhir setelah waktu mulai penjualan.",
+        });
+    }
+}
+
+/**
+ * A new event cannot be scheduled in the past. This is the CREATE-only rule: an update
+ * on an event that has already started must remain possible (adding a rule, fixing a
+ * description), so the service applies "future start" only when `startAt` actually
+ * changes.
+ */
+function checkStartInFuture(
+    value: { startAt?: Date },
+    ctx: z.RefinementCtx
+): void {
+    if (
+        value.startAt instanceof Date &&
+        value.startAt.getTime() <= Date.now()
+    ) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["startAt"],
+            message: "Tanggal mulai tidak boleh di masa lalu.",
         });
     }
 }
@@ -255,7 +328,8 @@ export const createEventSchema = z
         contactPhone: optionalText(40),
     })
     .strict()
-    .superRefine(checkSalesWindow);
+    .superRefine(checkEventSchedule)
+    .superRefine(checkStartInFuture);
 
 export type CreateEventInput = z.infer<typeof createEventSchema>;
 
@@ -298,7 +372,7 @@ export const updateEventSchema = z
         slug: z.string().trim().min(3).max(80).optional(),
     })
     .strict()
-    .superRefine(checkSalesWindow)
+    .superRefine(checkEventSchedule)
     .refine((value) => Object.keys(value).length > 0, {
         message: "Tidak ada perubahan yang dikirim.",
     });

@@ -298,6 +298,61 @@ function assertSalesWindow(
 }
 
 /**
+ * The whole schedule must agree: the event ends after it starts, the sale opens before
+ * the event, the sale closes no later than the event starts, and the sale closes after it
+ * opens.
+ *
+ * Applied to a full create payload and to an update that actually touches the schedule.
+ * Keeping the event-vs-sales comparisons here (not only in the schema) means a partial
+ * PATCH against the stored other end is checked too, while a title-only edit of a legacy
+ * row is not blocked by an old window.
+ */
+function assertEventSchedule(
+    startAt: Date,
+    endAt: Date | null | undefined,
+    salesStartAt: Date | null | undefined,
+    salesEndAt: Date | null | undefined
+): void {
+    if (endAt && endAt.getTime() <= startAt.getTime()) {
+        throw AppError.validation("Waktu selesai harus setelah waktu mulai.", {
+            fields: [
+                {
+                    path: "endAt",
+                    message: "Tanggal selesai harus setelah tanggal mulai.",
+                },
+            ],
+        });
+    }
+
+    if (salesStartAt && salesStartAt.getTime() >= startAt.getTime()) {
+        throw AppError.validation("Penjualan harus dimulai sebelum event.", {
+            fields: [
+                {
+                    path: "salesStartAt",
+                    message: "Penjualan harus dimulai sebelum event.",
+                },
+            ],
+        });
+    }
+
+    if (salesEndAt && salesEndAt.getTime() > startAt.getTime()) {
+        throw AppError.validation(
+            "Penjualan harus berakhir sebelum event dimulai.",
+            {
+                fields: [
+                    {
+                        path: "salesEndAt",
+                        message: "Penjualan harus berakhir sebelum event dimulai.",
+                    },
+                ],
+            }
+        );
+    }
+
+    assertSalesWindow(salesStartAt, salesEndAt);
+}
+
+/**
  * Generate a human-readable event reference, e.g. `TKL-EVT-2026-000123`.
  *
  * The shape follows the comment on the `eventCode` column. Uniqueness is retried a
@@ -374,15 +429,12 @@ export async function createEvent(
         await assertVenueAttachable(input.venueId);
     }
 
-    if (input.endAt && input.endAt.getTime() <= input.startAt.getTime()) {
-        throw AppError.validation("Waktu selesai harus setelah waktu mulai.", {
-            fields: [
-                { path: "endAt", message: "Harus setelah waktu mulai." },
-            ],
-        });
-    }
-
-    assertSalesWindow(input.salesStartAt, input.salesEndAt);
+    assertEventSchedule(
+        input.startAt,
+        input.endAt,
+        input.salesStartAt,
+        input.salesEndAt
+    );
 
     if (input.startAt.getTime() <= Date.now()) {
         throw AppError.validation("Waktu mulai harus di masa depan.", {
@@ -566,10 +618,27 @@ export async function updateEvent(
     const effectiveEnd =
         input.endAt === undefined ? current.endAt : input.endAt;
 
-    if (effectiveEnd && effectiveEnd.getTime() <= effectiveStart.getTime()) {
-        throw AppError.validation("Waktu selesai harus setelah waktu mulai.", {
-            fields: [{ path: "endAt", message: "Harus setelah waktu mulai." }],
-        });
+    const effectiveSalesStart =
+        input.salesStartAt === undefined
+            ? current.salesStartAt
+            : input.salesStartAt;
+    const effectiveSalesEnd =
+        input.salesEndAt === undefined ? current.salesEndAt : input.salesEndAt;
+
+    // Only a PATCH that touches the schedule is compared against the event window, so an
+    // unrelated edit of a legacy row whose window predates this rule still succeeds.
+    if (
+        input.startAt !== undefined ||
+        input.endAt !== undefined ||
+        input.salesStartAt !== undefined ||
+        input.salesEndAt !== undefined
+    ) {
+        assertEventSchedule(
+            effectiveStart,
+            effectiveEnd,
+            effectiveSalesStart,
+            effectiveSalesEnd
+        );
     }
 
     if (
@@ -584,12 +653,7 @@ export async function updateEvent(
 
     // Effective window against the STORED value: `undefined` keeps the current end,
     // `null` clears it, so a one-sided PATCH cannot leave start > end.
-    assertSalesWindow(
-        input.salesStartAt === undefined
-            ? current.salesStartAt
-            : input.salesStartAt,
-        input.salesEndAt === undefined ? current.salesEndAt : input.salesEndAt
-    );
+    assertSalesWindow(effectiveSalesStart, effectiveSalesEnd);
 
     // Slug change: structural validation here, uniqueness against the database
     // EXCLUDING this event. On collision the change is refused rather than
