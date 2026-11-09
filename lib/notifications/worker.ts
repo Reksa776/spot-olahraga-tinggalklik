@@ -32,6 +32,11 @@ import {
     releaseNotificationWorkerLease,
     renewNotificationWorkerLease,
 } from "./worker-lock";
+import {
+    isWhatsAppManuallyDisconnected,
+    MANUAL_DISCONNECT_SKIP_CODE,
+    MANUAL_DISCONNECT_SKIP_MESSAGE,
+} from "@/lib/whatsapp/manual-disconnect";
 
 /**
  * ==========================================
@@ -96,6 +101,8 @@ export type NotificationWorkerDependencies = {
     wait?: (ms: number) => Promise<void>;
     /** Daily-cap counter, injectable for a deterministic cap test. */
     countWhatsAppSends?: () => Promise<number>;
+    /** Persistent operator latch, injectable so tests never touch the database. */
+    isWhatsAppManuallyDisconnected?: () => Promise<boolean>;
 };
 
 export type NotificationWorker = {
@@ -433,6 +440,10 @@ export async function processNotificationBatch(
         return emptySummary(false, "LEASE_HELD");
     }
 
+    const manualWhatsApp = await (
+        dependencies.isWhatsAppManuallyDisconnected ??
+        isWhatsAppManuallyDisconnected
+    )();
     const summary = emptySummary(true);
 
     const disabledTransport = {
@@ -497,29 +508,42 @@ export async function processNotificationBatch(
          * is burned, and tomorrow's batch picks them up. The cap counts real sends AND simulated
          * sends, so dry-run exercises the same gate production will.
          */
-        const whatsappUsed = await countWhatsAppSends();
-        const whatsappRemaining = Math.max(
-            0,
-            config.whatsappDailyCap - whatsappUsed
-        );
+        let whatsappBatch: ClaimedDelivery[] = [];
 
-        if (whatsappRemaining === 0) {
-            structuredLog("warn", "notification.whatsapp.daily_cap_reached", {
-                cap: config.whatsappDailyCap,
-                used: whatsappUsed,
-                deferred: true,
-            }, log);
+        if (manualWhatsApp) {
+            // Claim so the row leaves QUEUED, but never render, count against the cap,
+            // or call a transport. The terminal SKIPPED below is the durable evidence.
+            whatsappBatch = await claimDueDeliveries({
+                now,
+                limit: config.batchSize,
+                channels: ["WHATSAPP"],
+                leaseMs: config.leaseMs,
+            });
+        } else {
+            const whatsappUsed = await countWhatsAppSends();
+            const whatsappRemaining = Math.max(
+                0,
+                config.whatsappDailyCap - whatsappUsed
+            );
+
+            if (whatsappRemaining === 0) {
+                structuredLog("warn", "notification.whatsapp.daily_cap_reached", {
+                    cap: config.whatsappDailyCap,
+                    used: whatsappUsed,
+                    deferred: true,
+                }, log);
+            }
+
+            whatsappBatch =
+                whatsappRemaining > 0
+                    ? await claimDueDeliveries({
+                          now,
+                          limit: Math.min(config.batchSize, whatsappRemaining),
+                          channels: ["WHATSAPP"],
+                          leaseMs: config.leaseMs,
+                      })
+                    : [];
         }
-
-        const whatsappBatch =
-            whatsappRemaining > 0
-                ? await claimDueDeliveries({
-                      now,
-                      limit: Math.min(config.batchSize, whatsappRemaining),
-                      channels: ["WHATSAPP"],
-                      leaseMs: config.leaseMs,
-                  })
-                : [];
 
         const claimed = [...emailBatch, ...whatsappBatch];
 
@@ -547,13 +571,36 @@ export async function processNotificationBatch(
             leaseMs: config.leaseMs,
         });
 
-        await runWithConcurrency(
-            whatsappBatch,
-            config.whatsappConcurrency,
-            async (delivery) => {
-                applyOutcome(await dispatchOne(delivery, dispatchDeps));
+        if (manualWhatsApp) {
+            for (const delivery of whatsappBatch) {
+                await markDeliverySkipped(delivery.id, {
+                    code: MANUAL_DISCONNECT_SKIP_CODE,
+                    message: MANUAL_DISCONNECT_SKIP_MESSAGE,
+                    now,
+                });
+                summary.skipped += 1;
             }
-        );
+
+            if (whatsappBatch.length > 0) {
+                structuredLog(
+                    "warn",
+                    "notification.whatsapp.manual_disconnect_skipped",
+                    {
+                        count: whatsappBatch.length,
+                        code: MANUAL_DISCONNECT_SKIP_CODE,
+                    },
+                    log
+                );
+            }
+        } else {
+            await runWithConcurrency(
+                whatsappBatch,
+                config.whatsappConcurrency,
+                async (delivery) => {
+                    applyOutcome(await dispatchOne(delivery, dispatchDeps));
+                }
+            );
+        }
     } catch (error) {
         leaseStatus = "FAILED";
 

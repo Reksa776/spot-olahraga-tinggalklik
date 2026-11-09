@@ -34,6 +34,7 @@ describe("permanent failures", () => {
         for (const code of [
             "TRANSPORT_ERROR",
             "NOT_READY",
+            "GATEWAY_DISCONNECTED",
             "ECONNRESET",
             "ETIMEDOUT",
             "SOCKET_CLOSED",

@@ -1,5 +1,6 @@
 import { structuredLog } from "@/lib/notifications/logger";
 import { resolveWhatsAppGatewayConfig } from "./config";
+import { isWhatsAppManuallyDisconnected } from "@/lib/whatsapp/manual-disconnect";
 import { WhatsAppGateway } from "./gateway";
 import { ensureWhatsAppSessionKey } from "./session-key";
 
@@ -26,7 +27,12 @@ export function startWhatsAppGatewayForWeb(): Promise<void> {
             }
             if (!resolved.config.enabled) return;
 
-            const gateway = new WhatsAppGateway(resolved.config, { serveHttp: false });
+            const gateway = new WhatsAppGateway(resolved.config, {
+                serveHttp: false,
+                // Restart safety: a manual disconnect survives the process, so the
+                // gateway starts latched and never opens a Baileys socket.
+                manualDisconnect: await isWhatsAppManuallyDisconnected(),
+            });
             runtime.__tinggalklikWhatsAppGateway = gateway;
             const snapshot = await gateway.start();
             structuredLog(snapshot.state === "ERROR" ? "error" : "info", "whatsapp_gateway_web_runtime", {

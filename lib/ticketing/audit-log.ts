@@ -281,7 +281,13 @@ export type TicketingAuditAction =
     | "application.maintenance.updated"
     | "application.branding.logo_uploaded"
     | "application.branding.logo_replaced"
-    | "application.branding.logo_removed";
+    | "application.branding.logo_removed"
+    // ── WHATSAPP MANUAL DISCONNECT ─────────────────────────────────────────────
+    // Closing the only outbound WhatsApp session stops every automated message
+    // until an operator re-pairs. That is a platform-control event, recorded by
+    // name so "who silenced WhatsApp, and when?" is answerable without parsing
+    // metadata.
+    | "whatsapp.disconnect";
 
 /** Keys that must never reach the audit table, whatever a caller passes. */
 const FORBIDDEN_METADATA_KEYS = new Set([

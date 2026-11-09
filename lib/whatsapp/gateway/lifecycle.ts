@@ -17,7 +17,9 @@ export const GATEWAY_STATES = [
 export type GatewayState = (typeof GATEWAY_STATES)[number];
 
 const TRANSITIONS: Record<GatewayState, readonly GatewayState[]> = {
-    STOPPED: ["STARTING"],
+    // An explicit disconnect from an idle process is a valid terminal state; it can
+    // later be reversed by an explicit pairing/connect action.
+    STOPPED: ["STARTING", "DISCONNECTED"],
     STARTING: [
         "PAIRING_REQUIRED",
         "CONNECTED",
@@ -33,8 +35,13 @@ const TRANSITIONS: Record<GatewayState, readonly GatewayState[]> = {
     CONNECTED: ["DISCONNECTED", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
     DISCONNECTED: ["STARTING", "LOGGED_OUT", "CONFLICT", "ERROR", "STOPPED"],
     LOGGED_OUT: ["STARTING", "CONFLICT", "ERROR", "STOPPED"],
-    CONFLICT: ["STOPPED"],
-    ERROR: ["STOPPED"],
+    // The operator may have stopped the competing worker/gateway. An explicit
+    // pairing/connect retry is allowed to reacquire ownership; implicit starts are
+    // still impossible because `start()` is only called from runtime startup,
+    // `resume()` and `beginPairing()`.
+    CONFLICT: ["STARTING", "STOPPED"],
+    // An operator can explicitly retry after a start/socket error.
+    ERROR: ["STARTING", "DISCONNECTED", "STOPPED"],
 };
 
 export type LifecycleListener = (next: GatewayState, previous: GatewayState) => void;

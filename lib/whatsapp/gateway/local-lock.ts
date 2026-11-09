@@ -15,6 +15,45 @@ export type LocalLockRecord = {
     acquiredAt: string;
 };
 
+/**
+ * Read a lock file without acquiring it. Used by the operator-facing disconnect/status
+ * endpoints so they can name the process that is holding the session.
+ *
+ * `exists: true` with `record: null` means the file is there but unreadable/corrupt; callers
+ * must treat that as HELD (fail closed), never as free.
+ */
+export async function readLocalProcessLock(
+    filePath: string
+): Promise<{ exists: boolean; record: LocalLockRecord | null }> {
+    try {
+        const raw = await fs.readFile(filePath, "utf8");
+        const parsed = JSON.parse(raw) as Partial<LocalLockRecord>;
+
+        if (
+            typeof parsed.pid !== "number" ||
+            typeof parsed.ownerId !== "string" ||
+            typeof parsed.acquiredAt !== "string"
+        ) {
+            return { exists: true, record: null };
+        }
+
+        return {
+            exists: true,
+            record: {
+                pid: parsed.pid,
+                ownerId: parsed.ownerId,
+                acquiredAt: parsed.acquiredAt,
+            },
+        };
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return { exists: false, record: null };
+        }
+
+        return { exists: true, record: null };
+    }
+}
+
 export class LocalLockConflictError extends Error {
     constructor() {
         super(

@@ -15,9 +15,15 @@ import { sanitizeErrorMessage } from "./logger";
  * dropped Baileys connection or a `NOT_READY` gateway is retried with the existing backoff.
  *
  * Classification is by the error `code` the transport already sets (`BaileysGatewayError`,
- * `NotificationEnqueueError`, the gateway's `errorCode`). An unrecognised error is treated as
- * TRANSIENT: the safe direction for a delivery that may not have left the process is to retry
- * a bounded number of times, never to discard it silently.
+ * `NotificationEnqueueError`, the gateway's `errorCode`). `GATEWAY_DISCONNECTED` is
+ * deliberately NOT a permanent code: the gateway may be reconnected, so a send that never
+ * reached a socket is retried within the existing budget. Manual disconnects are handled
+ * earlier by the worker (terminal SKIPPED, `gateway_disconnected_manual`), not by turning
+ * this classification into a second state machine.
+ *
+ * An unrecognised error is treated as TRANSIENT: the safe direction for a delivery that may
+ * not have left the process is to retry a bounded number of times, never to discard it
+ * silently.
  */
 
 /** Codes retrying cannot fix. Everything else is retried within the attempt budget. */

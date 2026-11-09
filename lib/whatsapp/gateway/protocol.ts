@@ -83,6 +83,8 @@ export type GatewaySnapshot = {
     connected: boolean;
     sessionPresent: boolean;
     lastErrorCode: string | null;
+    /** TRUE when the operator latched a manual disconnect; no socket may be opened. */
+    manualDisconnect: boolean;
 };
 
 export interface GatewayOperations {

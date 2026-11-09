@@ -11,6 +11,10 @@ import {
     renewWhatsAppGatewayLease,
 } from "./lease";
 import { LocalProcessLock } from "./local-lock";
+import {
+    inspectWhatsAppGatewayLock,
+    type WhatsAppLockHolder,
+} from "./lock-inspection";
 import type {
     GatewayDeliveryView,
     GatewayDispatchResult,
@@ -49,7 +53,19 @@ export type WhatsAppGatewayDependencies = {
     logger?: Logger;
     now?: () => Date;
     serveHttp?: boolean;
+    /** Persistent latch read before construction; TRUE means no socket may be opened. */
+    manualDisconnect?: boolean;
+    /** How long `disconnect()` waits for the Baileys socket to close. */
+    disconnectTimeoutMs?: number;
 };
+
+export type GatewayDisconnectResult =
+    | {
+          status: "DISCONNECTED";
+          alreadyDisconnected: boolean;
+          socketClosed: boolean;
+      }
+    | { status: "LOCK_HELD"; lockHolder: WhatsAppLockHolder | null };
 
 function defaultLogger(
     level: "info" | "warn" | "error",
@@ -94,6 +110,8 @@ export class WhatsAppGateway implements GatewayOperations {
     private lastSentAt = 0;
     private started = false;
     private stopping = false;
+    private manualDisconnect = false;
+    private readonly disconnectTimeoutMs: number;
 
     constructor(
         private readonly config: EnabledWhatsAppGatewayConfig,
@@ -103,6 +121,8 @@ export class WhatsAppGateway implements GatewayOperations {
         this.logger = dependencies.logger ?? defaultLogger;
         this.now = dependencies.now ?? (() => new Date());
         this.serveHttp = dependencies.serveHttp ?? true;
+        this.manualDisconnect = dependencies.manualDisconnect ?? false;
+        this.disconnectTimeoutMs = dependencies.disconnectTimeoutMs ?? 5_000;
         this.sessionStore = new EncryptedJsonStore<unknown>({
             directory: config.sessionDir,
             key: config.sessionKey,
@@ -126,6 +146,11 @@ export class WhatsAppGateway implements GatewayOperations {
         return this.server?.address ?? null;
     }
 
+    /** The resolved session directory, for read-only operator status. */
+    get sessionDirectory(): string {
+        return this.config.sessionDir;
+    }
+
     snapshot(): GatewaySnapshot {
         return {
             state: this.lifecycle.state,
@@ -137,6 +162,7 @@ export class WhatsAppGateway implements GatewayOperations {
             connected: this.lifecycle.state === "CONNECTED" && this.socket !== null,
             sessionPresent: this.sessionPresent,
             lastErrorCode: this.lastErrorCode,
+            manualDisconnect: this.manualDisconnect,
         };
     }
 
@@ -147,6 +173,21 @@ export class WhatsAppGateway implements GatewayOperations {
 
         this.started = true;
         this.stopping = false;
+
+        /*
+         * A manually disconnected deployment must not even acquire the lease or open a
+         * socket. The persisted flag is read by `web-runtime.ts` before construction so
+         * this path is taken on process restart as well as after an API disconnect.
+         */
+        if (this.manualDisconnect) {
+            if (this.lifecycle.canTransition("DISCONNECTED")) {
+                this.lifecycle.transition("DISCONNECTED", "MANUAL_DISCONNECT");
+            }
+
+            this.logger("info", "whatsapp_gateway_manual_disconnect_startup", {});
+            return this.snapshot();
+        }
+
         this.lifecycle.transition("STARTING");
 
         const ownerId = `wa-${process.pid}-${randomBytes(8).toString("hex")}`;
@@ -265,8 +306,128 @@ export class WhatsAppGateway implements GatewayOperations {
         this.logger("info", "whatsapp_gateway_stopped", {});
     }
 
+    /**
+     * Close the socket, release the DB lease AND the local lock, and latch manual
+     * disconnect so nothing reconnects on its own.
+     *
+     * Idempotent: when this process owns nothing, it returns `alreadyDisconnected` as
+     * long as no other process holds a guard. A lock owned elsewhere is never stolen;
+     * it is returned so the API can answer 409 with the holder.
+     */
+    async disconnect(): Promise<GatewayDisconnectResult> {
+        this.manualDisconnect = true;
+        this.clearReconnectTimer();
+
+        if (!this.ownershipHeld) {
+            let lockHolder: WhatsAppLockHolder | null = null;
+
+            try {
+                lockHolder = (
+                    await inspectWhatsAppGatewayLock(this.config.sessionDir)
+                ).lockHolder;
+            } catch {
+                // We own nothing; a status-read failure must not block closing a
+                // socket that this process does not own. Deletion re-inspects and
+                // fails closed in the service.
+                lockHolder = null;
+            }
+
+            if (lockHolder) {
+                return { status: "LOCK_HELD", lockHolder };
+            }
+
+            const socketClosed = await this.closeSocketWithTimeout();
+
+            if (this.lifecycle.canTransition("DISCONNECTED")) {
+                this.lifecycle.transition("DISCONNECTED", "MANUAL_DISCONNECT");
+            }
+
+            this.started = false;
+            this.logger("info", "whatsapp_gateway_manual_disconnect", {
+                alreadyDisconnected: true,
+                socketClosed,
+            });
+
+            return {
+                status: "DISCONNECTED",
+                alreadyDisconnected: true,
+                socketClosed,
+            };
+        }
+
+        const socketClosed = await this.closeSocketWithTimeout();
+        await this.releaseOwnership("OK");
+        this.started = false;
+
+        if (this.lifecycle.canTransition("DISCONNECTED")) {
+            this.lifecycle.transition("DISCONNECTED", "MANUAL_DISCONNECT");
+        }
+
+        this.logger("info", "whatsapp_gateway_manual_disconnect", {
+            alreadyDisconnected: false,
+            socketClosed,
+        });
+
+        return {
+            status: "DISCONNECTED",
+            alreadyDisconnected: false,
+            socketClosed,
+        };
+    }
+
+    /** Explicit reconnect action; clears the in-memory latch and reacquires ownership. */
+    async resume(): Promise<GatewaySnapshot> {
+        this.manualDisconnect = false;
+
+        if (this.ownershipHeld) {
+            if (
+                this.snapshot().connected ||
+                this.state === "PAIRING_REQUIRED" ||
+                this.state === "STARTING" ||
+                this.state === "LOGGED_OUT"
+            ) {
+                return this.snapshot();
+            }
+
+            if (this.state === "DISCONNECTED") {
+                this.lifecycle.transition("STARTING", "MANUAL_RECONNECT");
+                await this.connect();
+            }
+
+            return this.snapshot();
+        }
+
+        this.started = false;
+        this.stopping = false;
+
+        return this.start();
+    }
+
     async beginPairing(): Promise<{ started: boolean }> {
-        if (!this.ownershipHeld || this.snapshot().connected || (this.socket && !this.pairingMode)) {
+        // Pairing is the explicit operator action that clears the manual latch.
+        this.manualDisconnect = false;
+
+        if (!this.ownershipHeld) {
+            // Disconnect released both guards. A session WhatsApp already invalidated
+            // must be removed BEFORE start(), otherwise start() reuses dead credentials
+            // and never reaches the QR flow.
+            if (this.lifecycle.state === "LOGGED_OUT") {
+                await this.sessionStore.remove();
+                this.sessionPresent = false;
+                this.lastErrorCode = null;
+                this.reconnectPolicy.reset();
+            }
+
+            this.started = false;
+            this.stopping = false;
+            const snapshot = await this.start();
+
+            if (!snapshot.ownershipHeld || snapshot.state === "CONNECTED") {
+                return { started: false };
+            }
+        }
+
+        if (this.snapshot().connected || (this.socket && !this.pairingMode)) {
             return { started: false };
         }
 
@@ -303,6 +464,17 @@ export class WhatsAppGateway implements GatewayOperations {
                 status: "NOT_READY",
                 deliveryId: input.deliveryId,
                 errorCode: "SHUTTING_DOWN",
+            };
+        }
+
+        // Manual disconnect is terminal for automatic work. The worker normally skips
+        // before calling the socket; this is the API-level backstop and is classified
+        // as transient if a caller retries it.
+        if (this.manualDisconnect) {
+            return {
+                status: "NOT_READY",
+                deliveryId: input.deliveryId,
+                errorCode: "GATEWAY_DISCONNECTED",
             };
         }
 
@@ -399,7 +571,7 @@ export class WhatsAppGateway implements GatewayOperations {
     }
 
     private async connect(allowPairing = false): Promise<void> {
-        if (this.stopping || !this.ownershipHeld) {
+        if (this.stopping || this.manualDisconnect || !this.ownershipHeld) {
             return;
         }
 
@@ -516,7 +688,7 @@ export class WhatsAppGateway implements GatewayOperations {
     }
 
     private scheduleReconnect(): void {
-        if (this.stopping || this.reconnectTimer) {
+        if (this.stopping || this.manualDisconnect || this.reconnectTimer) {
             return;
         }
 
@@ -539,7 +711,11 @@ export class WhatsAppGateway implements GatewayOperations {
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
 
-            if (this.stopping || this.lifecycle.state !== "DISCONNECTED") {
+            if (
+                this.stopping ||
+                this.manualDisconnect ||
+                this.lifecycle.state !== "DISCONNECTED"
+            ) {
                 return;
             }
 
@@ -597,6 +773,50 @@ export class WhatsAppGateway implements GatewayOperations {
             } catch {
                 this.lastErrorCode = this.lastErrorCode ?? "SOCKET_CLOSE_FAILED";
             }
+        }
+    }
+
+    /** Socket close for disconnect: bounded, and a failure never leaves a reconnect armed. */
+    private async closeSocketWithTimeout(): Promise<boolean> {
+        this.unsubscribeSocket?.();
+        this.unsubscribeSocket = null;
+
+        const socket = this.socket;
+        this.socket = null;
+
+        if (!socket) {
+            return true;
+        }
+
+        let timer: NodeJS.Timeout | undefined;
+
+        try {
+            await Promise.race([
+                socket.end(),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(
+                        () => reject(new Error("SOCKET_CLOSE_TIMEOUT")),
+                        this.disconnectTimeoutMs
+                    );
+                    timer.unref?.();
+                }),
+            ]);
+
+            return true;
+        } catch {
+            this.lastErrorCode = this.lastErrorCode ?? "SOCKET_CLOSE_TIMEOUT";
+            return false;
+        } finally {
+            if (timer) {
+                clearTimeout(timer);
+            }
+        }
+    }
+
+    private clearReconnectTimer(): void {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
     }
 

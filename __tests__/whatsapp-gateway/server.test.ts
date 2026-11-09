@@ -18,6 +18,7 @@ function snapshot(overrides: Partial<GatewaySnapshot> = {}): GatewaySnapshot {
         connected: true,
         sessionPresent: true,
         lastErrorCode: null,
+        manualDisconnect: false,
         ...overrides,
     };
 }

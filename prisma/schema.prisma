@@ -1899,6 +1899,12 @@ model PlatformSetting {
   /// Optional "back at …" line beside the message.
   maintenanceEtaMessage String? @db.Text
 
+  // --- WHATSAPP MANUAL DISCONNECT -------------------------------------------
+  /// Operator-initiated disconnect latch. TRUE means the gateway must not open a
+  /// Baileys socket or auto-reconnect until an explicit pairing/connect action
+  /// clears it. This is the persistent counterpart of the in-memory gateway flag.
+  whatsappManualDisconnect Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
