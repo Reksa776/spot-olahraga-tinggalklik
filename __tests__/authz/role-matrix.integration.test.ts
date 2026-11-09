@@ -252,6 +252,7 @@ describe("platform ADMIN", () => {
             "/dashboard/venues",
             "/dashboard/settings",
             // PHASE 32/33 — the SYSTEM section, rendered last and only for an ADMIN.
+            "/dashboard/readiness",
             "/dashboard/users",
             "/dashboard/settings/application",
             "/dashboard/settings/branding",
@@ -280,6 +281,7 @@ describe("platform ADMIN", () => {
             "/dashboard",
             "/dashboard/pic",
             "/dashboard/settings",
+            "/dashboard/readiness",
             "/dashboard/users",
             "/dashboard/settings/application",
             "/dashboard/settings/branding",

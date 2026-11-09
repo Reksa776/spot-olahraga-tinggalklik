@@ -53,6 +53,7 @@ function caps(overrides: CapabilityOverrides = {}): DashboardCapabilities {
         canManageMaintenance: false,
         canManageBranding: false,
         canManageUsers: false,
+        canReadReadiness: false,
         ...overrides,
     };
 }
@@ -76,12 +77,14 @@ function labels(capabilities: DashboardCapabilities): string[] {
 describe("a pure PIC (flag only, no tenant/platform capability) is admitted to the self-service menu", () => {
     const purePic = caps({ hasActivePicProfile: true });
 
-    test("the href set is exactly the four own-scope destinations, in section order", () => {
+    test("the href set is exactly the own-scope destinations plus the PIC scanner", () => {
         expect(allHrefs(purePic)).toEqual([
             "/dashboard/pic",
             "/dashboard/pic#events",
             "/dashboard/pic#referrals",
             "/dashboard/pic#earnings",
+            // The PIC-only scanner, in the Event & Tiket section.
+            "/pic/scanner",
         ]);
     });
 
@@ -91,6 +94,7 @@ describe("a pure PIC (flag only, no tenant/platform capability) is admitted to t
             "Event Saya",
             "Referral",
             "Pendapatan",
+            "Scanner PIC",
         ]);
     });
 
@@ -98,10 +102,12 @@ describe("a pure PIC (flag only, no tenant/platform capability) is admitted to t
         expect(allHrefs(purePic)).not.toContain("/dashboard");
     });
 
-    test("every back-office row still lives under /dashboard", () => {
-        expect(allHrefs(purePic).every((href) => href.startsWith("/dashboard"))).toBe(
-            true
-        );
+    test("every row is either a dashboard destination or the PIC-only scanner", () => {
+        expect(
+            allHrefs(purePic).every(
+                (href) => href === "/pic/scanner" || href.startsWith("/dashboard")
+            )
+        ).toBe(true);
     });
 });
 

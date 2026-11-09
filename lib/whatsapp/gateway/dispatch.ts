@@ -8,6 +8,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type {
+    DispatchMedia,
     GatewayDeliveryView,
     GatewayDispatchResult,
     GatewayReconcileResult,
@@ -32,7 +33,11 @@ export const DISPATCH_LEASE_MS = 60_000;
 
 type DispatchDb = Pick<PrismaClient, "whatsAppGatewayMessage">;
 
-export type SendText = (jid: string, text: string) => Promise<{ messageId: string | null }>;
+export type SendText = (
+    jid: string,
+    text: string,
+    media?: readonly DispatchMedia[]
+) => Promise<{ messageId: string | null }>;
 
 export class DefiniteSendError extends Error {
     constructor(
@@ -403,7 +408,9 @@ export class WhatsAppGatewayDispatchService {
             let sent: { messageId: string | null };
 
             try {
-                sent = await this.withTimeout(send(input.jid, input.text));
+                sent = await this.withTimeout(
+                    send(input.jid, input.text, input.media)
+                );
             } catch (error) {
                 if (error instanceof DispatchTimeoutError) {
                     await this.markAmbiguous(

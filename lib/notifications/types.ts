@@ -38,10 +38,24 @@ export type OutboundEmail = {
     text: string;
 };
 
-/** A message shaped for a WhatsApp transport. Plain text only. */
+/**
+ * An optional attachment for a WhatsApp message.
+ *
+ * PHASE WA-MEDIA — the transport contract gained exactly two shapes, because the two business
+ * messages that need one are a QR image (purchase proof / e-ticket) and a post-event PDF. The
+ * image is a `data:image/png;base64,…` URL produced server-side; nothing the caller supplies
+ * becomes markup, and the gateway converts it to a Buffer before the socket call. A document
+ * is an absolute HTTPS URL plus a display fileName.
+ */
+export type OutboundWhatsAppMedia =
+    | { kind: "image"; dataUrl: string }
+    | { kind: "document"; url: string; fileName: string; caption?: string };
+
+/** A message shaped for a WhatsApp transport. Text plus optional attachments. */
 export type OutboundWhatsApp = {
     to: string;
     text: string;
+    media?: readonly OutboundWhatsAppMedia[];
 };
 
 /**

@@ -5,6 +5,12 @@ import { validateTextDispatch } from "@/lib/whatsapp/gateway/protocol";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/**
+ * Text plus up to five QR images. The body is validated before the gateway is touched, and the
+ * media validator bounds each image, so this is a ceiling rather than an invitation.
+ */
+const MAX_DISPATCH_BODY_BYTES = 524_288;
+
 function authorized(request: Request): boolean {
     const expected = process.env.WA_GATEWAY_TOKEN?.trim() ?? "";
     const supplied = request.headers.get("authorization") ?? "";
@@ -20,14 +26,14 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const declaredLength = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > 8_192) {
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_DISPATCH_BODY_BYTES) {
         return Response.json({ error: "BODY_TOO_LARGE" }, { status: 413 });
     }
 
     let body: unknown;
     try {
         const raw = await request.text();
-        if (Buffer.byteLength(raw) > 8_192) return Response.json({ error: "BODY_TOO_LARGE" }, { status: 413 });
+        if (Buffer.byteLength(raw) > MAX_DISPATCH_BODY_BYTES) return Response.json({ error: "BODY_TOO_LARGE" }, { status: 413 });
         body = JSON.parse(raw);
     } catch {
         return Response.json({ error: "INVALID_JSON" }, { status: 400 });

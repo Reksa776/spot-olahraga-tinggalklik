@@ -10,11 +10,29 @@ import type { GatewayState } from "./lifecycle";
  * acquire a lease or reach a socket.
  */
 
+/**
+ * Attachments accepted by ONE dispatch. Deliberately closed to two shapes:
+ *
+ *   image    — a server-rendered PNG data URL (the business templates' ticket QR).
+ *   document — an absolute HTTPS URL plus a display fileName (post-event PDF).
+ *
+ * Nothing here can name a local path, a `file://` URL or an arbitrary socket content object.
+ */
+export type DispatchImageMedia = { kind: "image"; dataUrl: string };
+export type DispatchDocumentMedia = {
+    kind: "document";
+    url: string;
+    fileName: string;
+    caption?: string;
+};
+export type DispatchMedia = DispatchImageMedia | DispatchDocumentMedia;
+
 export type TextDispatchRequest = {
     deliveryId: string;
     notificationId: number;
     jid: string;
     text: string;
+    media?: DispatchMedia[];
 };
 
 export type GatewayDispatchStatus =
@@ -92,6 +110,119 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null;
 }
 
+const MAX_MEDIA_ITEMS = 5;
+const MAX_IMAGE_DATA_URL = 400_000;
+const MAX_DOCUMENT_URL = 2_000;
+const IMAGE_DATA_URL = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+const DOCUMENT_FILE_NAME = /^[^\\/\u0000-\u001f]{1,180}$/;
+
+/**
+ * Validate the optional attachment list BEFORE the ledger is touched.
+ *
+ * A rejected media item must not create a row, acquire a lease or reach a socket. The PNG data
+ * URL is bounded (a 640px QR is a few KB; the bound stops a caller turning one dispatch into
+ * a memory amplifier), and a document URL must be absolute HTTPS.
+ */
+export function validateDispatchMedia(
+    value: unknown
+):
+    | { ok: true; value: DispatchMedia[] }
+    | { ok: false; code: string; message: string } {
+    if (value === undefined) {
+        return { ok: true, value: [] };
+    }
+
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_MEDIA_ITEMS) {
+        return {
+            ok: false,
+            code: "INVALID_MEDIA",
+            message: `media must contain 1-${MAX_MEDIA_ITEMS} items when supplied.`,
+        };
+    }
+
+    const out: DispatchMedia[] = [];
+
+    for (const entry of value) {
+        const item = asRecord(entry);
+
+        if (!item) {
+            return {
+                ok: false,
+                code: "INVALID_MEDIA",
+                message: "Every media item must be an object.",
+            };
+        }
+
+        if (item.kind === "image") {
+            if (
+                typeof item.dataUrl !== "string" ||
+                item.dataUrl.length > MAX_IMAGE_DATA_URL ||
+                !IMAGE_DATA_URL.test(item.dataUrl)
+            ) {
+                return {
+                    ok: false,
+                    code: "INVALID_MEDIA",
+                    message: "image media must be a PNG data URL within the size limit.",
+                };
+            }
+
+            out.push({ kind: "image", dataUrl: item.dataUrl });
+            continue;
+        }
+
+        if (item.kind === "document") {
+            const url = typeof item.url === "string" ? item.url.trim() : "";
+            const fileName =
+                typeof item.fileName === "string" ? item.fileName.trim() : "";
+
+            let parsed: URL | null = null;
+
+            try {
+                parsed = new URL(url);
+            } catch {
+                parsed = null;
+            }
+
+            if (!parsed || parsed.protocol !== "https:" || url.length > MAX_DOCUMENT_URL) {
+                return {
+                    ok: false,
+                    code: "INVALID_MEDIA",
+                    message: "document media requires an absolute HTTPS url.",
+                };
+            }
+
+            if (!DOCUMENT_FILE_NAME.test(fileName)) {
+                return {
+                    ok: false,
+                    code: "INVALID_MEDIA",
+                    message: "document media requires a safe fileName.",
+                };
+            }
+
+            const caption =
+                typeof item.caption === "string" && item.caption.trim().length > 0
+                    ? item.caption.trim().slice(0, 1_024)
+                    : undefined;
+
+            out.push({
+                kind: "document",
+                url,
+                fileName,
+                ...(caption ? { caption } : {}),
+            });
+            continue;
+        }
+
+        return {
+            ok: false,
+            code: "INVALID_MEDIA",
+            message: 'media kind must be "image" or "document".',
+        };
+    }
+
+    return { ok: true, value: out };
+}
+
 export function validateTextDispatch(
     value: unknown
 ):
@@ -153,6 +284,12 @@ export function validateTextDispatch(
         };
     }
 
+    const media = validateDispatchMedia(input.media);
+
+    if (!media.ok) {
+        return { ok: false, code: media.code, message: media.message };
+    }
+
     return {
         ok: true,
         value: {
@@ -160,6 +297,7 @@ export function validateTextDispatch(
             notificationId: input.notificationId,
             jid: `${normalized}@s.whatsapp.net`,
             text: input.text,
+            ...(media.value.length > 0 ? { media: media.value } : {}),
         },
     };
 }

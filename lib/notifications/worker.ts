@@ -7,6 +7,7 @@ import { structuredLog, sanitizeErrorMessage } from "./logger";
 import { normalizeRecipient } from "./contacts";
 import {
     claimDueDeliveries,
+    computeRetryDelayMs,
     countWhatsAppSendsToday,
     markDeliverySent,
     markDeliverySkipped,
@@ -15,6 +16,8 @@ import {
     recordDeliveryFailure,
     type ClaimedDelivery,
 } from "./queue";
+import { classifyDeliveryError } from "./retry-policy";
+import { buildWhatsAppMedia } from "./whatsapp-media";
 import { renderNotification, TemplatePayloadInvalidError } from "./templates";
 import {
     createDryRunEmailTransport,
@@ -226,7 +229,11 @@ async function dispatchOne(
     let rendered;
 
     try {
-        rendered = renderNotification(delivery.templateKey, delivery.payload);
+        rendered = renderNotification(delivery.templateKey, delivery.payload, {
+            // IN_APP is never enqueued (the deliverable channel set excludes it), so this is a
+            // total mapping over the channels a claimed row can actually have.
+            channel: delivery.channel === "EMAIL" ? "EMAIL" : "WHATSAPP",
+        });
     } catch (error) {
         const code =
             error instanceof TemplatePayloadInvalidError
@@ -248,6 +255,17 @@ async function dispatchOne(
 
         return "skipped";
     }
+
+    /*
+     * Attachments are derived HERE, from the same stored payload that produced the text, so the
+     * queue keeps storing data rather than rendered messages. `buildWhatsAppMedia` never
+     * throws and returns an empty list on any problem: a QR render failure degrades the message
+     * to text instead of failing the delivery.
+     */
+    const media =
+        delivery.channel === "WHATSAPP"
+            ? await buildWhatsAppMedia(delivery.templateKey, delivery.payload)
+            : [];
 
     const transport =
         delivery.channel === "EMAIL" ? deps.email : deps.whatsapp;
@@ -294,7 +312,11 @@ async function dispatchOne(
                       context
                   )
                 : await deps.whatsapp.send(
-                      { to: recipient, text: rendered.text },
+                      {
+                          to: recipient,
+                          text: rendered.text,
+                          ...(media.length > 0 ? { media } : {}),
+                      },
                       context
                   );
 
@@ -330,26 +352,51 @@ async function dispatchOne(
 
         return "sent";
     } catch (error) {
-        const errorCode =
-            error && typeof error === "object" && "code" in error
-                ? String((error as { code: unknown }).code)
-                : "TRANSPORT_ERROR";
+        /*
+         * FAILURE HANDLING — what the H-36 bug needed made explicit.
+         *
+         * A dropped Baileys connection, a `NOT_READY` gateway or a timeout is TRANSIENT: the
+         * row returns to QUEUED with the 60 s / 5 min backoff and is retried until
+         * `maxAttempts`. A permanent refusal (wrong gateway token, invalid JID format, unknown
+         * template) is recorded as a terminal FAILED immediately: retrying cannot succeed, and
+         * pretending otherwise hides the real cause behind two pointless retries.
+         *
+         * `permanent` forces the attempt counter to the budget, so the SAME state machine in
+         * `queue.ts` decides the terminal state — no second failure path is introduced.
+         */
+        const classification = classifyDeliveryError(error);
+        const attemptCount = classification.permanent
+            ? Math.max(delivery.attemptCount, delivery.maxAttempts)
+            : delivery.attemptCount;
 
         const outcome = await recordDeliveryFailure(delivery.id, {
-            attemptCount: delivery.attemptCount,
+            attemptCount,
             maxAttempts: delivery.maxAttempts,
-            errorCode,
-            errorMessage: sanitizeErrorMessage(error),
+            errorCode: classification.code,
+            errorMessage: classification.message,
             now: deps.now,
             random: deps.random,
         });
 
-        structuredLog("warn", "notification.dispatch.failed", {
-            ...base,
-            transport: transport.name,
-            errorCode,
-            outcome,
-        }, deps.log);
+        structuredLog(
+            classification.permanent ? "error" : "warn",
+            "notification.dispatch.failed",
+            {
+                ...base,
+                transport: transport.name,
+                errorCode: classification.code,
+                permanent: classification.permanent,
+                outcome,
+                retryInMs:
+                    outcome === "retry-scheduled"
+                        ? computeRetryDelayMs(
+                              delivery.attemptCount,
+                              deps.random
+                          )
+                        : null,
+            },
+            deps.log
+        );
 
         return outcome === "failed" ? "failed" : "retried";
     }

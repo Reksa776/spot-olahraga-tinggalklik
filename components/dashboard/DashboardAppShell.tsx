@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import {
+    Activity,
     Banknote,
     BarChart3,
     CalendarDays,
@@ -170,6 +171,20 @@ export function buildDashboardNav(
             },
         },
         {
+            // PIC-ONLY scanner entry. `hasActivePicProfile` is true only for an ACTIVE
+            // profile, which is exactly what `requireAssignedPicEvent` requires; a PENDING
+            // PIC sees no row, and the route guards the assignment on every scan anyway.
+            // The href is outside /dashboard because the PIC surface is deliberately
+            // separate from the operator gate.
+            visible: capabilities.hasActivePicProfile,
+            section: "Event & Tiket",
+            entry: {
+                label: "Scanner PIC",
+                href: "/pic/scanner",
+                icon: <QrCode size={18} />,
+            },
+        },
+        {
             visible: capabilities.canReadOrders,
             section: "Penjualan",
             entry: {
@@ -259,11 +274,22 @@ export function buildDashboardNav(
             },
         },
         // ── SISTEM (PHASE 32, ADMIN ONLY) ──────────────────────────────────────────
-        // The three application-control destinations. Each is gated by ITS OWN capability
+        // The application-control destinations. Each is gated by ITS OWN capability
         // from the server-computed set, which is itself derived from `decidePlatformPermission`
         // — the same function the endpoints call. A MANAGER therefore sees none of these rows
         // and is denied by every one of the endpoints if they navigate directly; the row and
         // the rule are the same decision rendered twice.
+        {
+            // Operational readiness is ADMIN-only because it describes the deployment
+            // (`JobLock` heartbeat), not a tenant.
+            visible: capabilities.canReadReadiness,
+            section: "Sistem",
+            entry: {
+                label: "Readiness",
+                href: "/dashboard/readiness",
+                icon: <Activity size={18} />,
+            },
+        },
         {
             visible: capabilities.canManageUsers,
             section: "Sistem",

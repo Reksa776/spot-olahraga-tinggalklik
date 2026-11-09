@@ -285,7 +285,8 @@ function itemsOf(value: unknown): PurchaseProofItemPayload[] {
  * ========================================== */
 
 export function renderPurchaseProof(
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    options?: { channel?: "EMAIL" | "WHATSAPP" }
 ): RenderedPurchaseProof {
     const orderNumber = clean(payload.orderNumber, 80) || "—";
     const currency = clean(payload.currency, 8) || "IDR";
@@ -391,8 +392,15 @@ export function renderPurchaseProof(
     lines.push("", "Tiket:");
 
     if (ticketCodes.length === 0) {
+        /*
+         * The WhatsApp copy names the next event explicitly, because a WA message that only
+         * says "available on the order page" invites a support question. Email wording is
+         * unchanged: `channel` is absent for every existing caller.
+         */
         lines.push(
-            "Tiket akan tersedia di halaman pesanan Anda setelah diterbitkan."
+            options?.channel === "WHATSAPP"
+                ? "Pembayaran diterima, e-ticket akan dikirim setelah issuance."
+                : "Tiket akan tersedia di halaman pesanan Anda setelah diterbitkan."
         );
     } else {
         for (const code of ticketCodes) {

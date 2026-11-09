@@ -29,9 +29,28 @@ export type SocketConnectionEvent =
     | { type: "creds" }
     | { type: "receipt"; messageId: string; ack: "delivered" | "read" | "failed" };
 
+/**
+ * The three Baileys content shapes this gateway may send. Deliberately closed: an arbitrary
+ * object from an HTTP body never reaches the socket.
+ *
+ * An image is a Buffer (decoded from the validated `data:image/png;base64,…` URL) rather than
+ * a data URL, because Baileys' media loader expects bytes or an http(s) URL; a document uses
+ * the tokenised HTTPS URL the application already serves.
+ */
+export type WhatsAppMessageContent =
+    | { text: string }
+    | { image: Buffer; caption?: string }
+    | {
+          document: { url: string };
+          /** Required by Baileys' document content union. */
+          mimetype: string;
+          fileName: string;
+          caption?: string;
+      };
+
 export type WhatsAppSocketLike = {
     onEvent(listener: (event: SocketConnectionEvent) => void): () => void;
-    sendMessage(jid: string, content: { text: string }): Promise<{ messageId: string | null }>;
+    sendMessage(jid: string, content: WhatsAppMessageContent): Promise<{ messageId: string | null }>;
     end(): Promise<void>;
 };
 

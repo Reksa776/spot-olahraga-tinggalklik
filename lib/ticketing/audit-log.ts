@@ -200,6 +200,12 @@ export type TicketingAuditAction =
     | "pic.assign"
     | "pic.assign.reactivate"
     | "pic.assign.revoke"
+    // ── PIC post-event blast ─────────────────────────────────────────────────────
+    // A PIC distributing a document + message to every paid participant of an assigned
+    // event. Its own action name because it is a BROADCAST: "who messaged the whole
+    // attendee list, and when?" is an incident question distinct from any per-order
+    // notification, and the metadata carries the recipient/delivery counts.
+    | "pic.blast.send"
     // ── PICO payout / settlement V1 (manual bank transfer) ───────────────────────
     // Seven actions, one per state change an auditor reconstructs a payout from.
     // They are separate names rather than a single `settlement.update` because they
@@ -377,7 +383,9 @@ export type TicketingAuditParams = {
         /** Phase 32: the single-row platform configuration (maintenance + branding). */
         | "PlatformSetting"
         /** Phase 33: a User account created or (de)activated by user management. */
-        | "User";
+        | "User"
+        /** PIC post-event blast: the uploaded `EventDocument` the message links to. */
+        | "EventDocument";
     /** cuid of the affected row (goes into `entityRef`). */
     entityRef?: string | null;
     description: string;

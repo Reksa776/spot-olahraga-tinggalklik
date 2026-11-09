@@ -57,7 +57,9 @@ const DEFAULTS = {
     shutdownGraceMs: 10_000,
     leaseMs: 90_000,
     leaseRenewMs: 30_000,
-    maxBodyBytes: 8_192,
+    // A single text message is < 8 KB, but one dispatch may now carry up to five 640px QR
+    // PNG data URLs (a few KB each). The cap stays small enough to reject an amplified body.
+    maxBodyBytes: 262_144,
     minSendDelayMs: 5_000,
     retentionDays: 30,
     reconnectDelaysMs: [1_000, 5_000, 15_000, 30_000, 60_000, 300_000],
@@ -243,7 +245,7 @@ export function resolveWhatsAppGatewayConfig(
         "WA_GATEWAY_BODY_LIMIT_BYTES",
         DEFAULTS.maxBodyBytes,
         1_024,
-        65_536
+        1_048_576
     );
 
     if (maxBodyBytes === null) {

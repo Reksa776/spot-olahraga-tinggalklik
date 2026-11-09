@@ -273,6 +273,9 @@ server {
     # Uploaded event images are capped at 5 MB by the application
     # (lib/images/process.ts → MAX_EVENT_IMAGE_BYTES). nginx's default is 1m,
     # which would reject a legal upload with 413 before it ever reaches the app.
+    # The same directive must cover WhatsApp media dispatch (up to five QR
+    # PNGs, capped at 512 KiB by the application): the documented minimum is
+    # 1m, and the 8m here is intentional headroom for both.
     client_max_body_size 8m;
 
     location / {
@@ -573,6 +576,30 @@ npm run health:worker
 If the worker is `errored`, read its log and fix the cause before restarting it. Do not raise
 `max_restarts` to hide a persistent database or configuration failure.
 
+#### 7.1.1 H-36 reminder checklist (read this when a reminder does not arrive)
+
+The reminder needs FOUR independent things. Checking only the WhatsApp pairing is the usual
+mistake, because the queue can be empty for reasons that have nothing to do with Baileys.
+
+1. **Cron is running the tick.** `POST /api/internal/jobs/tick` must be called every minute
+   with `JOBS_TICK_SECRET`. Without it `runH36ReminderSweep()` never runs and no notification
+   row is created.
+2. **The worker is running.** `pm2 status` must show `tinggalklik-worker` as `online`.
+3. **The worker is enabled.** `NOTIFICATIONS_ENABLED=true`, or the documented automatic fallback
+   (paired session + `WHATSAPP_TRANSPORT=baileys` + `WA_GATEWAY_ENABLED=true` + valid token).
+4. **The transport is live.** `WHATSAPP_TRANSPORT=baileys` (not `dry-run`), and the gateway is
+   connected in Dashboard → Settings → WhatsApp dan email.
+
+Open **`/dashboard/readiness`** (platform admin) to see `JobLock.lastRunAt` / `lastStatus` for
+all three cron jobs and the worker. A heartbeat older than twice its interval is shown as a
+warning. The worker's own probe remains `npm run health:worker`.
+
+Grep one tick in the app log: `jobs.tick.h36_reminder` reports `enqueued`, `existing`,
+`failed` and the skip reasons; `jobs.tick.h36_reminder_failed` is emitted only when per-ticket
+enqueue errors occurred. The worker log line `notification.dispatch.failed` now includes
+`permanent` and `retryInMs`, so a dead session (transient, retried) is distinguishable from a
+bad JID/token (terminal).
+
 ### 7.2 WhatsApp gateway — hosted by the web application
 
 The single Next.js Node.js process owns the Baileys socket and dispatch ledger. Dashboard
@@ -585,6 +612,16 @@ creates a private encryption key automatically and stores it beside the encrypte
 session under the ignored project folder `storage/whatsapp-gateway`. Do not commit that folder.
 The default app URL for the notification worker is `http://127.0.0.1:3003`; override it with
 `INTERNAL_APP_URL` only when the app uses a different local address.
+
+**REQUIRED — reverse proxy body size for WhatsApp media.** The worker posts attachments to
+`POST /api/internal/whatsapp/dispatch`, which accepts a body of up to **512 KiB**
+(`524288` bytes; `lib/whatsapp/gateway/config.ts` defaults `WA_GATEWAY_BODY_LIMIT_BYTES` to
+`262144`) and carries at most five QR PNGs in one message. The call is loopback by default,
+but if a reverse proxy is placed in front of that endpoint, its `client_max_body_size` must be
+**at least `1m`**. nginx's built-in default is exactly `1m`, which leaves no room for headers
+and encoding once the payload approaches the cap; use the `8m` from §4.3. A smaller value
+rejects a legal media dispatch with `413` before the gateway sees it, and the notification is
+then retried or failed with the media, not delivered as text alone.
 
 Pair the account from Dashboard → Settings → WhatsApp dan email. On the phone, open WhatsApp →
 Perangkat tertaut and scan the QR shown in the dashboard. QR data is short-lived and returned

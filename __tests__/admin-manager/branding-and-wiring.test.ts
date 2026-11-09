@@ -268,6 +268,7 @@ function caps(over: Partial<DashboardCapabilities> = {}): DashboardCapabilities 
         canManageMaintenance: false,
         canManageBranding: false,
         canManageUsers: false,
+        canReadReadiness: false,
         ...over,
     };
 }

@@ -42,6 +42,7 @@ export {
     ALL_PERMISSIONS,
     ORGANIZER_SPANNING_PLATFORM_ROLES,
     PERMISSIONS,
+    PIC_ASSIGNMENT_PERMISSIONS,
     PERMISSION_SCOPE,
     decideOrganizerPermission,
     decideOwnResourcePermission,

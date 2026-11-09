@@ -17,6 +17,7 @@ import type {
     GatewayOperations,
     GatewayReconcileResult,
     GatewaySnapshot,
+    DispatchMedia,
     TextDispatchRequest,
 } from "./protocol";
 import { ReconnectPolicy } from "./reconnect";
@@ -319,8 +320,8 @@ export class WhatsAppGateway implements GatewayOperations {
             };
         }
 
-        return this.dispatchService.dispatch(input, (jid, text) =>
-            this.sendText(jid, text)
+        return this.dispatchService.dispatch(input, (jid, text, media) =>
+            this.sendContent(jid, text, media)
         );
     }
 
@@ -335,9 +336,19 @@ export class WhatsAppGateway implements GatewayOperations {
         return this.dispatchService.reconcile(deliveryId, input);
     }
 
-    private async sendText(
+    /**
+     * Send one dispatch's text plus its validated attachments.
+     *
+     * The socket is one-at-a-time, so attachments are sent sequentially in the order the
+     * worker produced them (one QR per ticket, then the caption text is on each image). The
+     * ledger records the LAST accepted message id; the dispatch remains idempotent by
+     * `deliveryId`, and a timeout after a partial send is recorded AMBIGUOUS rather than
+     * retried — the same conservative rule the text-only path already used.
+     */
+    private async sendContent(
         jid: string,
-        text: string
+        text: string,
+        media?: readonly DispatchMedia[]
     ): Promise<{ messageId: string | null }> {
         if (!this.snapshot().ready || !this.socket) {
             throw new DefiniteSendError("SOCKET_NOT_CONNECTED");
@@ -352,9 +363,39 @@ export class WhatsAppGateway implements GatewayOperations {
 
         this.lastSentAt = this.now().getTime();
 
-        const result = await this.socket.sendMessage(jid, { text });
+        const items = media ?? [];
+        let messageId: string | null = null;
 
-        return { messageId: result.messageId };
+        if (items.length === 0) {
+            const result = await this.socket.sendMessage(jid, { text });
+
+            return { messageId: result.messageId };
+        }
+
+        for (const item of items) {
+            if (item.kind === "image") {
+                // Decoded from the validated PNG data URL: Baileys' media loader accepts bytes
+                // reliably, whereas a data URL is loader-dependent.
+                const base64 = item.dataUrl.slice(item.dataUrl.indexOf(",") + 1);
+                const result = await this.socket.sendMessage(jid, {
+                    image: Buffer.from(base64, "base64"),
+                    caption: text,
+                });
+
+                messageId = result.messageId ?? messageId;
+            } else {
+                const result = await this.socket.sendMessage(jid, {
+                    document: { url: item.url },
+                    mimetype: "application/pdf",
+                    fileName: item.fileName,
+                    caption: item.caption ?? text,
+                });
+
+                messageId = result.messageId ?? messageId;
+            }
+        }
+
+        return { messageId };
     }
 
     private async connect(allowPairing = false): Promise<void> {

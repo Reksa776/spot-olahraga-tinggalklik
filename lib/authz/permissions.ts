@@ -206,6 +206,18 @@ export const PERMISSIONS = {
 
     // Check-in
     CHECKIN_SCAN: "checkin.scan",
+    /**
+     * PIC SCANNER — the capability behind `/pic/scanner` and
+     * `POST /api/pic/events/[id]/check-in`.
+     *
+     * It is a SEPARATE string from `checkin.scan` on purpose. `checkin.scan` is an ORGANIZER
+     * capability resolved from an ACTIVE `OrganizerMember` row. A PIC has no membership: their
+     * authority is the event ASSIGNMENT (`PICEventAssignment`), a different axis that must never
+     * widen to the tenant. Naming the PIC's capability distinctly is what lets
+     * `PIC_ASSIGNMENT_PERMISSIONS` below be the only source that grants it, and keeps the two
+     * authorization paths independently testable.
+     */
+    SCANNER_USE: "scanner.use",
     CHECKIN_OVERRIDE: "checkin.override",
     CHECKIN_LOG_READ: "checkin.log.read",
 
@@ -332,6 +344,10 @@ const ORGANIZER_SCOPE: readonly Permission[] = [
     P.EVENT_BANNER_UPLOAD,
     P.VENUE_MANAGE,
     P.CHECKIN_SCAN,
+    // The membership-side counterpart of the PIC's assignment capability. A tenant
+    // `CHECKIN_STAFF`/`PIC` membership may scan; a platform PIC gains nothing from this map
+    // because a PIC has no `OrganizerMember` row.
+    P.SCANNER_USE,
     P.CHECKIN_OVERRIDE,
     P.CHECKIN_LOG_READ,
     P.TICKET_TYPE_WRITE,
@@ -593,14 +609,31 @@ const MEMBERSHIP_ROLE_PERMISSIONS: Partial<
         P.AUDIT_LOG_READ,
     ]),
     // §5.3 PIC_VIEWER: may see *which* PICs are attributed, without fee access.
-    PIC: toSet([P.PIC_ATTRIBUTION_READ_ALL]),
+    // The Phase PIC-SCANNER addition: a membership PIC may use the event scanner. The actual
+    // per-event limit is still the `PICEventAssignment` / `StaffEventAssignment` row, so this
+    // grant does not widen the membership to the tenant's other events.
+    PIC: toSet([P.PIC_ATTRIBUTION_READ_ALL, P.SCANNER_USE]),
     // Least privilege at the gate. No orders, revenue or fees.
     CHECKIN_STAFF: toSet([
         P.CHECKIN_SCAN,
+        P.SCANNER_USE,
         P.CHECKIN_LOG_READ,
     ]),
     // `ADMIN` deliberately unmapped — see D-05 note at the top of this file.
 };
+
+/**
+ * The capabilities a PIC may exercise through an EVENT ASSIGNMENT.
+ *
+ * This set is the PIC scanner's whole authority vocabulary. `decidePicEventPermission` consults
+ * it when a caller names a permission, so `/pic/scanner` cannot be widened by adding an
+ * unrelated string to a role map: only members of this set are reachable through the
+ * assignment decider. It is deliberately not an ORGANIZER capability map — an assignment is not
+ * a membership, and this set is consulted only after the assignment has been verified.
+ */
+export const PIC_ASSIGNMENT_PERMISSIONS: ReadonlySet<string> = toSet([
+    P.SCANNER_USE,
+]);
 
 /** A platform role's OWN-scoped capability. */
 const PLATFORM_ROLE_OWN_PERMISSIONS: Record<

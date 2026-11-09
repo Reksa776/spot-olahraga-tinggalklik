@@ -38,6 +38,15 @@ export type RenderedNotification = {
     text: string;
 };
 
+/**
+ * Channel context for a renderer. Optional and ignored by templates whose wording is shared.
+ *
+ * `purchase-proof.v1` uses it for ONE sentence: before issuance the WhatsApp copy must say
+ * the e-ticket will follow, while the existing email wording stays byte-identical (the email
+ * feature is out of scope and its tests pin that text).
+ */
+export type RenderOptions = { channel?: "EMAIL" | "WHATSAPP" };
+
 export class TemplateNotFoundError extends Error {
     readonly code = "TEMPLATE_NOT_FOUND";
 
@@ -81,7 +90,13 @@ function renderDryRun(payload: Record<string, unknown>): RenderedNotification {
     };
 }
 
-const TEMPLATES: Record<string, (payload: Record<string, unknown>) => RenderedNotification> = {
+const TEMPLATES: Record<
+    string,
+    (
+        payload: Record<string, unknown>,
+        options?: RenderOptions
+    ) => RenderedNotification
+> = {
     [PHASE_1_DRY_RUN_TEMPLATE_KEY]: renderDryRun,
     [PURCHASE_PROOF_TEMPLATE_KEY]: renderPurchaseProof,
     [TICKET_ISSUED_TEMPLATE_KEY]: renderTicketIssued,
@@ -101,7 +116,8 @@ export function hasTemplate(templateKey: string): boolean {
  */
 export function renderNotification(
     templateKey: string,
-    payloadJson: string | null
+    payloadJson: string | null,
+    options?: RenderOptions
 ): RenderedNotification {
     const renderer = TEMPLATES[templateKey];
 
@@ -131,5 +147,5 @@ export function renderNotification(
         payload = parsed as Record<string, unknown>;
     }
 
-    return renderer(payload);
+    return renderer(payload, options);
 }

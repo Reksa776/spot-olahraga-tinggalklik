@@ -61,6 +61,8 @@ const SELF_SERVICE_HREFS = [
     "/dashboard/pic#events",
     "/dashboard/pic#referrals",
     "/dashboard/pic#earnings",
+    // The PIC-only scanner lives outside /dashboard by design (its page is /pic/scanner).
+    "/pic/scanner",
 ];
 
 /** `id="xyz"` anchors the self-service page declares. */
@@ -123,7 +125,11 @@ describe("PIC self-service navigation contract (Phase 39)", () => {
 
     test("a pure-PIC row can never route to the generic /dashboard destination", () => {
         const offenders = SELF_SERVICE_HREFS.filter(
-            (href) => !href.startsWith("/dashboard/pic") || href === "/dashboard"
+            (href) =>
+                href === "/dashboard" ||
+                // The PIC scanner is intentionally outside /dashboard; it is not the
+                // generic operator landing row either.
+                (!href.startsWith("/dashboard/pic") && href !== "/pic/scanner")
         );
         expect(offenders).toEqual([]);
     });

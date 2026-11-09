@@ -717,12 +717,15 @@ async function PicSelfServiceSection({
                                     {assignment.isActive ? (
                                         <div className="mt-1">
                                             <TextLink
-                                                href={`/dashboard/pic/scan/${assignment.eventId}`}
+                                                href={`/pic/scanner/${assignment.eventId}`}
                                             >
                                                 Pindai tiket
                                             </TextLink>
                                             <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`}>
                                                 Kirim dokumen peserta
+                                            </TextLink>
+                                            <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`}>
+                                                Blast peserta
                                             </TextLink>
                                         </div>
                                     ) : null}

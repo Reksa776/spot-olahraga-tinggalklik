@@ -17,9 +17,17 @@ export function createBaileysWhatsAppTransport(env: Record<string, string | unde
       const response = await fetch(`${base}/api/internal/whatsapp/dispatch`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ deliveryId: context.deliveryId, notificationId: context.notificationId, to: message.to, text: message.text }),
+        body: JSON.stringify({
+          deliveryId: context.deliveryId,
+          notificationId: context.notificationId,
+          to: message.to,
+          text: message.text,
+          ...(message.media && message.media.length > 0 ? { media: message.media } : {}),
+        }),
         cache: "no-store",
-        signal: AbortSignal.timeout(20_000),
+        // Larger than a text-only send: a 640px QR PNG data URL and a multi-image batch take
+        // longer to persist and transmit than a plain message.
+        signal: AbortSignal.timeout(45_000),
       });
       const body = await response.json().catch(() => ({})) as { status?: string; messageId?: string | null; errorCode?: string };
       if (body.status === "SENT") return { simulated: false, providerMessageId: body.messageId ?? undefined };

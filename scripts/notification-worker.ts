@@ -22,16 +22,38 @@
 import "dotenv/config";
 
 import { prisma } from "@/lib/prisma";
-import { resolveNotificationConfig } from "@/lib/notifications/config";
+import { describeNotificationConfig } from "@/lib/notifications/config";
+import { resolveNotificationConfigWithFallback } from "@/lib/notifications/config-fallback";
 import { structuredLog } from "@/lib/notifications/logger";
 import { createNotificationWorker } from "@/lib/notifications/worker";
 
 async function main(): Promise<void> {
     const once = process.argv.includes("--once");
 
-    const worker = createNotificationWorker({
-        config: resolveNotificationConfig(),
-    });
+    /*
+     * The kill switch stays fail-closed, but a deployment where the WhatsApp QR has been
+     * scanned and the gateway is configured is enabled automatically. The fallback logs ONE
+     * line naming its reason and the resolved (secret-free) configuration, so an operator can
+     * tell "enabled by fallback" apart from "NOTIFICATIONS_ENABLED=true" in the journal.
+     */
+    const { config, fallback, notes } =
+        await resolveNotificationConfigWithFallback();
+
+    if (fallback) {
+        structuredLog("warn", "notification.worker.enabled_by_fallback", {
+            ...describeNotificationConfig(config),
+            fallback,
+            notes,
+        });
+    } else if (notes.length > 0) {
+        structuredLog("info", "notification.worker.disabled", {
+            notificationsEnabled: config.enabled,
+            whatsappTransport: config.whatsappTransport,
+            notes,
+        });
+    }
+
+    const worker = createNotificationWorker({ config });
 
     let shuttingDown = false;
 

@@ -1,6 +1,7 @@
 import type { PICStatus } from "@prisma/client";
 
 import { AuthzErrorCode } from "./errors";
+import { PIC_ASSIGNMENT_PERMISSIONS } from "./permissions";
 
 /**
  * ==========================================
@@ -83,6 +84,41 @@ export type PicScanAuthorizationInput = {
     /** The assignment row for that PIC profile and that event, if any. */
     readonly assignment?: PicAssignmentSnapshot | null;
 };
+
+/**
+ * The result of asking whether the PIC assignment path grants a capability.
+ *
+ * Deliberately a SEPARATE decision from `decidePicEventPermission`: the scan-authorization
+ * input must keep its exact four-key shape (a security invariant enforced by
+ * `__tests__/authz/pic-assignment.test.ts`), so the capability question is answered here and
+ * composed by the caller after the event decision has allowed.
+ */
+export type PicAssignmentPermissionDecision =
+    | { readonly allowed: true }
+    | {
+          readonly allowed: false;
+          readonly code: AuthzErrorCode;
+          readonly reason: string;
+      };
+
+/**
+ * Does an event assignment grant this capability?
+ *
+ * Only `PIC_ASSIGNMENT_PERMISSIONS` may answer yes. An organizer permission (`checkin.scan`),
+ * an unknown string or a `PermissionGrant` cannot: this function has no access to any of them,
+ * which is what makes the PIC scanner incapable of widening into tenant authority.
+ */
+export function decidePicAssignmentPermission(
+    permission: string
+): PicAssignmentPermissionDecision {
+    return PIC_ASSIGNMENT_PERMISSIONS.has(permission)
+        ? { allowed: true }
+        : {
+              allowed: false,
+              code: AuthzErrorCode.FORBIDDEN,
+              reason: `PIC assignment does not grant "${permission}"`,
+          };
+}
 
 export type PicScanAuthorizationDecision =
     | {

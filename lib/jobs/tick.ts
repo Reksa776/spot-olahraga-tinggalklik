@@ -1,5 +1,6 @@
 import { advanceEventLifecycleBatch } from "@/lib/events/lifecycle";
 import { runH36ReminderSweep } from "@/lib/notifications/h36-reminder";
+import { structuredLog } from "@/lib/notifications/logger";
 import { expireDueReservations } from "@/lib/ticketing/reservations";
 
 import {
@@ -171,6 +172,62 @@ export async function runJobsTick(
         () => runH36ReminderSweep({ now, maxEvents: 25 })
     );
 
+    /*
+     * REMINDER ENQUEUE — THE LINE AN OPERATOR ACTUALLY NEEDS.
+     *
+     * The sweep's return value used to exist only in the HTTP response, which nothing reads.
+     * These logs make the three failure shapes distinguishable without a database query:
+     *
+     *   ran=false                 → the previous tick still held the lease (or cron stopped)
+     *   ok=false                  → the sweep threw; the error is on the lease row + here
+     *   enqueued=0, scanned>0     → every occurrence already exists / was skipped (not a bug)
+     *   failed>0                  → per-ticket enqueue errors, with no recipient in the log
+     */
+    structuredLog("info", "jobs.tick.h36_reminder", {
+        ran: reminder.ran,
+        ok: reminder.ok,
+        reason: !reminder.ran
+            ? "LEASE_HELD"
+            : reminder.ok
+              ? "RAN"
+              : "JOB_FAILED",
+        scannedEvents: reminder.data?.scannedEvents ?? 0,
+        scannedTickets: reminder.data?.scannedTickets ?? 0,
+        enqueued: reminder.data?.enqueued ?? 0,
+        existing: reminder.data?.existing ?? 0,
+        failed: reminder.data?.failed ?? 0,
+        skippedNoContact: reminder.data?.skippedNoContact ?? 0,
+        skippedInvalidContact: reminder.data?.skippedInvalidContact ?? 0,
+        skippedDuplicateRecipient:
+            reminder.data?.skippedDuplicateRecipient ?? 0,
+        skippedIneligible: reminder.data?.skippedIneligible ?? 0,
+        superseded: reminder.data?.superseded ?? 0,
+        ...(reminder.error ? { error: reminder.error } : {}),
+    });
+
+    if (reminder.ran && reminder.ok && (reminder.data?.failed ?? 0) > 0) {
+        structuredLog("error", "jobs.tick.h36_reminder_failed", {
+            failed: reminder.data?.failed ?? 0,
+            enqueued: reminder.data?.enqueued ?? 0,
+            reason: "ENQUEUE_ERROR",
+        });
+    }
+
+    if (
+        reminder.ran &&
+        reminder.ok &&
+        (reminder.data?.enqueued ?? 0) === 0 &&
+        (reminder.data?.scannedTickets ?? 0) > 0
+    ) {
+        structuredLog("info", "jobs.tick.h36_reminder_no_new_rows", {
+            reason: "ALL_OCCURRENCES_EXIST_OR_INELIGIBLE",
+            existing: reminder.data?.existing ?? 0,
+            skippedNoContact: reminder.data?.skippedNoContact ?? 0,
+            skippedInvalidContact: reminder.data?.skippedInvalidContact ?? 0,
+            skippedIneligible: reminder.data?.skippedIneligible ?? 0,
+        });
+    }
+
     const eventLifecycle: EventLifecycleJobOutcome = {
         job: JOB_NAMES.EVENT_LIFECYCLE,
         ran: lifecycle.ran,
@@ -211,10 +268,27 @@ export async function runJobsTick(
         ...(reminder.error ? { error: reminder.error } : {}),
     };
 
+    const durationMs = Date.now() - startedAt;
+
+    structuredLog("info", "jobs.tick.complete", {
+        ok: eventLifecycle.ok && reservationExpiry.ok && h36Reminder.ok,
+        ran: {
+            eventLifecycle: eventLifecycle.ran,
+            reservationExpiry: reservationExpiry.ran,
+            h36Reminder: h36Reminder.ran,
+        },
+        failed: {
+            eventLifecycle: eventLifecycle.ok ? 0 : 1,
+            reservationExpiry: reservationExpiry.ok ? 0 : 1,
+            h36Reminder: h36Reminder.ok ? 0 : 1,
+        },
+        durationMs,
+    });
+
     return {
         ok: eventLifecycle.ok && reservationExpiry.ok && h36Reminder.ok,
         now: now.toISOString(),
         jobs: { eventLifecycle, reservationExpiry, h36Reminder },
-        durationMs: Date.now() - startedAt,
+        durationMs,
     };
 }

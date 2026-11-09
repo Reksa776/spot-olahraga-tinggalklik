@@ -10,7 +10,10 @@ import {
     requireAuth,
     type AuthzScope,
 } from "@/lib/authz";
-import { decidePicEventPermission } from "@/lib/authz/pic-assignment";
+import {
+    decidePicAssignmentPermission,
+    decidePicEventPermission,
+} from "@/lib/authz/pic-assignment";
 import { requireEventAccess } from "@/lib/events/access";
 import { isEventCheckInOpen } from "@/lib/events/sales-state";
 import { prisma } from "@/lib/prisma";
@@ -336,6 +339,18 @@ async function requirePicCheckInAccess(
 
     if (!decision.allowed) {
         throw new AuthzError(decision.code, decision.reason);
+    }
+
+    /*
+     * The capability named explicitly, in its own decision. `scanner.use` is the ONLY
+     * permission `PIC_ASSIGNMENT_PERMISSIONS` grants, so this cannot be satisfied by an
+     * organizer role map or a `PermissionGrant`, and the scan-authorization input keeps its
+     * documented four-key shape.
+     */
+    const capability = decidePicAssignmentPermission(PERMISSIONS.SCANNER_USE);
+
+    if (!capability.allowed) {
+        throw new AuthzError(capability.code, capability.reason);
     }
 
     return {

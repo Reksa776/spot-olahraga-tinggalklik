@@ -174,6 +174,10 @@ export const PROTECTED_PAGE_ROUTES = [
     // them here as well would send an anonymous visitor to /login instead of letting the
     // redirect land them on the login-gated dashboard.
     "/dashboard",
+    // PIC SCANNER — the PIC's canonical entry point. A PIC holds no dashboard-wide authority;
+    // this page prefix is session-gated here and re-checked by `requirePicScanAccess` on the
+    // server, so an anonymous visit never reaches the scanner shell.
+    "/pic",
     // The buyer's own order page and ticket wallet. The pages themselves also check the
     // session and the ownership predicate.
     "/ticketing",

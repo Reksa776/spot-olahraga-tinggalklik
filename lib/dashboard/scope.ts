@@ -189,6 +189,13 @@ export type DashboardCapabilities = {
      * the service re-decides every read and mutation.
      */
     canManageUsers: boolean;
+    /**
+     * `platform.config` — the operational readiness surface (`/dashboard/readiness`).
+     *
+     * ADMIN-only in the permission map. The page re-decides the same permission, so this
+     * flag only decides whether the "Readiness" row is offered; it grants no read by itself.
+     */
+    canReadReadiness: boolean;
 };
 
 /**
@@ -385,5 +392,11 @@ export function computeDashboardCapabilities(
         // PHASE 33 — user management joins the ADMIN-only family, resolved by the same
         // platform decider the endpoint calls.
         canManageUsers: hasPlatformPermission(scope, PERMISSIONS.USER_MANAGE),
+        // `/dashboard/readiness` reads deployment state, not tenant data, so it uses the
+        // platform-config permission rather than any organizer capability.
+        canReadReadiness: hasPlatformPermission(
+            scope,
+            PERMISSIONS.PLATFORM_CONFIG
+        ),
     };
 }
