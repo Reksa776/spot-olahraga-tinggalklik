@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { CalendarDays } from "lucide-react";
 
@@ -9,7 +9,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/dashboard/ui/a
 import { Button } from "@/components/dashboard/ui/button";
 import { Field, Input, Textarea } from "@/components/dashboard/ui/input";
 import {
-    defaultEventSchedule,
     eventTimingErrors,
     formatWibDateTime,
     toWibInputValue,
@@ -147,7 +146,8 @@ function DateTimeField({
                     id={id}
                     type="datetime-local"
                     step={60}
-                    required={required}
+                    aria-required={required || undefined}
+                    placeholder="Pilih tanggal dan jam"
                     min={min}
                     max={max}
                     value={value}
@@ -223,27 +223,6 @@ export default function EventForm({
     const [fieldErrors, setFieldErrors] = useState<string[]>([]);
     const [notice, setNotice] = useState<string | null>(null);
 
-    /**
-     * Create mode starts from a usable slot (a week ahead, 19:00–22:00 WIB) instead of
-     * four empty inputs. Seeded after mount so the server and the browser cannot disagree
-     * about "today" during hydration.
-     */
-    useEffect(() => {
-        if (mode !== "create" || initial?.startAt) return;
-
-        setValues((current) => {
-            if (current.startAt || current.endAt) return current;
-
-            const schedule = defaultEventSchedule();
-
-            return {
-                ...current,
-                startAt: schedule.startAt,
-                endAt: schedule.endAt,
-            };
-        });
-    }, [mode, initial?.startAt]);
-
     const originalStartAt = initial?.startAt
         ? toWibInputValue(initial.startAt)
         : undefined;
@@ -276,7 +255,10 @@ export default function EventForm({
         // The same rules the fields already show under each input. The server re-validates
         // (and against the stored values), so this is convenience, never the control.
         if (Object.keys(timingErrors).length > 0) {
-            setError("Periksa kembali tanggal dan jam event.");
+            setError(
+                Object.values(timingErrors)[0] ??
+                    "Periksa kembali tanggal dan jam event."
+            );
             return;
         }
 
@@ -291,7 +273,9 @@ export default function EventForm({
             description: values.description || null,
             rules: values.rules || null,
             bannerUrl: values.bannerUrl.trim() || null,
-            startAt: wibInputToIso(values.startAt),
+            // `""` keeps a missing start a field-level validation error with the exact
+            // operator-facing message, instead of an omitted key and a generic Zod error.
+            startAt: wibInputToIso(values.startAt) ?? "",
             endAt: wibInputToIso(values.endAt) ?? null,
             // `null` clears the column, `undefined` would leave it untouched; the form
             // always sends an explicit value so clearing works (see event validation).

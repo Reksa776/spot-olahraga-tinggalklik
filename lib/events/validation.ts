@@ -37,7 +37,7 @@ import { parseEventDateTime } from "./datetime";
 const isoDateTime = z
     .string()
     .trim()
-    .min(1, "Tanggal wajib diisi.")
+    .min(1, "Tanggal mulai wajib diisi.")
     .transform((value, ctx) => {
         const parsed = parseEventDateTime(value);
 

@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import {
-    defaultEventSchedule,
     eventTimingErrors,
     formatWibDateTime,
     parseEventDateTime,
@@ -59,13 +58,11 @@ describe("WIB conversions", () => {
         expect(parseEventDateTime("")).toBeNull();
     });
 
-    test("the create default is a week ahead at 19:00–22:00 WIB", () => {
-        expect(
-            defaultEventSchedule(new Date("2026-11-01T03:00:00.000Z"))
-        ).toEqual({
-            startAt: "2026-11-08T19:00",
-            endAt: "2026-11-08T22:00",
-        });
+    test("create mode has no datetime pre-fill", () => {
+        // EventForm seeds its state from `initial`, which is absent on create.
+        expect(toWibInputValue(undefined)).toBe("");
+        expect(toWibInputValue(null)).toBe("");
+        expect(toWibInputValue("")).toBe("");
     });
 });
 
@@ -160,6 +157,21 @@ describe("createEventSchema — schedule rules", () => {
         );
     });
 
+    test("a missing start is refused with an operator-facing message", () => {
+        const result = createEventSchema.safeParse({ ...base, startAt: "" });
+
+        expect(issueMessage(result, "startAt")).toBe(
+            "Tanggal mulai wajib diisi."
+        );
+    });
+
+    test("a draft may be created with only startAt filled", () => {
+        const parsed = createEventSchema.parse({ ...base, endAt: "" });
+
+        expect(parsed.endAt).toBeNull();
+        expect(parsed.salesStartAt).toBeUndefined();
+    });
+
     test("a new event may not start in the past", () => {
         const result = createEventSchema.safeParse({
             ...base,
@@ -197,6 +209,15 @@ describe("client-side schedule errors", () => {
                 { mode: "create", now }
             ).endAt
         ).toBe("Tanggal selesai harus setelah tanggal mulai.");
+    });
+
+    test("an empty start is required before submit", () => {
+        expect(
+            eventTimingErrors(
+                { ...base, startAt: "" },
+                { mode: "create", now }
+            ).startAt
+        ).toBe("Tanggal mulai wajib diisi.");
     });
 
     test("a past start is refused on create", () => {
@@ -273,5 +294,8 @@ describe("event form wiring", () => {
         expect(source).toContain("min={");
         expect(source).toContain("error={timingErrors.");
         expect(source).not.toContain("getTimezoneOffset");
+        // Edit mode still fills the stored values; create mode has no default seed.
+        expect(source).toContain("toWibInputValue(initial?.startAt)");
+        expect(source).not.toContain("defaultEventSchedule");
     });
 });

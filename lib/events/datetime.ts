@@ -21,7 +21,6 @@ export const WIB_TIME_ZONE = "Asia/Jakarta";
 export const WIB_OFFSET_MINUTES = 7 * 60;
 
 const WIB_OFFSET_MS = WIB_OFFSET_MINUTES * 60_000;
-const HOUR_MS = 60 * 60_000;
 
 const DAY_NAMES = [
     "Minggu",
@@ -169,27 +168,6 @@ export function wibDateTimeMin(now: Date = new Date()): string {
     return toWibInputValue(now);
 }
 
-/**
- * A sensible starting slot for a new event: the same weekday next week, 19:00–22:00 WIB.
- * Expressed in `datetime-local` form so it can seed the inputs directly.
- */
-export function defaultEventSchedule(now: Date = new Date()): {
-    startAt: string;
-    endAt: string;
-} {
-    const parts = wibParts(now);
-    // Date.UTC normalises day overflow, so +7 days works across a month boundary.
-    const start = new Date(
-        Date.UTC(parts.year, parts.month - 1, parts.day + 7, 19, 0) -
-            WIB_OFFSET_MS
-    );
-
-    return {
-        startAt: toWibInputValue(start),
-        endAt: toWibInputValue(new Date(start.getTime() + 3 * HOUR_MS)),
-    };
-}
-
 export type EventTimingValues = {
     startAt: string;
     endAt: string;
@@ -225,6 +203,11 @@ export function eventTimingErrors(
     options: EventTimingOptions
 ): EventTimingErrors {
     const errors: EventTimingErrors = {};
+
+    // A new event always needs a start; edit mode keeps the stored one filled in.
+    if (!values.startAt) {
+        errors.startAt = "Tanggal mulai wajib diisi.";
+    }
 
     const start = values.startAt ? parseEventDateTime(values.startAt) : null;
     const end = values.endAt ? parseEventDateTime(values.endAt) : null;
