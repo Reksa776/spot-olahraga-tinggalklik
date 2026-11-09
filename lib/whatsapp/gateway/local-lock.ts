@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 /**
@@ -13,6 +14,10 @@ export type LocalLockRecord = {
     pid: number;
     ownerId: string;
     acquiredAt: string;
+    /** Added for cross-host diagnostics; old lock files fall back to the current host. */
+    host?: string;
+    /** Last ownership evidence. The file is written once, so this normally equals acquiredAt. */
+    heartbeatAt?: string;
 };
 
 /**
@@ -43,6 +48,13 @@ export async function readLocalProcessLock(
                 pid: parsed.pid,
                 ownerId: parsed.ownerId,
                 acquiredAt: parsed.acquiredAt,
+                ...(typeof parsed.host === "string" && parsed.host.trim()
+                    ? { host: parsed.host.trim() }
+                    : {}),
+                ...(typeof parsed.heartbeatAt === "string" &&
+                parsed.heartbeatAt.trim()
+                    ? { heartbeatAt: parsed.heartbeatAt.trim() }
+                    : {}),
             },
         };
     } catch (error) {
@@ -51,6 +63,41 @@ export async function readLocalProcessLock(
         }
 
         return { exists: true, record: null };
+    }
+}
+
+/**
+ * Remove a local lock only when the file still names the holder the caller inspected.
+ * This closes the read-then-delete race: a replacement owner's file is never removed.
+ * ENOENT is treated as success because the caller's goal (lock is gone) is already true.
+ */
+export async function removeLocalProcessLockIfOwned(
+    filePath: string,
+    expected: { ownerId?: string | null; pid?: number | null }
+): Promise<boolean> {
+    try {
+        const raw = await fs.readFile(filePath, "utf8");
+        const parsed = JSON.parse(raw) as Partial<LocalLockRecord>;
+
+        if (
+            expected.ownerId &&
+            parsed.ownerId !== expected.ownerId
+        ) {
+            return false;
+        }
+
+        if (expected.pid != null && parsed.pid !== expected.pid) {
+            return false;
+        }
+
+        await fs.rm(filePath, { force: true });
+        return true;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return true;
+        }
+
+        return false;
     }
 }
 
@@ -87,10 +134,13 @@ export class LocalProcessLock {
             await fs.chmod(directory, 0o700);
         }
 
+        const acquiredAt = new Date().toISOString();
         const record: LocalLockRecord = {
             pid: process.pid,
             ownerId: this.ownerId,
-            acquiredAt: new Date().toISOString(),
+            acquiredAt,
+            host: os.hostname(),
+            heartbeatAt: acquiredAt,
         };
 
         let handle: fs.FileHandle;

@@ -6,8 +6,12 @@ import { setWhatsAppManualDisconnect } from "@/lib/whatsapp/manual-disconnect";
 import type { WhatsAppGateway } from "./gateway";
 import {
     inspectWhatsAppGatewayLock,
+    toWhatsAppGatewayLockStatus,
+    type WhatsAppGatewayLockStatus,
     type WhatsAppLockHolder,
+    type WhatsAppLockInspection,
 } from "./lock-inspection";
+import { forceReleaseStaleWhatsAppGatewayLock } from "./lock-release";
 import { clearWhatsAppSessionDirectory } from "./session-cleanup";
 
 export type DisconnectServiceOutcome =
@@ -16,27 +20,61 @@ export type DisconnectServiceOutcome =
           alreadyDisconnected: boolean;
           deletedSession: boolean;
           socketClosed: boolean;
+          forceReleased: boolean;
       }
-    | { kind: "LOCK_HELD"; lockHolder: WhatsAppLockHolder | null };
+    | {
+          kind: "LOCK_HELD";
+          lockHolder: WhatsAppLockHolder | null;
+          lock: WhatsAppGatewayLockStatus;
+      };
 
 type DisconnectDependencies = {
     setManualDisconnect?: (value: boolean) => Promise<void>;
     inspectLock?: typeof inspectWhatsAppGatewayLock;
+    forceReleaseStaleLock?: (
+        sessionDir: string
+    ) => Promise<boolean>;
     clearSession?: typeof clearWhatsAppSessionDirectory;
 };
+
+function lockStatusFrom(
+    inspection: WhatsAppLockInspection
+): WhatsAppGatewayLockStatus {
+    return toWhatsAppGatewayLockStatus(inspection);
+}
+
+function auditHolder(holder: WhatsAppLockHolder | null) {
+    return holder
+        ? {
+              pid: holder.pid,
+              host: holder.host,
+              startedAt: holder.startedAt,
+              processName: holder.processName,
+              alive: holder.alive,
+              ownerId: holder.ownerId,
+              source: holder.source,
+          }
+        : null;
+}
 
 /**
  * Disconnect the gateway and persist the latch.
  *
  * Order is deliberate: the latch is written FIRST so a crash after the socket closes
- * cannot auto-reconnect; then the gateway closes the socket and releases both guards;
- * only then is session material touched. Deletion is refused when any lock remains,
- * and the cleanup helper never removes the session directory itself.
+ * cannot auto-reconnect; then a stale lock may be released only when the caller
+ * explicitly asks and a fresh inspection still proves it stale; then the gateway
+ * closes the socket and releases both guards; only then is session material touched.
+ * Deletion is refused when any lock remains, and the cleanup helper never removes the
+ * session directory itself.
  */
 export async function disconnectWhatsAppGateway(options: {
     gateway: WhatsAppGateway | null;
     sessionDir: string | null;
-    input: { deleteSession: boolean; reason?: string };
+    input: {
+        deleteSession: boolean;
+        forceReleaseStale?: boolean;
+        reason?: string;
+    };
     actor: AuthzScope;
     request: Request;
     dependencies?: DisconnectDependencies;
@@ -45,10 +83,78 @@ export async function disconnectWhatsAppGateway(options: {
         options.dependencies?.setManualDisconnect ?? setWhatsAppManualDisconnect;
     const inspectLock =
         options.dependencies?.inspectLock ?? inspectWhatsAppGatewayLock;
+    const forceReleaseStaleLock =
+        options.dependencies?.forceReleaseStaleLock ??
+        forceReleaseStaleWhatsAppGatewayLock;
     const clearSession =
         options.dependencies?.clearSession ?? clearWhatsAppSessionDirectory;
 
     await setManualDisconnect(true);
+
+    let forceReleased = false;
+
+    if (options.input.forceReleaseStale && options.sessionDir) {
+        const initial = await inspectLock(options.sessionDir);
+
+        if (initial.held && !initial.stale) {
+            // A live lock is never stolen, regardless of the force flag.
+            return {
+                kind: "LOCK_HELD",
+                lockHolder: initial.holder,
+                lock: lockStatusFrom(initial),
+            };
+        }
+
+        if (initial.held && initial.stale) {
+            if (!initial.holder) {
+                // Corrupt/unknown holder: fail closed and require manual inspection.
+                return {
+                    kind: "LOCK_HELD",
+                    lockHolder: null,
+                    lock: lockStatusFrom(initial),
+                };
+            }
+
+            const released = await forceReleaseStaleLock(
+                options.sessionDir
+            );
+
+            if (!released) {
+                // The lock was renewed or replaced between inspection and release.
+                const latest = await inspectLock(options.sessionDir).catch(
+                    () => initial
+                );
+
+                return {
+                    kind: "LOCK_HELD",
+                    lockHolder: latest.holder,
+                    lock: lockStatusFrom(latest),
+                };
+            }
+
+            forceReleased = true;
+
+            await writeTicketingAudit({
+                action: "whatsapp.lock.force_release",
+                actor: options.actor,
+                entityType: "PlatformSetting",
+                entityRef: "whatsapp-gateway",
+                description:
+                    "Operator melepas lock WhatsApp stale secara paksa setelah diagnostik menunjukkan pemegangnya tidak hidup.",
+                beforeState: {
+                    holder: auditHolder(initial.holder),
+                    stale: initial.stale,
+                    heartbeatAgeMs: initial.heartbeatAgeMs,
+                },
+                afterState: {
+                    released: true,
+                    reason: options.input.reason ?? null,
+                },
+                reason: options.input.reason ?? null,
+                request: options.request,
+            });
+        }
+    }
 
     const result = options.gateway
         ? await options.gateway.disconnect()
@@ -59,7 +165,11 @@ export async function disconnectWhatsAppGateway(options: {
           };
 
     if (result.status === "LOCK_HELD") {
-        return { kind: "LOCK_HELD", lockHolder: result.lockHolder };
+        return {
+            kind: "LOCK_HELD",
+            lockHolder: result.lockHolder,
+            lock: result.lock,
+        };
     }
 
     /*
@@ -82,8 +192,12 @@ export async function disconnectWhatsAppGateway(options: {
     if (options.sessionDir) {
         const inspection = await inspectLock(options.sessionDir);
 
-        if (inspection.lockHolder) {
-            return { kind: "LOCK_HELD", lockHolder: inspection.lockHolder };
+        if (inspection.held) {
+            return {
+                kind: "LOCK_HELD",
+                lockHolder: inspection.holder,
+                lock: lockStatusFrom(inspection),
+            };
         }
     } else if (options.input.deleteSession) {
         throw AppError.conflict(
@@ -117,6 +231,7 @@ export async function disconnectWhatsAppGateway(options: {
             deletedSession,
             alreadyDisconnected: result.alreadyDisconnected,
             socketClosed: result.socketClosed,
+            forceReleased,
             reason: options.input.reason ?? null,
         },
         reason: options.input.reason ?? null,
@@ -128,5 +243,6 @@ export async function disconnectWhatsAppGateway(options: {
         alreadyDisconnected: result.alreadyDisconnected,
         deletedSession,
         socketClosed: result.socketClosed,
+        forceReleased,
     };
 }

@@ -17,8 +17,17 @@ type LockHolder = {
     pid: number | null;
     host: string | null;
     startedAt: string | null;
+    processName: string | null;
+    alive: boolean;
     ownerId: string | null;
     source: string;
+};
+
+type GatewayLock = {
+    held: boolean;
+    holder: LockHolder | null;
+    stale: boolean;
+    heartbeatAgeMs: number | null;
 };
 
 type State = {
@@ -31,16 +40,68 @@ type State = {
     lastErrorCode?: string | null;
     qr?: string | null;
     expiresAt?: string | null;
+    lock?: GatewayLock | null;
     lockHolder?: LockHolder | null;
     smtp?: { configured: boolean; secure: boolean; from: string | null };
 };
+
+type LockConflict = {
+    message: string;
+    holder: LockHolder | null;
+    stale: boolean;
+    heartbeatAgeMs: number | null;
+};
+
+function formatAge(ms: number | null): string {
+    if (ms === null || !Number.isFinite(ms)) {
+        return "tidak diketahui";
+    }
+
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+
+    if (seconds < 60) {
+        return `${seconds} detik`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+
+    if (minutes < 60) {
+        return `${minutes} menit`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+
+    return `${hours} jam ${minutes % 60} menit`;
+}
+
+function holderDescription(holder: LockHolder | null): string {
+    const who =
+        holder?.pid !== null && holder?.pid !== undefined
+            ? `proses pid ${holder.pid}`
+            : "proses lain";
+    const process = holder?.processName
+        ? ` (${holder.processName})`
+        : "";
+    const host = holder?.host ? ` di ${holder.host}` : "";
+    const started = holder?.startedAt
+        ? `, sejak ${new Date(holder.startedAt).toLocaleString("id-ID")}`
+        : "";
+
+    return `${who}${process}${host}${started}`;
+}
 
 export function WhatsAppSettingsPanel() {
     const [state, setState] = useState<State>({});
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
     const [confirmOpen, setConfirmOpen] = useState(false);
+    const [staleConfirmOpen, setStaleConfirmOpen] = useState(false);
     const [deleteSession, setDeleteSession] = useState(false);
+    const [lockConflict, setLockConflict] = useState<LockConflict | null>(
+        null
+    );
+    const [connectFailed, setConnectFailed] = useState(false);
+    const [pairingRequested, setPairingRequested] = useState(false);
 
     async function refresh() {
         try {
@@ -70,13 +131,14 @@ export function WhatsAppSettingsPanel() {
         return () => clearInterval(id);
     }, []);
 
-    async function pair() {
+    async function connect() {
         setBusy(true);
         setError("");
+        setConnectFailed(false);
 
         try {
             const response = await fetch(
-                "/api/admin/settings/whatsapp/pairing",
+                "/api/admin/settings/whatsapp/connect",
                 {
                     method: "POST",
                     headers: { "content-type": "application/json" },
@@ -86,13 +148,37 @@ export function WhatsAppSettingsPanel() {
             const body = await response.json();
 
             if (!response.ok || !body.success) {
+                const details = body.details ?? {};
+                const holder: LockHolder | null =
+                    details.lock?.holder ?? details.lockHolder ?? null;
+
+                if (
+                    response.status === 409 &&
+                    (holder !== null || details.lock)
+                ) {
+                    setLockConflict({
+                        message:
+                            body.message ||
+                            "Gateway masih memegang lock.",
+                        holder,
+                        stale: Boolean(details.lock?.stale),
+                        heartbeatAgeMs:
+                            details.lock?.heartbeatAgeMs ?? null,
+                    });
+                    setConnectFailed(true);
+                    return;
+                }
+
                 throw new Error(
                     body.message || "Pairing gagal dimulai."
                 );
             }
 
+            setConnectFailed(false);
+            setPairingRequested(true);
             await refresh();
         } catch (cause) {
+            setConnectFailed(true);
             setError(
                 cause instanceof Error
                     ? cause.message
@@ -103,9 +189,14 @@ export function WhatsAppSettingsPanel() {
         }
     }
 
-    async function disconnect() {
+    async function disconnect(
+        options: { forceReleaseStale?: boolean; deleteSession?: boolean } = {}
+    ) {
         setBusy(true);
         setError("");
+
+        const shouldDeleteSession =
+            options.deleteSession ?? deleteSession;
 
         try {
             const response = await fetch(
@@ -113,19 +204,49 @@ export function WhatsAppSettingsPanel() {
                 {
                     method: "POST",
                     headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ deleteSession }),
+                    body: JSON.stringify({
+                        deleteSession: shouldDeleteSession,
+                        ...(options.forceReleaseStale
+                            ? { forceReleaseStale: true }
+                            : {}),
+                    }),
                 }
             );
             const body = await response.json();
 
             if (!response.ok || !body.success) {
+                const details = body.details ?? {};
+                const holder: LockHolder | null =
+                    details.lock?.holder ?? details.lockHolder ?? null;
+
+                if (
+                    response.status === 409 &&
+                    (holder !== null || details.lock)
+                ) {
+                    setLockConflict({
+                        message:
+                            body.message ||
+                            "Gateway masih memegang lock.",
+                        holder,
+                        stale: Boolean(details.lock?.stale),
+                        heartbeatAgeMs:
+                            details.lock?.heartbeatAgeMs ?? null,
+                    });
+                    setConfirmOpen(false);
+                    setStaleConfirmOpen(false);
+                    return;
+                }
+
                 throw new Error(
                     body.message || "Gagal memutuskan koneksi WhatsApp."
                 );
             }
 
             setConfirmOpen(false);
+            setStaleConfirmOpen(false);
             setDeleteSession(false);
+            setConnectFailed(false);
+            setPairingRequested(false);
             setState((current) => ({
                 ...current,
                 state: "DISCONNECTED",
@@ -147,16 +268,43 @@ export function WhatsAppSettingsPanel() {
         }
     }
 
-    const disconnected = Boolean(state.manualDisconnect);
+    const disconnected =
+        state.manualDisconnect === true ||
+        state.state === "MANUAL_DISCONNECT";
     const reconnect =
         disconnected ||
         state.state === "DISCONNECTED" ||
         state.state === "LOGGED_OUT";
-    const pairDisabled =
+    const connectDisabled =
         busy ||
         state.state === "UNAVAILABLE" ||
         state.state === "STARTING";
-    const lock = state.lockHolder;
+    const connectLabel =
+        busy || state.state === "STARTING"
+            ? "Menyambungkan…"
+            : disconnected
+              ? "Hubungkan ulang"
+              : connectFailed ||
+                  pairingRequested ||
+                  state.state === "ERROR" ||
+                  state.state === "CONFLICT"
+                ? "Coba lagi"
+                : reconnect
+                  ? "Hubungkan ulang"
+                  : "Hubungkan WhatsApp";
+    const gatewayLock: GatewayLock | null =
+        state.lock ??
+        (state.lockHolder
+            ? {
+                  held: true,
+                  holder: state.lockHolder,
+                  stale: false,
+                  heartbeatAgeMs: null,
+              }
+            : null);
+    const lockHeld = Boolean(gatewayLock?.held);
+    const lockStale = Boolean(gatewayLock?.stale);
+    const lockHolder = gatewayLock?.holder ?? null;
 
     return (
         <div className="space-y-6">
@@ -184,18 +332,54 @@ export function WhatsAppSettingsPanel() {
                     ) : null}
                 </div>
 
-                {!state.connected ? (
+                <section className="space-y-2 rounded-md border border-border p-3">
+                    <h3 className="font-semibold">Gateway lock</h3>
+
+                    {!lockHeld ? (
+                        <p className="text-sm text-muted-foreground">
+                            Tidak ada lock.
+                        </p>
+                    ) : lockStale ? (
+                        <div className="space-y-2">
+                            <p className="inline-flex rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
+                                LOCK STALE
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                                Dipegang {holderDescription(lockHolder)}.
+                                Heartbeat {formatAge(
+                                    gatewayLock?.heartbeatAgeMs ?? null
+                                )}{" "}
+                                lalu; proses tidak terbukti hidup.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => setStaleConfirmOpen(true)}
+                                disabled={busy}
+                                className="rounded-md bg-destructive px-3 py-2 text-sm text-destructive-foreground disabled:opacity-50"
+                            >
+                                Lepas lock stale
+                            </button>
+                        </div>
+                    ) : (
+                        <p className="text-sm text-muted-foreground">
+                            Dipegang {holderDescription(lockHolder)}. Heartbeat{" "}
+                            {formatAge(gatewayLock?.heartbeatAgeMs ?? null)}{" "}
+                            lalu.
+                            {lockHolder && !lockHolder.alive
+                                ? " Status proses tidak dapat dipastikan; lock dianggap hidup."
+                                : ""}
+                        </p>
+                    )}
+                </section>
+
+                {!state.connected && !state.qr ? (
                     <button
                         type="button"
-                        disabled={pairDisabled}
-                        onClick={() => void pair()}
+                        disabled={connectDisabled}
+                        onClick={() => void connect()}
                         className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
                     >
-                        {busy || state.state === "STARTING"
-                            ? "Menyambungkan…"
-                            : reconnect
-                              ? "Hubungkan ulang"
-                              : "Hubungkan WhatsApp"}
+                        {connectLabel}
                     </button>
                 ) : null}
 
@@ -227,26 +411,12 @@ export function WhatsAppSettingsPanel() {
                     </p>
                 ) : null}
 
-                {lock ? (
-                    <p className="text-sm text-muted-foreground">
-                        Lock dipegang{" "}
-                        {lock.pid !== null ? `pid ${lock.pid}` : "proses lain"}
-                        {lock.host ? ` di ${lock.host}` : ""}
-                        {lock.startedAt
-                            ? ` sejak ${new Date(
-                                  lock.startedAt
-                              ).toLocaleString("id-ID")}`
-                            : ""}
-                        .
-                    </p>
-                ) : null}
-
                 {state.qr ? (
                     <div className="space-y-2">
                         <p>
-                            Pindai QR ini dari WhatsApp → Perangkat tertaut. QR
-                            hanya tampil sebentar dan jangan bagikan ke siapa
-                            pun.
+                            Scan QR dengan WhatsApp nomor yang mau dipakai.
+                            Buka WhatsApp → Perangkat tertaut. QR hanya tampil
+                            sebentar dan jangan bagikan ke siapa pun.
                         </p>
                         <div className="inline-block rounded bg-white p-3">
                             <QRCodeSVG value={state.qr} size={240} />
@@ -322,6 +492,125 @@ export function WhatsAppSettingsPanel() {
                             className="rounded-md bg-destructive px-4 py-2 text-destructive-foreground disabled:opacity-50"
                         >
                             {busy ? "Memutuskan…" : "Putuskan koneksi"}
+                        </button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={staleConfirmOpen}
+                onOpenChange={(open) => {
+                    if (!busy) setStaleConfirmOpen(open);
+                }}
+            >
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Lepas lock stale?</DialogTitle>
+                        <DialogDescription>
+                            Hanya lanjutkan jika Anda yakin proses pemegang lock
+                            sudah mati. Lock yang masih hidup tidak akan
+                            dilepas.
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <div className="space-y-1 text-sm">
+                        <p>Pemegang lock:</p>
+                        <p className="font-medium">
+                            {holderDescription(lockHolder)}
+                        </p>
+                        <p className="text-muted-foreground">
+                            Heartbeat terakhir:{" "}
+                            {formatAge(gatewayLock?.heartbeatAgeMs ?? null)}{" "}
+                            lalu.
+                        </p>
+                    </div>
+
+                    <DialogFooter>
+                        <button
+                            type="button"
+                            onClick={() => setStaleConfirmOpen(false)}
+                            disabled={busy}
+                            className="rounded-md border border-border px-4 py-2 disabled:opacity-50"
+                        >
+                            Batal
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() =>
+                                void disconnect({
+                                    forceReleaseStale: true,
+                                    deleteSession: false,
+                                })
+                            }
+                            disabled={busy}
+                            className="rounded-md bg-destructive px-4 py-2 text-destructive-foreground disabled:opacity-50"
+                        >
+                            {busy ? "Melepas…" : "Lepas lock stale"}
+                        </button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={lockConflict !== null}
+                onOpenChange={(open) => {
+                    if (!open) setLockConflict(null);
+                }}
+            >
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Gateway masih memegang lock</DialogTitle>
+                        <DialogDescription>
+                            {lockConflict?.message ??
+                                "Lock dipegang proses lain."}
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                        <dt className="text-muted-foreground">PID</dt>
+                        <dd>{lockConflict?.holder?.pid ?? "tidak diketahui"}</dd>
+                        <dt className="text-muted-foreground">Host</dt>
+                        <dd>
+                            {lockConflict?.holder?.host ?? "tidak diketahui"}
+                        </dd>
+                        <dt className="text-muted-foreground">Proses</dt>
+                        <dd>
+                            {lockConflict?.holder?.processName ??
+                                "tidak terbaca"}
+                        </dd>
+                        <dt className="text-muted-foreground">Heartbeat</dt>
+                        <dd>
+                            {formatAge(lockConflict?.heartbeatAgeMs ?? null)}{" "}
+                            lalu
+                        </dd>
+                        <dt className="text-muted-foreground">Stale</dt>
+                        <dd>{lockConflict?.stale ? "ya" : "tidak"}</dd>
+                    </dl>
+
+                    <p className="text-sm">
+                        Hentikan proses di host tersebut:
+                    </p>
+                    <code className="rounded bg-muted px-2 py-1 text-sm">
+                        pm2 stop{" "}
+                        {lockConflict?.holder?.processName ??
+                            "<nama-proses-gateway>"}
+                    </code>
+
+                    {lockConflict?.stale ? (
+                        <p className="text-sm text-amber-700">
+                            Lock ini terdeteksi stale. Tutup dialog ini lalu
+                            gunakan tombol &quot;Lepas lock stale&quot; di blok
+                            Gateway lock.
+                        </p>
+                    ) : null}
+
+                    <DialogFooter>
+                        <button
+                            type="button"
+                            onClick={() => setLockConflict(null)}
+                            className="rounded-md border border-border px-4 py-2"
+                        >
+                            Tutup
                         </button>
                     </DialogFooter>
                 </DialogContent>

@@ -13,6 +13,8 @@ import {
 import { LocalProcessLock } from "./local-lock";
 import {
     inspectWhatsAppGatewayLock,
+    toWhatsAppGatewayLockStatus,
+    type WhatsAppGatewayLockStatus,
     type WhatsAppLockHolder,
 } from "./lock-inspection";
 import type {
@@ -65,7 +67,11 @@ export type GatewayDisconnectResult =
           alreadyDisconnected: boolean;
           socketClosed: boolean;
       }
-    | { status: "LOCK_HELD"; lockHolder: WhatsAppLockHolder | null };
+    | {
+          status: "LOCK_HELD";
+          lockHolder: WhatsAppLockHolder | null;
+          lock: WhatsAppGatewayLockStatus;
+      };
 
 function defaultLogger(
     level: "info" | "warn" | "error",
@@ -319,21 +325,25 @@ export class WhatsAppGateway implements GatewayOperations {
         this.clearReconnectTimer();
 
         if (!this.ownershipHeld) {
-            let lockHolder: WhatsAppLockHolder | null = null;
+            let lock: WhatsAppGatewayLockStatus | null = null;
 
             try {
-                lockHolder = (
+                lock = toWhatsAppGatewayLockStatus(
                     await inspectWhatsAppGatewayLock(this.config.sessionDir)
-                ).lockHolder;
+                );
             } catch {
                 // We own nothing; a status-read failure must not block closing a
                 // socket that this process does not own. Deletion re-inspects and
                 // fails closed in the service.
-                lockHolder = null;
+                lock = null;
             }
 
-            if (lockHolder) {
-                return { status: "LOCK_HELD", lockHolder };
+            if (lock?.held) {
+                return {
+                    status: "LOCK_HELD",
+                    lockHolder: lock.holder,
+                    lock,
+                };
             }
 
             const socketClosed = await this.closeSocketWithTimeout();

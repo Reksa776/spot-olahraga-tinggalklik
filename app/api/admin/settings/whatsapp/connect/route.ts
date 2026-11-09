@@ -1,0 +1,66 @@
+import type { NextRequest } from "next/server";
+import { z } from "zod";
+
+import { AppError } from "@/lib/api/errors";
+import { handleApi, ok, validationError } from "@/lib/api/response";
+import { requirePlatformPermission } from "@/lib/authz";
+import { PERMISSIONS } from "@/lib/authz/permissions";
+import { requireSameOrigin } from "@/lib/csrf";
+import { connectWhatsAppGateway } from "@/lib/whatsapp/gateway/connect-service";
+import { getWhatsAppGatewayForWeb } from "@/lib/whatsapp/gateway/web-runtime";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const bodySchema = z
+    .object({
+        force: z.boolean().optional(),
+    })
+    .strict();
+
+/**
+ * Explicit operator connect. This is the only dashboard transaction that clears the
+ * persistent manual-disconnect latch (the pairing route shares the same service).
+ */
+export async function POST(request: NextRequest) {
+    return handleApi(async () => {
+        const csrf = requireSameOrigin(request);
+
+        if (csrf.error) {
+            return csrf.error;
+        }
+
+        const actor = await requirePlatformPermission(
+            PERMISSIONS.APPLICATION_SETTINGS
+        );
+
+        let raw: unknown = {};
+
+        try {
+            const text = await request.text();
+
+            if (text.trim().length > 0) {
+                raw = JSON.parse(text);
+            }
+        } catch {
+            throw AppError.validation("Body JSON tidak valid.");
+        }
+
+        const parsed = bodySchema.safeParse(raw);
+
+        if (!parsed.success) {
+            throw validationError(parsed.error.issues);
+        }
+
+        const gateway = await getWhatsAppGatewayForWeb();
+
+        return ok(
+            await connectWhatsAppGateway({
+                gateway,
+                actor,
+                request,
+                source: "connect",
+            })
+        );
+    });
+}

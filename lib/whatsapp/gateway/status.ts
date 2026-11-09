@@ -7,6 +7,8 @@ import { isWhatsAppManuallyDisconnected } from "@/lib/whatsapp/manual-disconnect
 import { resolveWhatsAppGatewayConfig } from "./config";
 import {
     inspectWhatsAppGatewayLock,
+    toWhatsAppGatewayLockStatus,
+    type WhatsAppGatewayLockStatus,
     type WhatsAppLockHolder,
 } from "./lock-inspection";
 import { getWhatsAppGatewayForWeb } from "./web-runtime";
@@ -22,12 +24,21 @@ export type WhatsAppGatewayStatus = {
     lastErrorCode: string | null;
     qr: string | null;
     expiresAt: string | null;
+    lock: WhatsAppGatewayLockStatus;
+    /** Kept additively for clients that read the flat holder from the first release. */
     lockHolder: WhatsAppLockHolder | null;
     smtp: {
         configured: boolean;
         secure: boolean;
         from: string | null;
     };
+};
+
+const FREE_LOCK: WhatsAppGatewayLockStatus = {
+    held: false,
+    holder: null,
+    stale: false,
+    heartbeatAgeMs: null,
 };
 
 async function sessionFileExists(sessionDir: string): Promise<boolean> {
@@ -56,16 +67,19 @@ export async function getWhatsAppGatewayStatus(): Promise<WhatsAppGatewayStatus>
             : null;
 
     let sessionExists = false;
-    let lockHolder: WhatsAppLockHolder | null = null;
+    let lock: WhatsAppGatewayLockStatus = FREE_LOCK;
 
     if (sessionDir) {
         sessionExists = await sessionFileExists(sessionDir);
 
         try {
-            lockHolder = (await inspectWhatsAppGatewayLock(sessionDir)).lockHolder;
+            lock = toWhatsAppGatewayLockStatus(
+                await inspectWhatsAppGatewayLock(sessionDir)
+            );
         } catch {
             // Status must still render when the lease table is momentarily unavailable.
-            lockHolder = null;
+            // Do not invent a stale lock from a failed read.
+            lock = FREE_LOCK;
         }
     }
 
@@ -76,7 +90,7 @@ export async function getWhatsAppGatewayStatus(): Promise<WhatsAppGatewayStatus>
 
     return {
         state: manualDisconnect
-            ? "DISCONNECTED"
+            ? "MANUAL_DISCONNECT"
             : (snapshot?.state ?? "UNAVAILABLE"),
         connected: Boolean(snapshot?.connected) && !manualDisconnect,
         ready: Boolean(snapshot?.ready) && !manualDisconnect,
@@ -87,7 +101,8 @@ export async function getWhatsAppGatewayStatus(): Promise<WhatsAppGatewayStatus>
         lastErrorCode: snapshot?.lastErrorCode ?? null,
         qr: pairing.qr,
         expiresAt: pairing.expiresAt,
-        lockHolder,
+        lock,
+        lockHolder: lock.holder,
         smtp: {
             configured: Boolean(readSmtpAdapterConfig()),
             secure:

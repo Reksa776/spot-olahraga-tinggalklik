@@ -16,12 +16,13 @@ export const dynamic = "force-dynamic";
 const bodySchema = z
     .object({
         deleteSession: z.boolean().optional().default(false),
+        forceReleaseStale: z.boolean().optional(),
         reason: z.string().trim().max(200).optional(),
     })
     .strict();
 
 const LOCK_HELD_MESSAGE =
-    "Gateway lain masih memegang koneksi. Hentikan proses worker/gateway lain dulu (pm2 stop tinggalklik-worker) lalu coba lagi.";
+    "Gateway lain masih memegang koneksi. Hentikan proses gateway lama di host yang ditampilkan, lalu coba lagi.";
 
 export async function POST(request: NextRequest) {
     return handleApi(async () => {
@@ -69,15 +70,29 @@ export async function POST(request: NextRequest) {
         });
 
         if (outcome.kind === "LOCK_HELD") {
+            const holder = outcome.lock.holder ?? outcome.lockHolder;
+            const liveLockMessage = `Lock masih dipegang proses hidup. Hentikan proses ${
+                holder?.pid ?? "yang tidak dikenal"
+            } di ${holder?.host ?? "host ini"} dulu.`;
+
             throw new AppError("CONFLICT", {
-                message: LOCK_HELD_MESSAGE,
-                details: { lockHolder: outcome.lockHolder },
+                message:
+                    parsed.data.forceReleaseStale &&
+                    outcome.lock.held &&
+                    !outcome.lock.stale
+                        ? liveLockMessage
+                        : LOCK_HELD_MESSAGE,
+                details: {
+                    lock: outcome.lock,
+                    lockHolder: holder,
+                },
             });
         }
 
         return ok({
             status: "DISCONNECTED",
             deletedSession: outcome.deletedSession,
+            forceReleased: outcome.forceReleased,
             ...(outcome.alreadyDisconnected
                 ? { alreadyDisconnected: true }
                 : {}),

@@ -287,7 +287,15 @@ export type TicketingAuditAction =
     // until an operator re-pairs. That is a platform-control event, recorded by
     // name so "who silenced WhatsApp, and when?" is answerable without parsing
     // metadata.
-    | "whatsapp.disconnect";
+    | "whatsapp.disconnect"
+    // Reconnecting is the explicit inverse of the latch. It is its own action so an
+    // incident review can answer "who re-enabled automatic sends, and when?" without
+    // inferring it from the absence of a disconnect.
+    | "whatsapp.connect"
+    // Force-release is a separate, destructive operator action. Keeping it distinct
+    // from the disconnect row means an incident review can answer "who removed a
+    // stale gateway lock?" without parsing afterState.
+    | "whatsapp.lock.force_release";
 
 /** Keys that must never reach the audit table, whatever a caller passes. */
 const FORBIDDEN_METADATA_KEYS = new Set([

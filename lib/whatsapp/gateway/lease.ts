@@ -98,3 +98,36 @@ export async function readWhatsAppGatewayLease(
         where: { name: WHATSAPP_GATEWAY_LEASE_NAME },
     });
 }
+
+/**
+ * Clear a lease that an operator has proven stale.
+ *
+ * The `updatedAt` predicate is an optimistic fence: a live owner renews the lease,
+ * which changes `updatedAt`, so a renewal racing this call makes the update affect
+ * zero rows. `lockedBy` prevents releasing a replacement owner's lease.
+ */
+export async function releaseStaleWhatsAppGatewayLease(options: {
+    lockedBy: string;
+    updatedAt: Date;
+    now?: Date;
+    db?: LeaseDb;
+}): Promise<boolean> {
+    const now = options.now ?? new Date();
+    const db = options.db ?? prisma;
+
+    const released = await db.jobLock.updateMany({
+        where: {
+            name: WHATSAPP_GATEWAY_LEASE_NAME,
+            lockedBy: options.lockedBy,
+            updatedAt: options.updatedAt,
+        },
+        data: {
+            lockedUntil: null,
+            lockedBy: null,
+            lastRunAt: now,
+            lastStatus: "OK",
+        },
+    });
+
+    return released.count === 1;
+}

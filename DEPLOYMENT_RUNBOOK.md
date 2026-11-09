@@ -627,6 +627,39 @@ Pair the account from Dashboard → Settings → WhatsApp dan email. On the phon
 Perangkat tertaut and scan the QR shown in the dashboard. QR data is short-lived and returned
 only to a signed-in platform admin. No QR or credential is written to logs.
 
+#### 7.2.1 WhatsApp: connect / disconnect
+
+**CONTRACT.** A disconnect is persistent. `POST /api/admin/settings/whatsapp/disconnect`
+sets `platformsetting.whatsappManualDisconnect = true`; the web runtime reads that latch on
+startup and refuses to acquire the gateway lease or open a Baileys socket while it is true.
+The notification worker also skips automatic WhatsApp sends under the same latch.
+
+- **Disconnect:** open `/dashboard/settings/whatsapp` and click **“Putuskan koneksi”**. The
+  latch prevents auto-connect until an operator explicitly reconnects.
+- **Reconnect:** open `/dashboard/settings/whatsapp` and click **“Hubungkan ulang”**, then scan
+  the QR. The UI calls `POST /api/admin/settings/whatsapp/connect`; that endpoint clears the
+  latch, writes the `whatsapp.connect` audit event, and starts the pairing flow. The existing
+  `/api/admin/settings/whatsapp/pairing` endpoint shares the same reset behaviour.
+- **Failure after a reconnect click:** the latch deliberately stays `false`, so the operator
+  can click **“Coba lagi”** without editing MySQL. A failed start never re-latches.
+
+**OWNER ACTION — emergency only.** Do not edit `platformsetting` by hand while the dashboard
+is usable. If the UI itself cannot be reached, the minimum recovery is:
+
+```sql
+UPDATE platformsetting SET whatsappManualDisconnect = 0 WHERE id = 1;
+```
+
+Then restart the web process so a runtime that started while latched is recreated. Use the
+process name from `ecosystem.config.cjs` (the current app is `tinggalklik`):
+
+```bash
+pm2 restart tinggalklik --update-env
+```
+
+This SQL bypass is not the normal recovery path: it writes no audit row and does not start
+pairing by itself.
+
 If migrating from the old separate gateway process, stop and remove `tinggalklik-wa` once so
 it releases the database lease and local session lock:
 

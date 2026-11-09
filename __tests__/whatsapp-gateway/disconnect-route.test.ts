@@ -93,18 +93,31 @@ describe("disconnect endpoint outcomes", () => {
             pid: 4321,
             host: "vps-prod",
             startedAt: "2026-11-09T03:00:00.000Z",
+            processName: "node gateway.js",
+            alive: true,
             ownerId: "wa-4321-deadbeef",
             source: "local",
         };
+        const lock = {
+            held: true,
+            holder: lockHolder,
+            stale: false,
+            heartbeatAgeMs: 1_500,
+        };
 
-        disconnectMock.mockResolvedValue({ kind: "LOCK_HELD", lockHolder });
+        disconnectMock.mockResolvedValue({
+            kind: "LOCK_HELD",
+            lockHolder,
+            lock,
+        });
 
         const response = await POST(request());
         const body = await response.json();
 
         expect(response.status).toBe(409);
         expect(body.success).toBe(false);
-        expect(body.message).toContain("pm2 stop tinggalklik-worker");
+        expect(body.message).toContain("Gateway lain masih memegang koneksi");
+        expect(body.message).not.toContain("tinggalklik-worker");
         expect(body.details.lockHolder).toMatchObject({
             pid: 4321,
             host: "vps-prod",
@@ -116,5 +129,90 @@ describe("disconnect endpoint outcomes", () => {
 
         expect(response.status).toBe(400);
         expect(disconnectMock).not.toHaveBeenCalled();
+    });
+
+    test("forceReleaseStale against a live lock returns 409 and the exact holder", async () => {
+        const lockHolder = {
+            pid: 4321,
+            host: "vps-prod",
+            startedAt: "2026-11-09T03:00:00.000Z",
+            processName: "node gateway.js",
+            alive: true,
+            ownerId: "wa-4321-live",
+            source: "local",
+        };
+        const lock = {
+            held: true,
+            holder: lockHolder,
+            stale: false,
+            heartbeatAgeMs: 500,
+        };
+
+        disconnectMock.mockResolvedValue({
+            kind: "LOCK_HELD",
+            lockHolder,
+            lock,
+        });
+
+        const response = await POST(
+            request({ forceReleaseStale: true })
+        );
+        const body = await response.json();
+
+        expect(response.status).toBe(409);
+        expect(body.message).toBe(
+            "Lock masih dipegang proses hidup. Hentikan proses 4321 di vps-prod dulu."
+        );
+        expect(body.details.lock).toMatchObject({
+            held: true,
+            stale: false,
+            heartbeatAgeMs: 500,
+            holder: {
+                pid: 4321,
+                host: "vps-prod",
+                processName: "node gateway.js",
+            },
+        });
+        expect(disconnectMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                input: {
+                    deleteSession: false,
+                    forceReleaseStale: true,
+                },
+            })
+        );
+    });
+
+    test("forceReleaseStale on a stale lock completes the disconnect", async () => {
+        disconnectMock.mockResolvedValue({
+            kind: "DISCONNECTED",
+            alreadyDisconnected: false,
+            deletedSession: false,
+            socketClosed: true,
+            forceReleased: true,
+        });
+
+        const response = await POST(
+            request({
+                forceReleaseStale: true,
+                reason: "proses gateway mati",
+            })
+        );
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body.data).toMatchObject({
+            status: "DISCONNECTED",
+            forceReleased: true,
+        });
+        expect(disconnectMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                input: {
+                    deleteSession: false,
+                    forceReleaseStale: true,
+                    reason: "proses gateway mati",
+                },
+            })
+        );
     });
 });

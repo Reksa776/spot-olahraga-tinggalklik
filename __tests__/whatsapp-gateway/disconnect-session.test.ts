@@ -8,6 +8,7 @@ jest.mock("@/lib/ticketing/audit-log", () => ({
 
 import type { AuthzScope } from "@/lib/authz/permissions";
 import type { WhatsAppGateway } from "@/lib/whatsapp/gateway/gateway";
+import { writeTicketingAudit } from "@/lib/ticketing/audit-log";
 import { disconnectWhatsAppGateway } from "@/lib/whatsapp/gateway/disconnect-service";
 import {
     clearWhatsAppSessionDirectory,
@@ -28,10 +29,22 @@ function gatewayReturning(result: unknown): WhatsAppGateway {
 }
 
 const freeLock = {
+    held: false,
+    holder: null,
     lockHolder: null,
+    stale: false,
+    heartbeatAgeMs: null,
     localLock: false,
     databaseLease: false,
+    leaseOwnerId: null,
+    leaseUpdatedAt: null,
 };
+
+const auditMock = writeTicketingAudit as jest.Mock;
+
+beforeEach(() => {
+    jest.clearAllMocks();
+});
 
 describe("disconnect idempotency and lock safety", () => {
     test("already disconnected is a 200 outcome", async () => {
@@ -73,6 +86,12 @@ describe("disconnect idempotency and lock safety", () => {
             gateway: gatewayReturning({
                 status: "LOCK_HELD",
                 lockHolder: holder,
+                lock: {
+                    held: true,
+                    holder,
+                    stale: false,
+                    heartbeatAgeMs: 1_000,
+                },
             }),
             sessionDir: "/srv/tinggalklik/whatsapp",
             input: { deleteSession: true },
@@ -84,7 +103,10 @@ describe("disconnect idempotency and lock safety", () => {
             },
         });
 
-        expect(outcome).toEqual({ kind: "LOCK_HELD", lockHolder: holder });
+        expect(outcome).toMatchObject({
+            kind: "LOCK_HELD",
+            lockHolder: holder,
+        });
         expect(clearSession).not.toHaveBeenCalled();
     });
 
@@ -94,6 +116,8 @@ describe("disconnect idempotency and lock safety", () => {
             pid: 777,
             host: "vps-prod",
             startedAt: "2026-11-09T00:00:00.000Z",
+            processName: "node gateway.js",
+            alive: true,
             ownerId: "wa-777-xyz",
             source: "local" as const,
         };
@@ -111,15 +135,24 @@ describe("disconnect idempotency and lock safety", () => {
             dependencies: {
                 setManualDisconnect: jest.fn(async () => undefined),
                 inspectLock: jest.fn(async () => ({
+                    held: true,
+                    holder,
                     lockHolder: holder,
+                    stale: false,
+                    heartbeatAgeMs: 1_000,
                     localLock: true,
                     databaseLease: false,
+                    leaseOwnerId: null,
+                    leaseUpdatedAt: null,
                 })),
                 clearSession,
             },
         });
 
-        expect(outcome).toEqual({ kind: "LOCK_HELD", lockHolder: holder });
+        expect(outcome).toMatchObject({
+            kind: "LOCK_HELD",
+            lockHolder: holder,
+        });
         expect(clearSession).not.toHaveBeenCalled();
     });
 
@@ -174,6 +207,132 @@ describe("disconnect idempotency and lock safety", () => {
         });
         expect(clearSession).toHaveBeenCalledWith(
             "/srv/tinggalklik/whatsapp"
+        );
+    });
+
+    test("forceReleaseStale releases a stale lock and audits the holder", async () => {
+        const holder = {
+            pid: 999,
+            host: "vps-prod",
+            startedAt: "2026-11-09T00:00:00.000Z",
+            processName: "node gateway.js",
+            alive: false,
+            ownerId: "wa-999-abc",
+            source: "local" as const,
+        };
+        const staleLock = {
+            held: true,
+            holder,
+            lockHolder: holder,
+            stale: true,
+            heartbeatAgeMs: 1_200_000,
+            localLock: true,
+            databaseLease: false,
+            leaseOwnerId: null,
+            leaseUpdatedAt: null,
+        };
+        const inspectLock = jest
+            .fn()
+            .mockResolvedValueOnce(staleLock)
+            .mockResolvedValueOnce(freeLock);
+        const forceReleaseStaleLock = jest.fn(async () => true);
+
+        const outcome = await disconnectWhatsAppGateway({
+            gateway: gatewayReturning({
+                status: "DISCONNECTED",
+                alreadyDisconnected: false,
+                socketClosed: true,
+            }),
+            sessionDir: "/srv/tinggalklik/whatsapp",
+            input: {
+                deleteSession: false,
+                forceReleaseStale: true,
+                reason: "proses gateway mati",
+            },
+            actor,
+            request,
+            dependencies: {
+                setManualDisconnect: jest.fn(async () => undefined),
+                inspectLock,
+                forceReleaseStaleLock,
+            },
+        });
+
+        expect(outcome).toMatchObject({
+            kind: "DISCONNECTED",
+            forceReleased: true,
+        });
+        expect(forceReleaseStaleLock).toHaveBeenCalledWith(
+            "/srv/tinggalklik/whatsapp"
+        );
+        expect(auditMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                action: "whatsapp.lock.force_release",
+                actor,
+                reason: "proses gateway mati",
+                beforeState: expect.objectContaining({
+                    holder: expect.objectContaining({
+                        pid: 999,
+                        host: "vps-prod",
+                    }),
+                }),
+            })
+        );
+    });
+
+    test("forceReleaseStale refuses a live lock before touching the gateway", async () => {
+        const holder = {
+            pid: 4321,
+            host: "vps-prod",
+            startedAt: "2026-11-09T03:00:00.000Z",
+            processName: "node gateway.js",
+            alive: true,
+            ownerId: "wa-4321-live",
+            source: "local" as const,
+        };
+        const liveLock = {
+            held: true,
+            holder,
+            lockHolder: holder,
+            stale: false,
+            heartbeatAgeMs: 500,
+            localLock: true,
+            databaseLease: true,
+            leaseOwnerId: holder.ownerId,
+            leaseUpdatedAt: "2026-11-09T03:00:00.000Z",
+        };
+        const forceReleaseStaleLock = jest.fn(async () => true);
+        const disconnect = jest.fn();
+
+        const outcome = await disconnectWhatsAppGateway({
+            gateway: { disconnect } as unknown as WhatsAppGateway,
+            sessionDir: "/srv/tinggalklik/whatsapp",
+            input: {
+                deleteSession: false,
+                forceReleaseStale: true,
+            },
+            actor,
+            request,
+            dependencies: {
+                setManualDisconnect: jest.fn(async () => undefined),
+                inspectLock: jest.fn(async () => liveLock),
+                forceReleaseStaleLock,
+            },
+        });
+
+        expect(outcome).toMatchObject({
+            kind: "LOCK_HELD",
+            lock: {
+                held: true,
+                stale: false,
+            },
+        });
+        expect(forceReleaseStaleLock).not.toHaveBeenCalled();
+        expect(disconnect).not.toHaveBeenCalled();
+        expect(auditMock).not.toHaveBeenCalledWith(
+            expect.objectContaining({
+                action: "whatsapp.lock.force_release",
+            })
         );
     });
 });
