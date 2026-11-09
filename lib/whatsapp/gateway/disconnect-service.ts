@@ -12,7 +12,10 @@ import {
     type WhatsAppLockInspection,
 } from "./lock-inspection";
 import { forceReleaseStaleWhatsAppGatewayLock } from "./lock-release";
-import { clearWhatsAppSessionDirectory } from "./session-cleanup";
+import {
+    clearWhatsAppSessionDirectory,
+    SessionCleanupError,
+} from "./session-cleanup";
 
 export type DisconnectServiceOutcome =
     | {
@@ -211,7 +214,15 @@ export async function disconnectWhatsAppGateway(options: {
         try {
             await clearSession(options.sessionDir);
             deletedSession = true;
-        } catch {
+        } catch (error) {
+            if (error instanceof SessionCleanupError) {
+                throw new AppError("INTERNAL_ERROR", {
+                    message:
+                        "Session WhatsApp tidak dapat dihapus seluruhnya. File yang gagal dihapus dilaporkan agar operator dapat memeriksanya.",
+                    details: { failedEntries: error.failedEntries },
+                });
+            }
+
             throw new AppError("INTERNAL_ERROR", {
                 message:
                     "Session WhatsApp tidak dapat dihapus. Operasi dihentikan agar tidak meninggalkan sesi setengah terhapus.",

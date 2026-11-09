@@ -12,9 +12,16 @@ import {
     type WhatsAppLockHolder,
 } from "./lock-inspection";
 import { getWhatsAppGatewayForWeb } from "./web-runtime";
+import {
+    getWhatsAppStatusCopy,
+    type WhatsAppUserMessageLevel,
+} from "./status-copy";
 
 export type WhatsAppGatewayStatus = {
     state: string;
+    userMessage: string;
+    userMessageLevel: WhatsAppUserMessageLevel;
+    userMessageDetail: string;
     connected: boolean;
     ready: boolean;
     ownershipHeld: boolean;
@@ -84,14 +91,21 @@ export async function getWhatsAppGatewayStatus(): Promise<WhatsAppGatewayStatus>
     }
 
     const snapshot = gateway?.snapshot();
+    const state = manualDisconnect
+        ? "MANUAL_DISCONNECT"
+        : (snapshot?.state ?? "UNAVAILABLE");
     const pairing = manualDisconnect
         ? { qr: null, expiresAt: null }
         : (gateway?.pairingStatus() ?? { qr: null, expiresAt: null });
+    const copy = getWhatsAppStatusCopy({
+        state,
+        manualDisconnect,
+        stale: lock.stale,
+    });
 
     return {
-        state: manualDisconnect
-            ? "MANUAL_DISCONNECT"
-            : (snapshot?.state ?? "UNAVAILABLE"),
+        state,
+        ...copy,
         connected: Boolean(snapshot?.connected) && !manualDisconnect,
         ready: Boolean(snapshot?.ready) && !manualDisconnect,
         ownershipHeld: Boolean(snapshot?.ownershipHeld) && !manualDisconnect,

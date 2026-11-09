@@ -124,11 +124,75 @@ describe("disconnect endpoint outcomes", () => {
         });
     });
 
+    test("deleteSession true is forwarded and reported", async () => {
+        disconnectMock.mockResolvedValue({
+            kind: "DISCONNECTED",
+            alreadyDisconnected: false,
+            deletedSession: true,
+            socketClosed: true,
+            forceReleased: false,
+        });
+
+        const response = await POST(
+            request({ deleteSession: true, reason: "user_disconnect" })
+        );
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body.data).toMatchObject({
+            status: "DISCONNECTED",
+            deletedSession: true,
+        });
+        expect(disconnectMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                input: {
+                    deleteSession: true,
+                    reason: "user_disconnect",
+                },
+            })
+        );
+    });
+
     test("a reason longer than 200 characters is rejected before any disconnect", async () => {
         const response = await POST(request({ reason: "x".repeat(201) }));
 
         expect(response.status).toBe(400);
         expect(disconnectMock).not.toHaveBeenCalled();
+    });
+
+    test("stale repair forwards forceReleaseStale without deleting the session", async () => {
+        disconnectMock.mockResolvedValue({
+            kind: "DISCONNECTED",
+            alreadyDisconnected: false,
+            deletedSession: false,
+            socketClosed: true,
+            forceReleased: true,
+        });
+
+        const response = await POST(
+            request({
+                forceReleaseStale: true,
+                deleteSession: false,
+                reason: "force_release_stale",
+            })
+        );
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body.data).toMatchObject({
+            status: "DISCONNECTED",
+            forceReleased: true,
+            deletedSession: false,
+        });
+        expect(disconnectMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                input: {
+                    forceReleaseStale: true,
+                    deleteSession: false,
+                    reason: "force_release_stale",
+                },
+            })
+        );
     });
 
     test("forceReleaseStale against a live lock returns 409 and the exact holder", async () => {

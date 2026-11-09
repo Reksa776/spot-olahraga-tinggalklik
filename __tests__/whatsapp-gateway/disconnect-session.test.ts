@@ -13,6 +13,7 @@ import { disconnectWhatsAppGateway } from "@/lib/whatsapp/gateway/disconnect-ser
 import {
     clearWhatsAppSessionDirectory,
     resolveSessionEntry,
+    SessionCleanupError,
     SessionPathError,
 } from "@/lib/whatsapp/gateway/session-cleanup";
 
@@ -208,6 +209,47 @@ describe("disconnect idempotency and lock safety", () => {
         expect(clearSession).toHaveBeenCalledWith(
             "/srv/tinggalklik/whatsapp"
         );
+        expect(auditMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                action: "whatsapp.disconnect",
+                afterState: expect.objectContaining({
+                    deleteSession: true,
+                    deletedSession: true,
+                }),
+            })
+        );
+    });
+
+    test("a cleanup failure returns the failed entry list instead of success", async () => {
+        const clearSession = jest.fn(async () => {
+            throw new SessionCleanupError([
+                { entry: "auth.enc", code: "EACCES" },
+            ]);
+        });
+
+        await expect(
+            disconnectWhatsAppGateway({
+                gateway: gatewayReturning({
+                    status: "DISCONNECTED",
+                    alreadyDisconnected: false,
+                    socketClosed: true,
+                }),
+                sessionDir: "/srv/tinggalklik/whatsapp",
+                input: { deleteSession: true },
+                actor,
+                request,
+                dependencies: {
+                    setManualDisconnect: jest.fn(async () => undefined),
+                    inspectLock: jest.fn(async () => freeLock),
+                    clearSession,
+                },
+            })
+        ).rejects.toMatchObject({
+            code: "INTERNAL_ERROR",
+            details: {
+                failedEntries: [{ entry: "auth.enc", code: "EACCES" }],
+            },
+        });
     });
 
     test("forceReleaseStale releases a stale lock and audits the holder", async () => {
@@ -236,6 +278,7 @@ describe("disconnect idempotency and lock safety", () => {
             .mockResolvedValueOnce(staleLock)
             .mockResolvedValueOnce(freeLock);
         const forceReleaseStaleLock = jest.fn(async () => true);
+        const clearSession = jest.fn(async () => ({ deletedEntries: 0 }));
 
         const outcome = await disconnectWhatsAppGateway({
             gateway: gatewayReturning({
@@ -255,6 +298,7 @@ describe("disconnect idempotency and lock safety", () => {
                 setManualDisconnect: jest.fn(async () => undefined),
                 inspectLock,
                 forceReleaseStaleLock,
+                clearSession,
             },
         });
 
@@ -264,6 +308,16 @@ describe("disconnect idempotency and lock safety", () => {
         });
         expect(forceReleaseStaleLock).toHaveBeenCalledWith(
             "/srv/tinggalklik/whatsapp"
+        );
+        expect(clearSession).not.toHaveBeenCalled();
+        expect(auditMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                action: "whatsapp.disconnect",
+                afterState: expect.objectContaining({
+                    deleteSession: false,
+                    deletedSession: false,
+                }),
+            })
         );
         expect(auditMock).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -356,6 +410,66 @@ describe("session path safety", () => {
             );
         }
     );
+
+    test("an empty session directory is already clean", async () => {
+        const root = await fs.mkdtemp(
+            path.join(os.tmpdir(), "wa-session-empty-")
+        );
+        temporaryDirectories.push(root);
+
+        await expect(clearWhatsAppSessionDirectory(root)).resolves.toEqual({
+            deletedEntries: 0,
+        });
+        expect((await fs.stat(root)).isDirectory()).toBe(true);
+    });
+
+    test("a symlink inside the session is rejected before deletion", async () => {
+        const root = await fs.mkdtemp(
+            path.join(os.tmpdir(), "wa-session-symlink-")
+        );
+        const outside = await fs.mkdtemp(
+            path.join(os.tmpdir(), "wa-session-outside-link-")
+        );
+        temporaryDirectories.push(root, outside);
+
+        await fs.writeFile(path.join(outside, "keep.txt"), "keep");
+        await fs.symlink(
+            path.join(outside, "keep.txt"),
+            path.join(root, "linked-auth")
+        );
+
+        await expect(clearWhatsAppSessionDirectory(root)).rejects.toThrow(
+            SessionPathError
+        );
+        expect(
+            await fs.readFile(path.join(outside, "keep.txt"), "utf8")
+        ).toBe("keep");
+    });
+
+    test("a failed entry is reported instead of being silently ignored", async () => {
+        const root = await fs.mkdtemp(
+            path.join(os.tmpdir(), "wa-session-failure-")
+        );
+        temporaryDirectories.push(root);
+
+        await fs.writeFile(path.join(root, "auth.enc"), "encrypted");
+        await fs.writeFile(path.join(root, "creds.json"), "{}");
+
+        const rm = jest
+            .spyOn(fs, "rm")
+            .mockRejectedValueOnce(
+                Object.assign(new Error("denied"), { code: "EACCES" })
+            );
+
+        await expect(clearWhatsAppSessionDirectory(root)).rejects.toMatchObject(
+            {
+                name: "SessionCleanupError",
+                failedEntries: [{ entry: "auth.enc", code: "EACCES" }],
+            }
+        );
+
+        rm.mockRestore();
+    });
 
     test("clear removes contents, preserves the lock file and never deletes the root", async () => {
         const root = await fs.mkdtemp(

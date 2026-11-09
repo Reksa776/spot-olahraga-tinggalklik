@@ -71,6 +71,10 @@ test("the persisted latch wins over a stale connected snapshot", async () => {
 
     expect(status).toMatchObject({
         state: "MANUAL_DISCONNECT",
+        userMessage: "WhatsApp terputus",
+        userMessageLevel: "info",
+        userMessageDetail:
+            "Klik 'Hubungkan WhatsApp' untuk scan QR dan mengaktifkan kembali.",
         manualDisconnect: true,
         connected: false,
         ready: false,
@@ -89,6 +93,8 @@ test("latch=false and a disconnected snapshot reports DISCONNECTED", async () =>
 
     expect(status).toMatchObject({
         state: "DISCONNECTED",
+        userMessage: "WhatsApp tidak terhubung",
+        userMessageLevel: "warning",
         manualDisconnect: false,
         connected: false,
         sessionPresent: true,
@@ -118,6 +124,8 @@ test("a competing owner reports CONFLICT with the lock holder", async () => {
 
     expect(status).toMatchObject({
         state: "CONFLICT",
+        userMessage: "Koneksi sedang dipakai proses lain",
+        userMessageLevel: "warning",
         manualDisconnect: false,
         lock: {
             held: true,
@@ -125,5 +133,79 @@ test("a competing owner reports CONFLICT with the lock holder", async () => {
             heartbeatAgeMs: 500,
             holder: { pid: 4321, host: "vps-prod" },
         },
+    });
+});
+
+test("a connected snapshot returns the success copy", async () => {
+    manualMock.mockResolvedValue(false);
+    runtimeMock.mockResolvedValue(gateway("CONNECTED"));
+
+    const status = await getWhatsAppGatewayStatus();
+
+    expect(status).toMatchObject({
+        state: "CONNECTED",
+        userMessage: "WhatsApp terhubung",
+        userMessageLevel: "success",
+        userMessageDetail: "Pesan otomatis aktif.",
+        connected: true,
+    });
+});
+
+test("starting and pairing states return the waiting copy", async () => {
+    manualMock.mockResolvedValue(false);
+    runtimeMock.mockResolvedValue(gateway("STARTING"));
+
+    const status = await getWhatsAppGatewayStatus();
+
+    expect(status).toMatchObject({
+        state: "STARTING",
+        userMessage: "Menghubungkan…",
+        userMessageLevel: "info",
+        userMessageDetail:
+            "Menyiapkan koneksi WhatsApp, tunggu sebentar.",
+    });
+});
+
+test("a stale conflict returns the repair copy with error level", async () => {
+    const holder = {
+        pid: 4321,
+        host: "vps-prod",
+        startedAt: "2026-11-09T03:00:00.000Z",
+        processName: "node gateway.js",
+        alive: false,
+        ownerId: "wa-4321-dead",
+        source: "local",
+    };
+    manualMock.mockResolvedValue(false);
+    runtimeMock.mockResolvedValue(gateway("CONFLICT"));
+    inspectMock.mockResolvedValue({
+        held: true,
+        holder,
+        stale: true,
+        heartbeatAgeMs: 1_200_000,
+    });
+
+    const status = await getWhatsAppGatewayStatus();
+
+    expect(status).toMatchObject({
+        state: "CONFLICT",
+        userMessageLevel: "error",
+        userMessageDetail: "Klik 'Perbaiki koneksi' untuk membersihkan.",
+    });
+    expect(status.userMessage).toContain("tersangkut");
+});
+
+test("an error snapshot asks the operator to scan again", async () => {
+    manualMock.mockResolvedValue(false);
+    runtimeMock.mockResolvedValue(gateway("ERROR"));
+
+    const status = await getWhatsAppGatewayStatus();
+
+    expect(status).toMatchObject({
+        state: "ERROR",
+        userMessage: "WhatsApp butuh perhatian",
+        userMessageLevel: "error",
+        userMessageDetail:
+            "Terjadi masalah pada koneksi WhatsApp. Klik 'Hubungkan WhatsApp' untuk scan ulang QR.",
     });
 });

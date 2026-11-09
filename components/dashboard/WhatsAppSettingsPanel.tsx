@@ -11,24 +11,16 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/dashboard/ui/dialog";
-import { Checkbox } from "@/components/dashboard/ui/select";
-
-type LockHolder = {
-    pid: number | null;
-    host: string | null;
-    startedAt: string | null;
-    processName: string | null;
-    alive: boolean;
-    ownerId: string | null;
-    source: string;
-};
-
-type GatewayLock = {
-    held: boolean;
-    holder: LockHolder | null;
-    stale: boolean;
-    heartbeatAgeMs: number | null;
-};
+import { Badge } from "@/components/dashboard/ui/badge";
+import { WhatsAppTechnicalDetails } from "@/components/dashboard/WhatsAppTechnicalDetails";
+import type {
+    TechnicalGatewayLock,
+    TechnicalLockHolder,
+} from "@/components/dashboard/WhatsAppTechnicalDetails";
+import {
+    getWhatsAppStatusCopy,
+    type WhatsAppUserMessageLevel,
+} from "@/lib/whatsapp/gateway/status-copy";
 
 type State = {
     state?: string;
@@ -40,54 +32,23 @@ type State = {
     lastErrorCode?: string | null;
     qr?: string | null;
     expiresAt?: string | null;
-    lock?: GatewayLock | null;
-    lockHolder?: LockHolder | null;
+    lock?: TechnicalGatewayLock | null;
+    lockHolder?: TechnicalLockHolder | null;
+    userMessage?: string;
+    userMessageLevel?: string;
+    userMessageDetail?: string;
     smtp?: { configured: boolean; secure: boolean; from: string | null };
 };
 
-type LockConflict = {
-    message: string;
-    holder: LockHolder | null;
-    stale: boolean;
-    heartbeatAgeMs: number | null;
-};
-
-function formatAge(ms: number | null): string {
-    if (ms === null || !Number.isFinite(ms)) {
-        return "tidak diketahui";
-    }
-
-    const seconds = Math.max(0, Math.floor(ms / 1000));
-
-    if (seconds < 60) {
-        return `${seconds} detik`;
-    }
-
-    const minutes = Math.floor(seconds / 60);
-
-    if (minutes < 60) {
-        return `${minutes} menit`;
-    }
-
-    const hours = Math.floor(minutes / 60);
-
-    return `${hours} jam ${minutes % 60} menit`;
-}
-
-function holderDescription(holder: LockHolder | null): string {
-    const who =
-        holder?.pid !== null && holder?.pid !== undefined
-            ? `proses pid ${holder.pid}`
-            : "proses lain";
-    const process = holder?.processName
-        ? ` (${holder.processName})`
-        : "";
-    const host = holder?.host ? ` di ${holder.host}` : "";
-    const started = holder?.startedAt
-        ? `, sejak ${new Date(holder.startedAt).toLocaleString("id-ID")}`
-        : "";
-
-    return `${who}${process}${host}${started}`;
+function normalizeLevel(
+    value: string | undefined
+): WhatsAppUserMessageLevel {
+    return value === "success" ||
+        value === "info" ||
+        value === "warning" ||
+        value === "error"
+        ? value
+        : "warning";
 }
 
 export function WhatsAppSettingsPanel() {
@@ -96,12 +57,11 @@ export function WhatsAppSettingsPanel() {
     const [busy, setBusy] = useState(false);
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [staleConfirmOpen, setStaleConfirmOpen] = useState(false);
-    const [deleteSession, setDeleteSession] = useState(false);
-    const [lockConflict, setLockConflict] = useState<LockConflict | null>(
-        null
-    );
     const [connectFailed, setConnectFailed] = useState(false);
     const [pairingRequested, setPairingRequested] = useState(false);
+    const [actionConflict, setActionConflict] = useState<{
+        stale: boolean;
+    } | null>(null);
 
     async function refresh() {
         try {
@@ -114,7 +74,15 @@ export function WhatsAppSettingsPanel() {
                 throw new Error(body.message || "Status gagal dimuat.");
             }
 
-            setState(body.data);
+            const data = body.data as State;
+            setState(data);
+
+            if (
+                data.connected ||
+                (data.state !== "CONFLICT" && !data.lock?.held)
+            ) {
+                setActionConflict(null);
+            }
         } catch (cause) {
             setError(
                 cause instanceof Error
@@ -148,24 +116,12 @@ export function WhatsAppSettingsPanel() {
             const body = await response.json();
 
             if (!response.ok || !body.success) {
-                const details = body.details ?? {};
-                const holder: LockHolder | null =
-                    details.lock?.holder ?? details.lockHolder ?? null;
-
-                if (
-                    response.status === 409 &&
-                    (holder !== null || details.lock)
-                ) {
-                    setLockConflict({
-                        message:
-                            body.message ||
-                            "Gateway masih memegang lock.",
-                        holder,
-                        stale: Boolean(details.lock?.stale),
-                        heartbeatAgeMs:
-                            details.lock?.heartbeatAgeMs ?? null,
+                if (response.status === 409) {
+                    setActionConflict({
+                        stale: Boolean(body.details?.lock?.stale),
                     });
                     setConnectFailed(true);
+                    await refresh();
                     return;
                 }
 
@@ -174,6 +130,7 @@ export function WhatsAppSettingsPanel() {
                 );
             }
 
+            setActionConflict(null);
             setConnectFailed(false);
             setPairingRequested(true);
             await refresh();
@@ -189,14 +146,13 @@ export function WhatsAppSettingsPanel() {
         }
     }
 
-    async function disconnect(
-        options: { forceReleaseStale?: boolean; deleteSession?: boolean } = {}
-    ) {
+    async function disconnect(options: {
+        forceReleaseStale?: boolean;
+        deleteSession: boolean;
+        reason?: string;
+    }) {
         setBusy(true);
         setError("");
-
-        const shouldDeleteSession =
-            options.deleteSession ?? deleteSession;
 
         try {
             const response = await fetch(
@@ -205,35 +161,24 @@ export function WhatsAppSettingsPanel() {
                     method: "POST",
                     headers: { "content-type": "application/json" },
                     body: JSON.stringify({
-                        deleteSession: shouldDeleteSession,
+                        deleteSession: options.deleteSession,
                         ...(options.forceReleaseStale
                             ? { forceReleaseStale: true }
                             : {}),
+                        ...(options.reason ? { reason: options.reason } : {}),
                     }),
                 }
             );
             const body = await response.json();
 
             if (!response.ok || !body.success) {
-                const details = body.details ?? {};
-                const holder: LockHolder | null =
-                    details.lock?.holder ?? details.lockHolder ?? null;
-
-                if (
-                    response.status === 409 &&
-                    (holder !== null || details.lock)
-                ) {
-                    setLockConflict({
-                        message:
-                            body.message ||
-                            "Gateway masih memegang lock.",
-                        holder,
-                        stale: Boolean(details.lock?.stale),
-                        heartbeatAgeMs:
-                            details.lock?.heartbeatAgeMs ?? null,
+                if (response.status === 409) {
+                    setActionConflict({
+                        stale: Boolean(body.details?.lock?.stale),
                     });
                     setConfirmOpen(false);
                     setStaleConfirmOpen(false);
+                    await refresh();
                     return;
                 }
 
@@ -244,12 +189,12 @@ export function WhatsAppSettingsPanel() {
 
             setConfirmOpen(false);
             setStaleConfirmOpen(false);
-            setDeleteSession(false);
+            setActionConflict(null);
             setConnectFailed(false);
             setPairingRequested(false);
             setState((current) => ({
                 ...current,
-                state: "DISCONNECTED",
+                state: "MANUAL_DISCONNECT",
                 connected: false,
                 ready: false,
                 qr: null,
@@ -268,31 +213,10 @@ export function WhatsAppSettingsPanel() {
         }
     }
 
-    const disconnected =
+    const manualDisconnect =
         state.manualDisconnect === true ||
         state.state === "MANUAL_DISCONNECT";
-    const reconnect =
-        disconnected ||
-        state.state === "DISCONNECTED" ||
-        state.state === "LOGGED_OUT";
-    const connectDisabled =
-        busy ||
-        state.state === "UNAVAILABLE" ||
-        state.state === "STARTING";
-    const connectLabel =
-        busy || state.state === "STARTING"
-            ? "Menyambungkan…"
-            : disconnected
-              ? "Hubungkan ulang"
-              : connectFailed ||
-                  pairingRequested ||
-                  state.state === "ERROR" ||
-                  state.state === "CONFLICT"
-                ? "Coba lagi"
-                : reconnect
-                  ? "Hubungkan ulang"
-                  : "Hubungkan WhatsApp";
-    const gatewayLock: GatewayLock | null =
+    const gatewayLock: TechnicalGatewayLock | null =
         state.lock ??
         (state.lockHolder
             ? {
@@ -302,141 +226,178 @@ export function WhatsAppSettingsPanel() {
                   heartbeatAgeMs: null,
               }
             : null);
-    const lockHeld = Boolean(gatewayLock?.held);
     const lockStale = Boolean(gatewayLock?.stale);
-    const lockHolder = gatewayLock?.holder ?? null;
+    const rawState = state.state ?? "UNAVAILABLE";
+    const effectiveState = manualDisconnect
+        ? "MANUAL_DISCONNECT"
+        : actionConflict
+          ? "CONFLICT"
+          : rawState;
+    const effectiveStale = actionConflict?.stale ?? lockStale;
+    const fallbackCopy = getWhatsAppStatusCopy({
+        state: effectiveState,
+        manualDisconnect,
+        stale: effectiveStale,
+    });
+    const useApiCopy =
+        !actionConflict && !manualDisconnect && Boolean(state.userMessage);
+    const userMessage = useApiCopy
+        ? (state.userMessage as string)
+        : fallbackCopy.userMessage;
+    const userMessageLevel = useApiCopy
+        ? normalizeLevel(state.userMessageLevel)
+        : fallbackCopy.userMessageLevel;
+    const userMessageDetail = useApiCopy
+        ? (state.userMessageDetail ?? "")
+        : fallbackCopy.userMessageDetail;
+    const isConnecting =
+        effectiveState === "STARTING" ||
+        effectiveState === "PAIRING_REQUIRED";
+    const showTechnicalDetails =
+        effectiveState === "CONFLICT" || effectiveState === "ERROR";
+    const showRepair =
+        effectiveState === "CONFLICT" && effectiveStale;
+    const showRetry =
+        effectiveState === "CONFLICT" && !effectiveStale;
+    const showConnect = !state.connected && !state.qr && !showRepair;
+    const connectDisabled = busy || isConnecting;
+    const connectLabel =
+        busy || isConnecting
+            ? "Menyambungkan…"
+            : effectiveState === "ERROR"
+              ? "Hubungkan WhatsApp"
+              : showRetry || connectFailed || pairingRequested
+                ? "Coba lagi"
+                : "Hubungkan WhatsApp";
+    const badgeVariant = manualDisconnect
+        ? "muted"
+        : userMessageLevel === "success"
+          ? "success"
+          : userMessageLevel === "info"
+            ? "info"
+            : userMessageLevel === "warning"
+              ? "warning"
+              : "danger";
+    const badgeLabel = manualDisconnect
+        ? "Manual"
+        : userMessageLevel === "success"
+          ? "Terhubung"
+          : userMessageLevel === "info"
+            ? "Memproses"
+            : userMessageLevel === "warning"
+              ? "Belum terhubung"
+              : "Perlu perhatian";
+    const statusDotClass =
+        userMessageLevel === "success"
+            ? "bg-emerald-500"
+            : userMessageLevel === "info"
+              ? "bg-sky-500"
+              : userMessageLevel === "warning"
+                ? "bg-amber-500"
+                : "bg-destructive";
 
     return (
         <div className="space-y-6">
-            <section className="space-y-3">
-                <div className="flex flex-wrap items-center gap-3">
-                    <h2 className="text-lg font-semibold">WhatsApp Baileys</h2>
-                    <p>
-                        Status:{" "}
-                        <strong>
-                            {disconnected
-                                ? "DISCONNECTED (manual)"
-                                : (state.state ?? "Memeriksa…")}
-                        </strong>
-                        {state.connected ? " · Terhubung" : ""}
-                    </p>
-                    {state.connected ? (
-                        <button
-                            type="button"
-                            onClick={() => setConfirmOpen(true)}
-                            disabled={busy}
-                            className="rounded-md bg-destructive px-4 py-2 text-destructive-foreground disabled:opacity-50"
-                        >
-                            Putuskan koneksi
-                        </button>
-                    ) : null}
-                </div>
+            <section className="space-y-4">
+                <div className="rounded-card border border-border bg-card p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div className="flex min-w-0 items-start gap-3">
+                            <span className="mt-1 flex size-5 shrink-0 items-center justify-center">
+                                {isConnecting ? (
+                                    <span className="size-4 animate-spin rounded-full border-2 border-muted-foreground/30 border-t-primary" />
+                                ) : (
+                                    <span
+                                        className={`size-3 rounded-full ${statusDotClass}`}
+                                    />
+                                )}
+                            </span>
 
-                <section className="space-y-2 rounded-md border border-border p-3">
-                    <h3 className="font-semibold">Gateway lock</h3>
+                            <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h2 className="text-lg font-semibold">
+                                        {userMessage}
+                                    </h2>
+                                    <Badge variant={badgeVariant}>
+                                        {badgeLabel}
+                                    </Badge>
+                                </div>
+                                <p className="mt-1 text-sm text-muted-foreground">
+                                    {userMessageDetail}
+                                </p>
+                            </div>
+                        </div>
 
-                    {!lockHeld ? (
-                        <p className="text-sm text-muted-foreground">
-                            Tidak ada lock.
-                        </p>
-                    ) : lockStale ? (
-                        <div className="space-y-2">
-                            <p className="inline-flex rounded bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-900">
-                                LOCK STALE
-                            </p>
-                            <p className="text-sm text-muted-foreground">
-                                Dipegang {holderDescription(lockHolder)}.
-                                Heartbeat {formatAge(
-                                    gatewayLock?.heartbeatAgeMs ?? null
-                                )}{" "}
-                                lalu; proses tidak terbukti hidup.
-                            </p>
+                        {state.connected ? (
                             <button
                                 type="button"
-                                onClick={() => setStaleConfirmOpen(true)}
+                                onClick={() => setConfirmOpen(true)}
                                 disabled={busy}
-                                className="rounded-md bg-destructive px-3 py-2 text-sm text-destructive-foreground disabled:opacity-50"
+                                className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
                             >
-                                Lepas lock stale
+                                Putuskan WhatsApp
                             </button>
-                        </div>
-                    ) : (
-                        <p className="text-sm text-muted-foreground">
-                            Dipegang {holderDescription(lockHolder)}. Heartbeat{" "}
-                            {formatAge(gatewayLock?.heartbeatAgeMs ?? null)}{" "}
-                            lalu.
-                            {lockHolder && !lockHolder.alive
-                                ? " Status proses tidak dapat dipastikan; lock dianggap hidup."
-                                : ""}
-                        </p>
-                    )}
-                </section>
-
-                {!state.connected && !state.qr ? (
-                    <button
-                        type="button"
-                        disabled={connectDisabled}
-                        onClick={() => void connect()}
-                        className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-                    >
-                        {connectLabel}
-                    </button>
-                ) : null}
-
-                {disconnected ? (
-                    <p className="text-sm text-muted-foreground">
-                        WhatsApp diputuskan manual. Pesan otomatis berhenti
-                        sampai Anda menghubungkan ulang dan scan QR.
-                    </p>
-                ) : null}
-
-                {state.state === "STARTING" ? (
-                    <p className="text-sm text-muted-foreground">
-                        WhatsApp sedang menyelesaikan koneksi perangkat tertaut.
-                        Halaman akan memperbarui status otomatis.
-                    </p>
-                ) : null}
-
-                {state.state === "UNAVAILABLE" ? (
-                    <p className="text-sm text-muted-foreground">
-                        Gateway WhatsApp belum berjalan atau konfigurasinya belum
-                        lengkap.
-                    </p>
-                ) : null}
-
-                {state.state === "CONFLICT" ? (
-                    <p className="text-sm text-destructive">
-                        Gateway WhatsApp lain masih memegang koneksi. Hentikan
-                        proses gateway lama lalu muat ulang halaman.
-                    </p>
-                ) : null}
-
-                {state.qr ? (
-                    <div className="space-y-2">
-                        <p>
-                            Scan QR dengan WhatsApp nomor yang mau dipakai.
-                            Buka WhatsApp → Perangkat tertaut. QR hanya tampil
-                            sebentar dan jangan bagikan ke siapa pun.
-                        </p>
-                        <div className="inline-block rounded bg-white p-3">
-                            <QRCodeSVG value={state.qr} size={240} />
-                        </div>
-                        <p className="text-sm">
-                            QR kedaluwarsa:{" "}
-                            {state.expiresAt
-                                ? new Date(state.expiresAt).toLocaleTimeString(
-                                      "id-ID"
-                                  )
-                                : "—"}
-                        </p>
+                        ) : null}
                     </div>
-                ) : null}
 
-                {error ? (
-                    <p role="alert" className="text-sm text-destructive">
-                        {error}
-                    </p>
-                ) : null}
+                    {showTechnicalDetails ? (
+                        <div className="mt-4">
+                            <WhatsAppTechnicalDetails
+                                state={effectiveState}
+                                lock={gatewayLock}
+                                lastErrorCode={state.lastErrorCode}
+                            />
+                        </div>
+                    ) : null}
+
+                    {showRepair || showConnect ? (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                            {showRepair ? (
+                                <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => setStaleConfirmOpen(true)}
+                                    className="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground disabled:opacity-50"
+                                >
+                                    Perbaiki koneksi
+                                </button>
+                            ) : (
+                                <button
+                                    type="button"
+                                    disabled={connectDisabled}
+                                    onClick={() => void connect()}
+                                    className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                                >
+                                    {connectLabel}
+                                </button>
+                            )}
+                        </div>
+                    ) : null}
+
+                    {state.qr ? (
+                        <div className="mt-5 space-y-2">
+                            <p className="text-sm">
+                                Scan QR dengan WhatsApp nomor yang mau dipakai.
+                                Buka WhatsApp → Perangkat tertaut. Jangan
+                                bagikan QR ini ke siapa pun.
+                            </p>
+                            <div className="inline-block rounded bg-white p-3">
+                                <QRCodeSVG value={state.qr} size={240} />
+                            </div>
+                            <p className="text-sm font-medium">
+                                QR berlaku ±60 detik, segera scan.
+                            </p>
+                        </div>
+                    ) : null}
+
+                    {error ? (
+                        <p
+                            role="alert"
+                            className="mt-4 text-sm text-destructive"
+                        >
+                            {error}
+                        </p>
+                    ) : null}
+                </div>
             </section>
 
             <Dialog
@@ -449,26 +410,11 @@ export function WhatsAppSettingsPanel() {
                     <DialogHeader>
                         <DialogTitle>Putuskan WhatsApp?</DialogTitle>
                         <DialogDescription>
-                            Pesan otomatis akan berhenti sampai Anda scan QR
-                            ulang.
+                            Semua session WhatsApp akan dihapus dari server.
+                            Pesan otomatis (reminder, bukti pembelian, blast)
+                            akan berhenti sampai Anda scan QR lagi. Lanjutkan?
                         </DialogDescription>
                     </DialogHeader>
-
-                    <div className="flex items-start gap-3">
-                        <Checkbox
-                            id="delete-whatsapp-session"
-                            checked={deleteSession}
-                            onCheckedChange={(value) =>
-                                setDeleteSession(value === true)
-                            }
-                        />
-                        <label
-                            htmlFor="delete-whatsapp-session"
-                            className="cursor-pointer text-sm"
-                        >
-                            Hapus session (perlu scan QR baru)
-                        </label>
-                    </div>
 
                     {error ? (
                         <p role="alert" className="text-sm text-destructive">
@@ -479,6 +425,7 @@ export function WhatsAppSettingsPanel() {
                     <DialogFooter>
                         <button
                             type="button"
+                            autoFocus
                             onClick={() => setConfirmOpen(false)}
                             disabled={busy}
                             className="rounded-md border border-border px-4 py-2 disabled:opacity-50"
@@ -487,11 +434,16 @@ export function WhatsAppSettingsPanel() {
                         </button>
                         <button
                             type="button"
-                            onClick={() => void disconnect()}
+                            onClick={() =>
+                                void disconnect({
+                                    deleteSession: true,
+                                    reason: "user_disconnect",
+                                })
+                            }
                             disabled={busy}
                             className="rounded-md bg-destructive px-4 py-2 text-destructive-foreground disabled:opacity-50"
                         >
-                            {busy ? "Memutuskan…" : "Putuskan koneksi"}
+                            {busy ? "Memutuskan…" : "Ya, putuskan"}
                         </button>
                     </DialogFooter>
                 </DialogContent>
@@ -505,29 +457,18 @@ export function WhatsAppSettingsPanel() {
             >
                 <DialogContent>
                     <DialogHeader>
-                        <DialogTitle>Lepas lock stale?</DialogTitle>
+                        <DialogTitle>Perbaiki koneksi?</DialogTitle>
                         <DialogDescription>
-                            Hanya lanjutkan jika Anda yakin proses pemegang lock
-                            sudah mati. Lock yang masih hidup tidak akan
-                            dilepas.
+                            Lock yang tersangkut akan dilepas. Session WhatsApp
+                            yang ada tetap disimpan, jadi Anda tidak perlu scan
+                            QR baru kecuali session sudah tidak berlaku.
                         </DialogDescription>
                     </DialogHeader>
-
-                    <div className="space-y-1 text-sm">
-                        <p>Pemegang lock:</p>
-                        <p className="font-medium">
-                            {holderDescription(lockHolder)}
-                        </p>
-                        <p className="text-muted-foreground">
-                            Heartbeat terakhir:{" "}
-                            {formatAge(gatewayLock?.heartbeatAgeMs ?? null)}{" "}
-                            lalu.
-                        </p>
-                    </div>
 
                     <DialogFooter>
                         <button
                             type="button"
+                            autoFocus
                             onClick={() => setStaleConfirmOpen(false)}
                             disabled={busy}
                             className="rounded-md border border-border px-4 py-2 disabled:opacity-50"
@@ -540,77 +481,13 @@ export function WhatsAppSettingsPanel() {
                                 void disconnect({
                                     forceReleaseStale: true,
                                     deleteSession: false,
+                                    reason: "force_release_stale",
                                 })
                             }
                             disabled={busy}
                             className="rounded-md bg-destructive px-4 py-2 text-destructive-foreground disabled:opacity-50"
                         >
-                            {busy ? "Melepas…" : "Lepas lock stale"}
-                        </button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <Dialog
-                open={lockConflict !== null}
-                onOpenChange={(open) => {
-                    if (!open) setLockConflict(null);
-                }}
-            >
-                <DialogContent>
-                    <DialogHeader>
-                        <DialogTitle>Gateway masih memegang lock</DialogTitle>
-                        <DialogDescription>
-                            {lockConflict?.message ??
-                                "Lock dipegang proses lain."}
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                        <dt className="text-muted-foreground">PID</dt>
-                        <dd>{lockConflict?.holder?.pid ?? "tidak diketahui"}</dd>
-                        <dt className="text-muted-foreground">Host</dt>
-                        <dd>
-                            {lockConflict?.holder?.host ?? "tidak diketahui"}
-                        </dd>
-                        <dt className="text-muted-foreground">Proses</dt>
-                        <dd>
-                            {lockConflict?.holder?.processName ??
-                                "tidak terbaca"}
-                        </dd>
-                        <dt className="text-muted-foreground">Heartbeat</dt>
-                        <dd>
-                            {formatAge(lockConflict?.heartbeatAgeMs ?? null)}{" "}
-                            lalu
-                        </dd>
-                        <dt className="text-muted-foreground">Stale</dt>
-                        <dd>{lockConflict?.stale ? "ya" : "tidak"}</dd>
-                    </dl>
-
-                    <p className="text-sm">
-                        Hentikan proses di host tersebut:
-                    </p>
-                    <code className="rounded bg-muted px-2 py-1 text-sm">
-                        pm2 stop{" "}
-                        {lockConflict?.holder?.processName ??
-                            "<nama-proses-gateway>"}
-                    </code>
-
-                    {lockConflict?.stale ? (
-                        <p className="text-sm text-amber-700">
-                            Lock ini terdeteksi stale. Tutup dialog ini lalu
-                            gunakan tombol &quot;Lepas lock stale&quot; di blok
-                            Gateway lock.
-                        </p>
-                    ) : null}
-
-                    <DialogFooter>
-                        <button
-                            type="button"
-                            onClick={() => setLockConflict(null)}
-                            className="rounded-md border border-border px-4 py-2"
-                        >
-                            Tutup
+                            {busy ? "Memperbaiki…" : "Perbaiki koneksi"}
                         </button>
                     </DialogFooter>
                 </DialogContent>

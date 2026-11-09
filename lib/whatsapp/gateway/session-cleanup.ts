@@ -23,6 +23,22 @@ export class SessionPathError extends Error {
     }
 }
 
+export type SessionCleanupFailure = {
+    entry: string;
+    code: string;
+};
+
+/** A cleanup that could not delete every entry; callers must surface the list. */
+export class SessionCleanupError extends Error {
+    readonly failedEntries: readonly SessionCleanupFailure[];
+
+    constructor(failedEntries: readonly SessionCleanupFailure[]) {
+        super("One or more WhatsApp session entries could not be deleted.");
+        this.name = "SessionCleanupError";
+        this.failedEntries = failedEntries;
+    }
+}
+
 export function resolveSessionEntry(rootDir: string, entryName: string): string {
     if (
         !entryName ||
@@ -69,16 +85,43 @@ export async function clearWhatsAppSessionDirectory(
 
     /*
      * Resolve and validate EVERY entry before deleting the first one. A rejected
-     * name must not leave a half-cleared session behind.
+     * name or symlink must not leave a half-cleared session behind.
      */
     const targets = entries
         // Ownership is checked by the caller; never delete the file that proves it.
         .filter((entry) => entry.name !== ".gateway.lock")
-        .map((entry) => resolveSessionEntry(root, entry.name));
+        .map((entry) => {
+            if (entry.isSymbolicLink()) {
+                throw new SessionPathError(
+                    `Session entry "${entry.name}" is a symlink.`
+                );
+            }
 
-    for (const target of targets) {
-        await fs.rm(target, { recursive: true, force: true });
+            return {
+                entry: entry.name,
+                target: resolveSessionEntry(root, entry.name),
+            };
+        });
+
+    const failedEntries: SessionCleanupFailure[] = [];
+    let deletedEntries = 0;
+
+    for (const { entry, target } of targets) {
+        try {
+            await fs.rm(target, { recursive: true, force: true });
+            deletedEntries += 1;
+        } catch (error) {
+            failedEntries.push({
+                entry,
+                code:
+                    (error as NodeJS.ErrnoException).code ?? "UNKNOWN",
+            });
+        }
     }
 
-    return { deletedEntries: targets.length };
+    if (failedEntries.length > 0) {
+        throw new SessionCleanupError(failedEntries);
+    }
+
+    return { deletedEntries };
 }

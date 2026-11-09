@@ -634,14 +634,25 @@ sets `platformsetting.whatsappManualDisconnect = true`; the web runtime reads th
 startup and refuses to acquire the gateway lease or open a Baileys socket while it is true.
 The notification worker also skips automatic WhatsApp sends under the same latch.
 
-- **Disconnect:** open `/dashboard/settings/whatsapp` and click **“Putuskan koneksi”**. The
-  latch prevents auto-connect until an operator explicitly reconnects.
-- **Reconnect:** open `/dashboard/settings/whatsapp` and click **“Hubungkan ulang”**, then scan
-  the QR. The UI calls `POST /api/admin/settings/whatsapp/connect`; that endpoint clears the
-  latch, writes the `whatsapp.connect` audit event, and starts the pairing flow. The existing
-  `/api/admin/settings/whatsapp/pairing` endpoint shares the same reset behaviour.
+- **Disconnect:** open `/dashboard/settings/whatsapp`, click **“Putuskan WhatsApp”**, and
+  confirm **“Ya, putuskan”**. The UI always sends `deleteSession: true` and
+  `reason: "user_disconnect"`: the session contents are deleted, the latch is set to `true`,
+  and automatic messages stop. Reconnecting requires a new QR scan. There is no
+  “disconnect without deleting session” option in the UI.
+- **Reconnect:** open `/dashboard/settings/whatsapp` and click **“Hubungkan WhatsApp”**, then
+  scan the QR. The UI calls `POST /api/admin/settings/whatsapp/connect`; that endpoint clears
+  the latch, writes the `whatsapp.connect` audit event, and starts the pairing flow. The
+  existing `/api/admin/settings/whatsapp/pairing` endpoint shares the same reset behaviour.
+- **Stale lock:** if the status is **“Koneksi tersangkut”**, click **“Perbaiki koneksi”**.
+  That calls the disconnect endpoint with `forceReleaseStale: true` and
+  `deleteSession: false`: it releases only the stale lock and keeps the existing session, so
+  the next **“Hubungkan WhatsApp”** can reuse the session or ask for a QR if it is empty.
 - **Failure after a reconnect click:** the latch deliberately stays `false`, so the operator
   can click **“Coba lagi”** without editing MySQL. A failed start never re-latches.
+
+The API keeps `deleteSession` defaulting to `false` so lock recovery and other callers cannot
+accidentally delete credentials. The dashboard’s destructive button is the only path that
+sets it to `true`.
 
 **OWNER ACTION — emergency only.** Do not edit `platformsetting` by hand while the dashboard
 is usable. If the UI itself cannot be reached, the minimum recovery is:
