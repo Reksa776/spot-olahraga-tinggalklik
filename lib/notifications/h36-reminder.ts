@@ -27,7 +27,8 @@
  * ── ELIGIBILITY IS DERIVED, NOT INVENTED ────────────────────────────────────────────
  * Paid order: `status = PAID`, `paymentStatus = PAID`, `paidAt != null` — the same rule the
  * ticket-issued notification already uses. Ticket: `ISSUED`. Event: `PUBLISHED`, not cancelled
- * or archived, `startAt` in `(now, now + 36h]`. Recipient: attendee phone, else holder phone.
+ * or archived, `startAt` in `(now, now + 36h]`. Recipient: attendee phone, holder phone,
+ * then the buyer phone captured at checkout.
  */
 
 import type { NotificationCategory } from "@prisma/client";
@@ -245,6 +246,7 @@ type ReminderTicket = {
     holderUserId: string | null;
     attendeePhone: string | null;
     holder: { phone: string | null } | null;
+    order: { buyerPhone: string | null };
 };
 
 type ReminderEvent = {
@@ -322,6 +324,9 @@ export async function runH36ReminderSweep(
                     holderUserId: true,
                     attendeePhone: true,
                     holder: { select: { phone: true } },
+                    // Checkout contact is the same number used by purchase-proof. Some buyers
+                    // have no phone saved on their account and no per-ticket attendee phone.
+                    order: { select: { buyerPhone: true } },
                 },
             },
         },
@@ -361,7 +366,10 @@ export async function runH36ReminderSweep(
 
         for (const ticket of event.tickets) {
             const rawPhone =
-                ticket.attendeePhone?.trim() ?? ticket.holder?.phone?.trim() ?? "";
+                ticket.attendeePhone?.trim() ||
+                ticket.holder?.phone?.trim() ||
+                ticket.order?.buyerPhone?.trim() ||
+                "";
 
             if (rawPhone.length === 0) {
                 result.skippedNoContact += 1;
