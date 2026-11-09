@@ -9,7 +9,7 @@ export async function ensureWhatsAppSessionKey(): Promise<void> {
     if (parseSessionKey(process.env.WA_SESSION_ENCRYPTION_KEY)) return;
 
     const sessionDir = path.resolve(
-        process.cwd(),
+        /* turbopackIgnore: true */ process.cwd(),
         process.env.WA_AUTH_DIR?.trim() || path.join("storage", "whatsapp-gateway")
     );
     await fs.mkdir(sessionDir, { recursive: true, mode: 0o700 });
@@ -19,7 +19,10 @@ export async function ensureWhatsAppSessionKey(): Promise<void> {
     }
     await fs.chmod(sessionDir, 0o700);
 
-    const keyPath = path.join(sessionDir, ".session-key");
+    const keyPath = path.join(
+        /* turbopackIgnore: true */ sessionDir,
+        ".session-key"
+    );
     try {
         const stat = await fs.lstat(keyPath);
         if (!stat.isFile() || stat.isSymbolicLink()) {

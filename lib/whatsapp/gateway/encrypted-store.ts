@@ -147,9 +147,11 @@ export class EncryptedJsonStore<T> {
     constructor(options: StoreOptions<T>) {
         assertKey(options.key);
 
-        this.directory = path.resolve(options.directory);
+        this.directory = path.resolve(
+            /* turbopackIgnore: true */ options.directory
+        );
         this.filePath = path.join(
-            this.directory,
+            /* turbopackIgnore: true */ this.directory,
             options.fileName ?? "auth.enc"
         );
         this.key = options.key;
@@ -223,7 +225,7 @@ export class EncryptedJsonStore<T> {
             this.serialize(unknownValue as T)
         );
         const tempPath = path.join(
-            this.directory,
+            /* turbopackIgnore: true */ this.directory,
             `.${path.basename(this.filePath)}.${process.pid}.${randomUUID()}.tmp`
         );
         const handle = await fs.open(tempPath, "wx", 0o600);

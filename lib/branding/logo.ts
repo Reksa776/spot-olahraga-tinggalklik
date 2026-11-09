@@ -141,7 +141,7 @@ export async function storeBrandingLogo(
         stripped.format
     )}`;
 
-    const filePath = path.join(uploadDir, fileName);
+    const filePath = path.join(/* turbopackIgnore: true */ uploadDir, fileName);
     // Write-then-rename: a partially written asset is never the one the DB points at.
     const tmpPath = `${filePath}.tmp`;
 
@@ -204,7 +204,7 @@ export async function brandingLogoExists(
     }
 
     try {
-        await fs.access(path.join(brandingLogoDir(), fileName));
+        await fs.access(path.join(/* turbopackIgnore: true */ brandingLogoDir(), fileName));
         return true;
     } catch {
         return false;
@@ -226,7 +226,7 @@ export async function deleteStoredBrandingLogo(
     }
 
     try {
-        await fs.unlink(path.join(brandingLogoDir(), safeName));
+        await fs.unlink(path.join(/* turbopackIgnore: true */ brandingLogoDir(), safeName));
     } catch {
         // Already gone — deletion is idempotent.
     }
@@ -248,7 +248,7 @@ export async function readStoredBrandingLogo(
 
     try {
         const buffer = await fs.readFile(
-            path.join(brandingLogoDir(), safeName)
+            path.join(/* turbopackIgnore: true */ brandingLogoDir(), safeName)
         );
 
         const ext = path.extname(safeName).toLowerCase();

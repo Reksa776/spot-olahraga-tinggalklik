@@ -155,9 +155,14 @@ export function resolveWhatsAppGatewayConfig(
         };
     }
 
-    const projectRoot = path.resolve(options.projectRoot ?? process.cwd());
+    const projectRoot = path.resolve(
+        /* turbopackIgnore: true */ options.projectRoot ?? process.cwd()
+    );
     const rawSessionDir = env.WA_AUTH_DIR?.trim() || path.join(projectRoot, "storage", "whatsapp-gateway");
-    const sessionDir = path.resolve(projectRoot, rawSessionDir);
+    const sessionDir = path.resolve(
+        /* turbopackIgnore: true */ projectRoot,
+        rawSessionDir
+    );
 
     const host = (env.WA_GATEWAY_HOST?.trim() || "127.0.0.1") as string;
 
