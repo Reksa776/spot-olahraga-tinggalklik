@@ -2,16 +2,31 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseSessionKey } from "./config";
+import { checkSessionDirIsolation } from "./session-dir";
 
 /** Load or create the persistent 32-byte key without requiring operators to encode it. */
 export async function ensureWhatsAppSessionKey(): Promise<void> {
     if (process.env.WA_GATEWAY_ENABLED?.trim().toLowerCase() !== "true") return;
     if (parseSessionKey(process.env.WA_SESSION_ENCRYPTION_KEY)) return;
 
-    const sessionDir = path.resolve(
-        /* turbopackIgnore: true */ process.cwd(),
-        process.env.WA_AUTH_DIR?.trim() || path.join("storage", "whatsapp-gateway")
+    const isolation = checkSessionDirIsolation(
+        path.resolve(
+            /* turbopackIgnore: true */ process.cwd(),
+            process.env.WA_AUTH_DIR?.trim() ||
+                path.join("storage", "whatsapp-gateway")
+        ),
+        { projectRoot: process.cwd() }
     );
+
+    if (!isolation.ok) {
+        // Never create a key inside the application tree: that directory can be emptied
+        // by an explicit disconnect.
+        throw new Error(
+            "WA_AUTH_DIR must be a dedicated session directory, not the project root or an ancestor of it."
+        );
+    }
+
+    const sessionDir = isolation.directory;
     await fs.mkdir(sessionDir, { recursive: true, mode: 0o700 });
     const directory = await fs.lstat(sessionDir);
     if (!directory.isDirectory() || directory.isSymbolicLink()) {

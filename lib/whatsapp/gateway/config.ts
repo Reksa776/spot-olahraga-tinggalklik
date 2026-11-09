@@ -1,5 +1,7 @@
 import path from "node:path";
 
+import { checkSessionDirIsolation } from "./session-dir";
+
 /**
  * ==========================================
  * WHATSAPP GATEWAY CONFIGURATION (PHASE P2)
@@ -163,6 +165,20 @@ export function resolveWhatsAppGatewayConfig(
         /* turbopackIgnore: true */ projectRoot,
         rawSessionDir
     );
+    const isolation = checkSessionDirIsolation(sessionDir, { projectRoot });
+
+    /*
+     * Refuse the project root and its ancestors. `WA_AUTH_DIR=.` would put `.env` — and
+     * `AUTH_SECRET` with it — inside the directory a disconnect empties.
+     */
+    if (!isolation.ok) {
+        return {
+            ok: false,
+            code: "UNSAFE_SESSION_DIR",
+            message:
+                "WA_AUTH_DIR must be a dedicated directory: a filesystem root, the project root and any ancestor of the project are refused.",
+        };
+    }
 
     const host = (env.WA_GATEWAY_HOST?.trim() || "127.0.0.1") as string;
 
@@ -300,7 +316,7 @@ export function resolveWhatsAppGatewayConfig(
             host,
             port,
             token,
-            sessionDir,
+            sessionDir: isolation.directory,
             sessionKey,
             dispatchTimeoutMs,
             shutdownGraceMs,

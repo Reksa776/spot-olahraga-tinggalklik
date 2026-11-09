@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import {
+    checkSessionDirIsolation,
+    findApplicationEntry,
+    PRESERVED_SESSION_ENTRIES,
+} from "./session-dir";
+
 /**
  * ==========================================
  * SESSION DELETION — NARROW AND FAIL-CLOSED
@@ -8,12 +14,20 @@ import path from "node:path";
  *
  * Only the CONTENTS of the configured session directory are removed, never the
  * directory itself. The directory must already exist, be a real directory (not a
- * symlink), and must not be a filesystem root. Every child is re-resolved through
- * `resolveSessionEntry`, which rejects separators, `..`, absolute names and any
- * result whose parent is not the configured root.
+ * symlink), and must pass `checkSessionDirIsolation`: a filesystem root, the project
+ * root and any ancestor of the project are refused. That last rule is what keeps the
+ * application's `.env` — and therefore `AUTH_SECRET`, which protects every sign-in
+ * cookie — outside the tree this function can empty.
  *
- * `.gateway.lock` is intentionally preserved: it is ownership evidence, not session
- * material. The caller checks the lock first and refuses deletion while it exists.
+ * A directory that directly contains an application file is refused BEFORE any
+ * deletion, so a misconfigured `WA_AUTH_DIR` cannot half-destroy a deployment.
+ *
+ * Every child is re-resolved through `resolveSessionEntry`, which rejects separators,
+ * `..`, absolute names and any result whose parent is not the configured root.
+ *
+ * `.gateway.lock` and `.session-key` are intentionally preserved: they are ownership and
+ * encryption-key evidence, not session material. Deleting the key would rotate the
+ * deployment's WhatsApp encryption key on the next start.
  */
 
 export class SessionPathError extends Error {
@@ -67,12 +81,13 @@ export function resolveSessionEntry(rootDir: string, entryName: string): string 
 export async function clearWhatsAppSessionDirectory(
     sessionDir: string
 ): Promise<{ deletedEntries: number }> {
-    const root = path.resolve(/* turbopackIgnore: true */ sessionDir);
+    const isolation = checkSessionDirIsolation(sessionDir);
 
-    if (root === path.parse(root).root) {
-        throw new SessionPathError("Refusing to clear a filesystem root.");
+    if (!isolation.ok) {
+        throw new SessionPathError(isolation.message);
     }
 
+    const root = isolation.directory;
     const stat = await fs.lstat(root);
 
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
@@ -84,12 +99,32 @@ export async function clearWhatsAppSessionDirectory(
     const entries = await fs.readdir(root, { withFileTypes: true });
 
     /*
+     * Refuse a directory that is really part of the application. This is the second
+     * boundary after the path check: it catches a session directory that holds `.env`
+     * or application files even when its location is otherwise acceptable.
+     */
+    const applicationEntry = findApplicationEntry(
+        entries.map((entry) => entry.name)
+    );
+
+    if (applicationEntry) {
+        throw new SessionPathError(
+            `Refusing to clear a directory that contains application files (${applicationEntry}).`
+        );
+    }
+
+    /*
      * Resolve and validate EVERY entry before deleting the first one. A rejected
      * name or symlink must not leave a half-cleared session behind.
      */
     const targets = entries
-        // Ownership is checked by the caller; never delete the file that proves it.
-        .filter((entry) => entry.name !== ".gateway.lock")
+        // Ownership/key evidence is not session material; never delete it.
+        .filter(
+            (entry) =>
+                !(PRESERVED_SESSION_ENTRIES as readonly string[]).includes(
+                    entry.name
+                )
+        )
         .map((entry) => {
             if (entry.isSymbolicLink()) {
                 throw new SessionPathError(
