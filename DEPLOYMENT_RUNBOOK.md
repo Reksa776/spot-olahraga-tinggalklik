@@ -527,15 +527,18 @@ such to users. Zero-downtime would require clustering, which the in-memory limit
 
 ### 7.1 Notification worker (P1)
 
-`ecosystem.config.cjs` now declares `tinggalklik-worker` as a second, forked, single-instance
-process. It has no port and no HTTP server. It inherits the host environment; no secret or
-notification switch is stored in the repository.
+`ecosystem.config.cjs` declares the notification worker and a separate `tinggalklik-jobs-tick`
+scheduler as forked, single-instance processes. The scheduler calls the existing authenticated
+local job-tick route at startup and every minute; that route enqueues H-36 reminders. Both inherit
+the host environment; no secret or notification switch is stored in the repository.
 
 ```bash
 pm2 start ecosystem.config.cjs --only tinggalklik-worker
 pm2 restart tinggalklik-worker       # code or environment change
 pm2 stop tinggalklik-worker          # graceful: finishes the claimed batch
 pm2 logs tinggalklik-worker          # timestamps are enabled
+pm2 start ecosystem.config.cjs --only tinggalklik-jobs-tick
+pm2 logs tinggalklik-jobs-tick       # tick result includes H-36 enqueue counts
 pm2 save
 ```
 
@@ -548,6 +551,12 @@ pm2 save
 | Logs | `~/.pm2/logs/tinggalklik-worker-{out,error}.log` |
 | Graceful signal | SIGTERM/SIGINT handled; `kill_timeout: 30000` follows |
 | Restart guard | `min_uptime: 30s`, `max_restarts: 10`, `restart_delay: 5000` |
+
+The scheduler requires `JOBS_TICK_SECRET` (at least 32 characters) in the PM2 host
+environment. `JOBS_TICK_URL` is optional; by default it calls
+`http://127.0.0.1:${PORT}/api/internal/jobs/tick`, with port `3003` in this PM2 configuration.
+Run `pm2 start ecosystem.config.cjs` to start the web app, notification worker and scheduler
+together, then `pm2 save` to persist the process list.
 
 **Health probe.** Run it in the same environment as the worker:
 
