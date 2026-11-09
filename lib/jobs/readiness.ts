@@ -12,7 +12,7 @@ import { JOB_NAMES, type JobName } from "./lock";
  * `JobLock.lastRunAt` and `lastStatus` are the honest heartbeat of the two schedulers this
  * deployment has:
  *
- *   • the external cron calling `POST /api/internal/jobs/tick` (three leased jobs), and
+ *   • the PM2 `tinggalklik-jobs-tick` process (or external cron) running three leased jobs, and
  *   • the separate notification worker (`scripts/notification-worker.ts`).
  *
  * They are written on lease release. A row whose `lastRunAt` is older than twice its expected
@@ -115,7 +115,7 @@ function warningFor(job: {
     intervalMs: number;
 }): string | null {
     if (job.severity === "never-run") {
-        return `${job.label}: belum pernah berjalan. Pastikan cron memanggil POST /api/internal/jobs/tick dan proses tinggalklik-worker aktif.`;
+        return `${job.label}: belum pernah berjalan. Pastikan tinggalklik-jobs-tick dan tinggalklik-worker aktif.`;
     }
 
     if (job.stale) {

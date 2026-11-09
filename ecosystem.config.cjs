@@ -54,8 +54,7 @@
  *   * NO `out_file` / `error_file`. The defaults (`~/.pm2/logs/…`) need no directory to
  *     exist in the repository and are what `pm2 logs` already reads. Rotation is an
  *     operator concern: `pm2 install pm2-logrotate`.
- *   * NO scheduler. The job tick is a separate, separately-gated decision — see the
- *     "Scheduler gate" section of the runbook.
+ *   * The job tick runs as the separate `tinggalklik-jobs-tick` PM2 process below.
  *
  * ── THE NOTIFICATION WORKER (PHASE P1) ────────────────────────────────────────────
  * `tinggalklik-worker` is a SEPARATE process, not an extra Next.js instance. It owns the

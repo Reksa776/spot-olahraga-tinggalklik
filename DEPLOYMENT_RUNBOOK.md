@@ -528,9 +528,9 @@ such to users. Zero-downtime would require clustering, which the in-memory limit
 ### 7.1 Notification worker (P1)
 
 `ecosystem.config.cjs` declares the notification worker and a separate `tinggalklik-jobs-tick`
-scheduler as forked, single-instance processes. The scheduler calls the existing authenticated
-local job-tick route at startup and every minute; that route enqueues H-36 reminders. Both inherit
-the host environment; no secret or notification switch is stored in the repository.
+scheduler as forked, single-instance processes. The scheduler runs `runJobsTick()` directly at
+startup and every minute; its H-36 job enqueues reminders. Both inherit the host environment; no
+secret or notification switch is stored in the repository.
 
 ```bash
 pm2 start ecosystem.config.cjs --only tinggalklik-worker
@@ -552,11 +552,9 @@ pm2 save
 | Graceful signal | SIGTERM/SIGINT handled; `kill_timeout: 30000` follows |
 | Restart guard | `min_uptime: 30s`, `max_restarts: 10`, `restart_delay: 5000` |
 
-The scheduler requires `JOBS_TICK_SECRET` (at least 32 characters) in the PM2 host
-environment. `JOBS_TICK_URL` is optional; by default it calls
-`http://127.0.0.1:${PORT}/api/internal/jobs/tick`, with port `3003` in this PM2 configuration.
-Run `pm2 start ecosystem.config.cjs` to start the web app, notification worker and scheduler
-together, then `pm2 save` to persist the process list.
+The scheduler needs the same database environment as the app and worker. It does not require
+`JOBS_TICK_SECRET` or a running web endpoint. Run `pm2 start ecosystem.config.cjs` to start the
+web app, notification worker and scheduler together, then `pm2 save` to persist the process list.
 
 **Health probe.** Run it in the same environment as the worker:
 
@@ -862,7 +860,9 @@ uploads tarball — that is the only case where the two halves must be restored 
 
 ## 10. Scheduler gate
 
-**The scheduler is NOT installed, and a later phase installs it — not this one.**
+`ecosystem.config.cjs` now includes `tinggalklik-jobs-tick`. Start that PM2 process to run
+`runJobsTick()` at startup and every minute. It runs the same leased jobs as the authenticated
+route below, without depending on an HTTP request or `JOBS_TICK_SECRET`.
 
 `POST /api/internal/jobs/tick` is the only driver of two behaviours that are otherwise
 silently inert:
@@ -872,18 +872,19 @@ silently inert:
 - reservation expiry (releasing held seats from abandoned checkouts) — without it events
   appear sold out.
 
-The contract is fixed and must not be re-designed: `POST /api/internal/jobs/tick` with
-`Authorization: Bearer $JOBS_TICK_SECRET`, one request per minute, constant-time comparison,
-fails closed (`401`) when the secret is unset, one-row-per-job lease in the `joblock` table.
-The full procedure is in `README.md` §1.
+The authenticated `POST /api/internal/jobs/tick` remains available for external schedulers. The
+PM2 scheduler and that route share the same job runner and one-row-per-job lease in `joblock`, so
+overlapping triggers do not run the same job concurrently. Keep only one scheduler active in the
+normal deployment.
 
 **Install the schedule only when ALL TEN conditions hold:**
 
 1. The application is deployed to the VPS and reachable over HTTPS.
 2. Production HTTPS works with a valid certificate (not a bypassed warning).
 3. The production environment is verified — §3.1 present, `PAYMENT_ENVIRONMENT=production`.
-4. `JOBS_TICK_SECRET` is configured (32 random bytes) and present in the *running* process.
-5. `POST /api/internal/jobs/tick` returns `401` **without** the header and `200` **with** it.
+4. The production process environment and PM2 configuration are verified.
+5. `/api/internal/jobs/tick` returns `401` without its header and `200` with it, if using an
+   external HTTP scheduler.
 6. `/api/health` and `/api/health/ready` both answer correctly.
 7. `npx prisma migrate status` reports the schema up to date.
 8. PM2 persistence/startup is verified — a reboot brings the app back (`pm2 save` + `pm2 startup`).
@@ -909,7 +910,7 @@ SELECT name, lastRunAt, lastStatus, lockedUntil FROM joblock;
 | 1 | The whole Phase 21–26 body is uncommitted (45 modified + ~40 untracked paths) | `git status --porcelain` | Owner commits and pushes the release baseline **from a reviewed state** |
 | 2 | `TRUSTED_PROXY` unset in production ⇒ one platform-wide login bucket | `lib/rate-limit.ts#getClientIp`; §4 | Set it **and** keep the loopback binding |
 | 3 | nginx must **overwrite** `x-forwarded-for` (`$remote_addr`), not append | `getClientIp` reads entry 0; §4.3 | Use the §4.3 server block |
-| 4 | No scheduler ⇒ events never complete, seats never released | `README.md` §1; §10 | Install only after all ten gate conditions |
+| 4 | Scheduler must be started in PM2 or configured externally | `ecosystem.config.cjs`; §7.1, §10 | Start `tinggalklik-jobs-tick` and persist with `pm2 save` |
 | 5 | `UPLOAD_DIR` holds irreplaceable imagery with no backup | §6 | Move outside the checkout + back up both halves |
 | 6 | A backup/restore drill has never been performed | §6.3 | Run it once before go-live |
 
