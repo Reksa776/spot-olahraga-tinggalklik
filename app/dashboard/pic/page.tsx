@@ -737,8 +737,16 @@ async function PicSelfServiceSection({
                                     {assignment.isActive ? (
                                         <nav aria-label={`Aksi event ${assignment.eventTitle}`} className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
                                             <TextLink href={`/pic/scanner/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Pindai tiket</TextLink>
-                                            <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Kirim dokumen</TextLink>
-                                            <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Blast peserta</TextLink>
+                                            {assignment.eventStatus === "COMPLETED" ? (
+                                                <>
+                                                    <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Kirim dokumen</TextLink>
+                                                    <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Blast peserta</TextLink>
+                                                </>
+                                            ) : (
+                                                <p className="basis-full pt-1 text-xs text-muted-foreground">
+                                                    Dokumen dan blast peserta tersedia setelah status event menjadi Selesai.
+                                                </p>
+                                            )}
                                         </nav>
                                     ) : null}
                                 </article>
@@ -787,8 +795,16 @@ async function PicSelfServiceSection({
                                         {assignment.isActive ? (
                                             <nav aria-label={`Aksi event ${assignment.eventTitle}`} className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
                                                 <TextLink href={`/pic/scanner/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Pindai tiket</TextLink>
-                                                <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Kirim dokumen peserta</TextLink>
-                                                <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Blast peserta</TextLink>
+                                                {assignment.eventStatus === "COMPLETED" ? (
+                                                    <>
+                                                        <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Kirim dokumen peserta</TextLink>
+                                                        <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Blast peserta</TextLink>
+                                                    </>
+                                                ) : (
+                                                    <span className="basis-full pt-1 text-xs text-muted-foreground">
+                                                        Dokumen dan blast peserta tersedia setelah status event menjadi Selesai.
+                                                    </span>
+                                                )}
                                             </nav>
                                         ) : null}
                                     </div>,
