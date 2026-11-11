@@ -899,7 +899,7 @@ export const rateLimiters = {
     // Payment creation — prevent rapid-fire payment attempts. Used by the ticketing
     // payment-create route, which is the only payment surface left.
     paymentCreation: (userId: string) =>
-        checkRateLimit(`payment:${userId}`, 5, 5 * 60 * 1000), // 5 per 5 min
+        checkRateLimit(`payment:${userId}`, 5, 2 * 60 * 1000), // 5 per 2 min
 
     // File upload — prevent upload flooding
     upload: (userId: string) =>

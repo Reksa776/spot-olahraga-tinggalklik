@@ -82,7 +82,7 @@ export async function POST(
          * bucket, one account can drive that call as fast as it can send requests — which the
          * provider answers by throttling the MERCHANT, i.e. every other buyer. The bucket has
          * existed in `lib/rate-limit.ts` since the payment work; this is the route that uses
-         * it. The limit is generous (5 per 5 minutes per user) because a buyer legitimately
+         * it. The limit is generous (5 per 2 minutes per user) because a buyer legitimately
          * retries after a failure, and it counts ATTEMPTS, not successful sessions: a burst of
          * failures is exactly the pattern worth stopping.
          *
@@ -105,7 +105,7 @@ export async function POST(
                     success: false,
                     code: "RATE_LIMITED",
                     message:
-                        "Terlalu banyak percobaan pembayaran. Coba lagi beberapa saat lagi.",
+                        "Terlalu banyak percobaan pembayaran. Tunggu sekitar 2 menit sebelum mencoba lagi.",
                     details: { retryAfterSeconds },
                 },
                 {
