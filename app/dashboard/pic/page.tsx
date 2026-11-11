@@ -667,9 +667,8 @@ async function PicSelfServiceSection({
                         fields={[assignmentField, eventStatusField]}
                     />
 
-                    <DataTable
-                        minWidth={980}
-                        empty={
+                    <div className="grid gap-3 xl:hidden">
+                        {eventRows.length === 0 ? (
                             <EmptyBlock
                                 icon={<CalendarDays size={22} />}
                                 title={
@@ -684,76 +683,68 @@ async function PicSelfServiceSection({
                                 }
                                 action={
                                     hasEventFilter ? (
-                                        <PrimaryAction
-                                            href="/dashboard/pic#events"
-                                            variant="outline"
-                                        >
+                                        <PrimaryAction href="/dashboard/pic#events" variant="outline">
                                             Lihat semua event
                                         </PrimaryAction>
                                     ) : undefined
                                 }
                             />
-                        }
-                        columns={[
-                            { header: "Event" },
-                            { header: "Status Event" },
-                            { header: "Penugasan" },
-                            { header: "Pesanan", align: "right" },
-                            { header: "Tiket Terjual", align: "right" },
-                            { header: "Ditugaskan", align: "right" },
-                        ]}
-                        rows={eventRows.map((assignment) => ({
-                            key: assignment.id,
-                            cells: [
-                                <div key="title" className="min-w-0">
-                                    <TextLink href={`/e/${assignment.eventSlug}`}>
-                                        <span className="text-sm font-semibold">
-                                            {assignment.eventTitle}
-                                        </span>
-                                    </TextLink>
-                                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                                        {assignment.eventSlug}
-                                    </p>
-                                    {assignment.isActive ? (
-                                        <div className="mt-1">
+                        ) : (
+                            eventRows.map((assignment) => (
+                                <article
+                                    key={assignment.id}
+                                    className="min-w-0 rounded-xl border border-border bg-card p-4 shadow-sm"
+                                >
+                                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                        <div className="min-w-0">
                                             <TextLink
-                                                href={`/pic/scanner/${assignment.eventId}`}
+                                                href={`/e/${assignment.eventSlug}`}
+                                                className="break-words text-base"
                                             >
-                                                Pindai tiket
+                                                {assignment.eventTitle}
                                             </TextLink>
-                                            <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`}>
-                                                Kirim dokumen peserta
-                                            </TextLink>
-                                            <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`}>
-                                                Blast peserta
-                                            </TextLink>
+                                            <p className="mt-1 break-all text-xs text-muted-foreground">
+                                                {assignment.eventSlug}
+                                            </p>
                                         </div>
+                                        <div className="flex flex-wrap gap-2">
+                                            <StatusBadge tone={EVENT_STATUS_TONE[assignment.eventStatus] ?? "neutral"}>
+                                                {EVENT_STATUS_LABELS[assignment.eventStatus] ?? assignment.eventStatus}
+                                            </StatusBadge>
+                                            <StatusBadge tone={assignment.isActive ? "success" : "neutral"}>
+                                                {assignment.isActive ? "Aktif" : "Dicabut"}
+                                            </StatusBadge>
+                                        </div>
+                                    </div>
+
+                                    <dl className="mt-4 grid grid-cols-2 gap-2">
+                                        <div className="rounded-lg bg-muted/50 px-3 py-2">
+                                            <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">Pesanan</dt>
+                                            <dd className="mt-1 text-sm font-semibold tabular-nums">{assignment.attributedOrders}</dd>
+                                        </div>
+                                        <div className="rounded-lg bg-muted/50 px-3 py-2">
+                                            <dt className="text-[0.6875rem] font-semibold uppercase tracking-wide text-muted-foreground">Tiket terjual</dt>
+                                            <dd className="mt-1 text-sm font-semibold tabular-nums">{assignment.paidTickets}</dd>
+                                        </div>
+                                    </dl>
+
+                                    <p className="mt-3 text-xs text-muted-foreground">
+                                        Ditugaskan {assignment.revokedAt
+                                            ? DATE_FORMAT.format(new Date(assignment.revokedAt))
+                                            : DATE_FORMAT.format(new Date(assignment.assignedAt))}
+                                    </p>
+
+                                    {assignment.isActive ? (
+                                        <nav aria-label={`Aksi event ${assignment.eventTitle}`} className="mt-4 flex flex-wrap gap-2 border-t border-border pt-3">
+                                            <TextLink href={`/pic/scanner/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Pindai tiket</TextLink>
+                                            <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Kirim dokumen</TextLink>
+                                            <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs">Blast peserta</TextLink>
+                                        </nav>
                                     ) : null}
-                                </div>,
-                                <StatusBadge
-                                    key="status"
-                                    tone={EVENT_STATUS_TONE[assignment.eventStatus] ?? "neutral"}
-                                >
-                                    {assignment.eventStatus}
-                                </StatusBadge>,
-                                <StatusBadge
-                                    key="active"
-                                    tone={assignment.isActive ? "success" : "neutral"}
-                                >
-                                    {assignment.isActive ? "Aktif" : "Dicabut"}
-                                </StatusBadge>,
-                                <span key="orders" className="text-sm tabular-nums">
-                                    {assignment.attributedOrders}
-                                </span>,
-                                <span key="tickets" className="text-sm tabular-nums">
-                                    {assignment.paidTickets}
-                                </span>,
-                                assignment.revokedAt
-                                    ? DATE_FORMAT.format(new Date(assignment.revokedAt))
-                                    : DATE_FORMAT.format(new Date(assignment.assignedAt)),
-                            ],
-                        }))}
-                        footer={
+                                </article>
+                            ))
+                        )}
+                        {eventRows.length > 0 ? (
                             <LinkPagination
                                 page={eventPagination.page}
                                 totalPages={eventPagination.totalPages}
@@ -761,8 +752,70 @@ async function PicSelfServiceSection({
                                 query={filterState}
                                 label="Halaman"
                             />
-                        }
-                    />
+                        ) : null}
+                    </div>
+
+                    <div className="hidden xl:block">
+                        <DataTable
+                            minWidth={980}
+                            empty={
+                                <EmptyBlock
+                                    icon={<CalendarDays size={22} />}
+                                    title={hasEventFilter ? "Tidak ada event dengan filter tersebut." : "Belum ada event yang ditugaskan."}
+                                    description={hasEventFilter ? "Coba pilih filter lain, atau lihat semua penugasan." : "Hubungi admin platform atau penyelenggara untuk ditugaskan ke event."}
+                                    action={hasEventFilter ? (
+                                        <PrimaryAction href="/dashboard/pic#events" variant="outline">Lihat semua event</PrimaryAction>
+                                    ) : undefined}
+                                />
+                            }
+                            columns={[
+                                { header: "Event" },
+                                { header: "Status Event" },
+                                { header: "Penugasan" },
+                                { header: "Pesanan", align: "right" },
+                                { header: "Tiket Terjual", align: "right" },
+                                { header: "Ditugaskan", align: "right" },
+                            ]}
+                            rows={eventRows.map((assignment) => ({
+                                key: assignment.id,
+                                cells: [
+                                    <div key="title" className="min-w-0">
+                                        <TextLink href={`/e/${assignment.eventSlug}`}>
+                                            <span className="text-sm font-semibold">{assignment.eventTitle}</span>
+                                        </TextLink>
+                                        <p className="mt-0.5 truncate text-xs text-muted-foreground">{assignment.eventSlug}</p>
+                                        {assignment.isActive ? (
+                                            <nav aria-label={`Aksi event ${assignment.eventTitle}`} className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                                                <TextLink href={`/pic/scanner/${assignment.eventId}`} className="text-xs">Pindai tiket</TextLink>
+                                                <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="text-xs">Kirim dokumen peserta</TextLink>
+                                                <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="text-xs">Blast peserta</TextLink>
+                                            </nav>
+                                        ) : null}
+                                    </div>,
+                                    <StatusBadge key="status" tone={EVENT_STATUS_TONE[assignment.eventStatus] ?? "neutral"}>
+                                        {EVENT_STATUS_LABELS[assignment.eventStatus] ?? assignment.eventStatus}
+                                    </StatusBadge>,
+                                    <StatusBadge key="active" tone={assignment.isActive ? "success" : "neutral"}>
+                                        {assignment.isActive ? "Aktif" : "Dicabut"}
+                                    </StatusBadge>,
+                                    <span key="orders" className="text-sm tabular-nums">{assignment.attributedOrders}</span>,
+                                    <span key="tickets" className="text-sm tabular-nums">{assignment.paidTickets}</span>,
+                                    assignment.revokedAt
+                                        ? DATE_FORMAT.format(new Date(assignment.revokedAt))
+                                        : DATE_FORMAT.format(new Date(assignment.assignedAt)),
+                                ],
+                            }))}
+                            footer={
+                                <LinkPagination
+                                    page={eventPagination.page}
+                                    totalPages={eventPagination.totalPages}
+                                    basePath="/dashboard/pic"
+                                    query={filterState}
+                                    label="Halaman"
+                                />
+                            }
+                        />
+                    </div>
                 </SectionCard>
 
                 <div id="referrals" className="scroll-mt-16 flex flex-col gap-6">
