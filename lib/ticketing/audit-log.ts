@@ -201,8 +201,8 @@ export type TicketingAuditAction =
     | "pic.assign.reactivate"
     | "pic.assign.revoke"
     // ── PIC post-event blast ─────────────────────────────────────────────────────
-    // A PIC distributing a document + message to every paid participant of an assigned
-    // event. Its own action name because it is a BROADCAST: "who messaged the whole
+    // A PIC distributing a Drive link to checked-in attendees of an assigned event. Its
+    // own action name because it is a BROADCAST: "who messaged the whole
     // attendee list, and when?" is an incident question distinct from any per-order
     // notification, and the metadata carries the recipient/delivery counts.
     | "pic.blast.send"
@@ -398,7 +398,7 @@ export type TicketingAuditParams = {
         | "PlatformSetting"
         /** Phase 33: a User account created or (de)activated by user management. */
         | "User"
-        /** PIC post-event blast: the uploaded `EventDocument` the message links to. */
+        /** PIC post-event blast: the event whose attendees received the document link. */
         | "EventDocument";
     /** cuid of the affected row (goes into `entityRef`). */
     entityRef?: string | null;

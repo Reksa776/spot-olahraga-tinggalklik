@@ -54,23 +54,21 @@ export default async function PicBlastPage({
                 <PageHeader
                     eyebrow="PIC"
                     title="Blast pasca-acara"
-                    description={`Kirim dokumen dan pesan kepada peserta ${context.event.title} melalui WhatsApp.`}
+                    description={`Bagikan tautan dokumen Google Drive kepada peserta yang hadir di ${context.event.title}.`}
                 />
             </div>
 
             {participants.hasMore ? (
                 <InfoNote tone="warn">
-                    Peserta melebihi {MAX_BLAST_RECIPIENTS}. Blast akan mengirim ke{" "}
-                    {MAX_BLAST_RECIPIENTS} pertama. Jalankan ulang untuk sisanya.
+                    Jumlah peserta melebihi batas {MAX_BLAST_RECIPIENTS} pesanan per blast. Hubungi admin untuk mengirim ke seluruh peserta.
                 </InfoNote>
             ) : null}
 
             <InfoNote>
-                Peserta diambil dari pesanan <strong>lunas</strong> yang memiliki tiket
-                berstatus terbit atau sudah check-in. Nomor diambil dari nomor pembeli pada
-                pesanan (fallback ke nomor akun) dan dinormalisasi ke format 62…; nomor tidak
-                valid dilewati, bukan ditebak. Pengiriman mengikuti antrean notifikasi yang
-                sama dengan reminder dan bukti pembelian.
+                Peserta yang menerima pesan adalah pembeli dengan pesanan <strong>lunas</strong>
+                dan setidaknya satu tiket berstatus <strong>check-in</strong>. Pesan dikirim
+                ke nomor WhatsApp yang diisi saat pemesanan. Pastikan tautan Drive dapat dibuka
+                oleh peserta yang memiliki tautan.
             </InfoNote>
 
             <SectionCard
@@ -80,7 +78,7 @@ export default async function PicBlastPage({
                 {participants.recipients.length === 0 ? (
                     <EmptyBlock
                         title="Belum ada peserta yang bisa dihubungi"
-                        description="Peserta muncul setelah pembayaran lunas dan tiket diterbitkan."
+                        description="Peserta muncul setelah pesanan lunas dan tiket berhasil di-check-in."
                     />
                 ) : (
                     <DataTable
@@ -106,10 +104,10 @@ export default async function PicBlastPage({
                 )}
             </SectionCard>
 
-            <SectionCard title="Dokumen & pesan">
+            <SectionCard title="Tautan dokumen">
                 <PicEventBlastForm
                     eventId={context.event.id}
-                    eventTitle={context.event.title}
+                    recipientCount={participants.recipients.length}
                 />
             </SectionCard>
         </div>
