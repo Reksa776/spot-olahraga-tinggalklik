@@ -4,7 +4,7 @@ import { getConfiguredAppOrigin } from "@/lib/app-origin";
 import { prisma } from "@/lib/prisma";
 import { isTicketCode } from "@/lib/ticketing/tickets/reference";
 
-import { normalizeEmail, normalizeIndonesianPhone } from "./contacts";
+import { normalizeEmail } from "./contacts";
 import { enqueueNotification } from "./enqueue";
 import { structuredLog, sanitizeErrorMessage } from "./logger";
 import { readNotificationStoreContact } from "./store-contact";
@@ -22,11 +22,12 @@ import {
  * This runs AFTER `issueTicketsForOrder()` has committed and only when it actually created
  * ticket rows. It never sends, never claims a delivery and never changes ticket state.
  *
- * One order-level business notification is materialised as one row per channel by the
- * existing Phase 1 enqueue contract:
+ * One order-level email is materialised for an issued order:
  *
  *     ticket-issued:{orderNumber}:email:v1
- *     ticket-issued:{orderNumber}:whatsapp:v1
+ *
+ * WhatsApp is intentionally not used for this post-issuance message to avoid duplicate ticket
+ * messages. Purchase-proof and H-36 reminders have independent channel policies.
  *
  * The public code is `Ticket.ticketCode`; the scanner credential (`qrTokenHash`) is never
  * selected here. The owner chose `code_link`: the template prints public codes and an
@@ -59,7 +60,6 @@ export type TicketIssuedOrderRow = {
     eventId: string;
     organizerId: string;
     buyerEmail: string | null;
-    buyerPhone: string | null;
     event: {
         title: string;
         startAt: Date;
@@ -110,7 +110,6 @@ const ORDER_SELECT = {
     eventId: true,
     organizerId: true,
     buyerEmail: true,
-    buyerPhone: true,
     event: {
         select: {
             title: true,
@@ -310,33 +309,20 @@ export async function enqueueTicketIssued(
         );
         const payload = buildTicketIssuedPayload({ order, store, walletUrl });
 
-        const plans: ChannelPlan[] = [
-            {
-                channel: "EMAIL",
-                key: "email",
-                raw: order.buyerEmail,
-                normalized: normalizeEmail(order.buyerEmail),
-            },
-            {
-                channel: "WHATSAPP",
-                key: "whatsapp",
-                raw: order.buyerPhone,
-                normalized: normalizeIndonesianPhone(order.buyerPhone),
-            },
-        ];
-
+        const emailPlan: ChannelPlan = {
+            channel: "EMAIL",
+            key: "email",
+            raw: order.buyerEmail,
+            normalized: normalizeEmail(order.buyerEmail),
+        };
         const email = await enqueueOneChannel({
             order,
             payload,
-            plan: plans[0],
+            plan: emailPlan,
         });
-        const whatsapp = await enqueueOneChannel({
-            order,
-            payload,
-            plan: plans[1],
-        });
+        const whatsapp: TicketIssuedChannelResult = "skipped";
 
-        if (email === "failed" || whatsapp === "failed") {
+        if (email === "failed") {
             structuredLog("warn", "notification.ticket_issued.partial", {
                 orderNumber: order.orderNumber,
                 email,
@@ -372,9 +358,8 @@ export type TicketIssuedSweepResult = {
 /**
  * Recover a lost post-commit enqueue without a migration or an outbox table.
  *
- * The idempotency key is the outbox: an order with issued tickets and no ticket-issued row
- * for a channel is an enqueue that did not complete. Per-channel `none` clauses are used so
- * an order with email present and WhatsApp missing is still a candidate.
+ * The idempotency key is the outbox: an order with issued tickets and no ticket-issued email
+ * row is an enqueue that did not complete.
  *
  * Enqueue-only: it never claims a delivery and never sends.
  */
@@ -408,24 +393,12 @@ export async function sweepMissingTicketNotifications(
                 // `null` endAt is excluded, so an unprovable window is skipped.
                 endAt: { gte: windowStart },
             },
-            OR: [
-                {
-                    notifications: {
-                        none: {
-                            templateKey: TICKET_ISSUED_TEMPLATE_KEY,
-                            channel: "email",
-                        },
-                    },
+            notifications: {
+                none: {
+                    templateKey: TICKET_ISSUED_TEMPLATE_KEY,
+                    channel: "email",
                 },
-                {
-                    notifications: {
-                        none: {
-                            templateKey: TICKET_ISSUED_TEMPLATE_KEY,
-                            channel: "whatsapp",
-                        },
-                    },
-                },
-            ],
+            },
         },
         orderBy: [{ paidAt: "asc" }],
         take: limit,

@@ -36,9 +36,9 @@
 export const PURCHASE_PROOF_TEMPLATE_KEY = "purchase-proof.v1";
 export const PURCHASE_PROOF_VERSION = "v1";
 
-/** The owner-approved opening sentence, verbatim. */
+/** Opening line used for the email and WhatsApp transaction receipt. */
 export const PURCHASE_PROOF_OPENING =
-    "Bukti pembelian Anda telah berhasil dikonfirmasi. Simpan pesan ini sebagai referensi transaksi Anda.";
+    "Berikut ringkasan transaksi Anda sebagai referensi.";
 
 const MAX_ITEMS = 10;
 const MAX_ITEM_NAME = 120;
@@ -331,6 +331,9 @@ export function renderPurchaseProof(
     const paidAt = isoDate(payload.paidAt) ?? isoDate(payload.createdAt);
 
     const lines: string[] = [
+        `Halo ${buyerName},`,
+        "",
+        `Pembayaran untuk event "${eventTitle}" telah kami terima.`,
         PURCHASE_PROOF_OPENING,
         "",
         `Nomor transaksi: ${orderNumber}`,
@@ -392,15 +395,11 @@ export function renderPurchaseProof(
     lines.push("", "Tiket:");
 
     if (ticketCodes.length === 0) {
-        /*
-         * The WhatsApp copy names the next event explicitly, because a WA message that only
-         * says "available on the order page" invites a support question. Email wording is
-         * unchanged: `channel` is absent for every existing caller.
-         */
+        // Both channels give the same next step in concise, natural language.
         lines.push(
             options?.channel === "WHATSAPP"
-                ? "Pembayaran diterima, e-ticket akan dikirim setelah issuance."
-                : "Tiket akan tersedia di halaman pesanan Anda setelah diterbitkan."
+                ? "E-ticket Anda akan tersedia di halaman pesanan setelah diterbitkan."
+                : "E-ticket akan tersedia di halaman pesanan Anda setelah diterbitkan."
         );
     } else {
         for (const code of ticketCodes) {
@@ -426,8 +425,16 @@ export function renderPurchaseProof(
         }
     }
 
+    lines.push(
+        "",
+        "Terima kasih telah melakukan pemesanan tiket melalui TinggalKlik.Co.",
+        "",
+        "Salam,",
+        "Tim TinggalKlik.Co"
+    );
+
     return {
-        subject: `Bukti pembelian ${orderNumber} — ${eventTitle}`,
+        subject: `Konfirmasi pembayaran ${orderNumber} — ${eventTitle}`,
         text: lines.join("\n"),
     };
 }

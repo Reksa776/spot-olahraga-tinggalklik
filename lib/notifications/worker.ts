@@ -19,6 +19,7 @@ import {
 import { classifyDeliveryError } from "./retry-policy";
 import { buildWhatsAppMedia } from "./whatsapp-media";
 import { renderNotification, TemplatePayloadInvalidError } from "./templates";
+import { TICKET_ISSUED_TEMPLATE_KEY } from "./ticket-issued-template";
 import {
     createDryRunEmailTransport,
     createDryRunWhatsAppTransport,
@@ -199,6 +200,28 @@ async function dispatchOne(
         structuredLog("warn", "notification.dispatch.skipped", {
             ...base,
             reason: "LEGACY_OR_UNCATEGORIZED",
+        }, deps.log);
+
+        return "skipped";
+    }
+
+    // Ticket-issued notices are email-only. Also suppress WhatsApp rows already queued before
+    // this policy was applied, so deploying the policy cannot release a backlog of duplicates.
+    if (
+        delivery.channel === "WHATSAPP" &&
+        delivery.templateKey === TICKET_ISSUED_TEMPLATE_KEY
+    ) {
+        await markDeliverySkipped(delivery.id, {
+            code: "CHANNEL_DISABLED_BY_POLICY",
+            message:
+                "WhatsApp delivery is disabled for ticket-issued notifications; nothing was transmitted.",
+            now: deps.now,
+        });
+
+        structuredLog("info", "notification.dispatch.channel_disabled", {
+            ...base,
+            templateKey: delivery.templateKey,
+            reason: "TICKET_ISSUED_WHATSAPP_DISABLED",
         }, deps.log);
 
         return "skipped";

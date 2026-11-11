@@ -166,17 +166,19 @@ export function renderH36Reminder(
     const lines = [
         "Halo,",
         "",
-        `Ini pengingat otomatis untuk event "${title}".`,
-        `Event dijadwalkan mulai dalam 36 jam, pada ${when}.`,
+        `Kami ingin mengingatkan bahwa event "${title}" akan dimulai 36 jam lagi, pada ${when}.`,
         ...(venue ? [`Lokasi: ${venue}.`] : []),
         "",
-        "Tunjukkan tiket dan kode QR kamu di pintu masuk.",
+        "Mohon siapkan e-ticket Anda dan tunjukkan kode QR kepada petugas saat registrasi.",
         "",
-        "Pesan ini dikirim otomatis oleh TinggalKlik.Co.",
+        "Sampai bertemu di acara.",
+        "",
+        "Salam,",
+        "Tim TinggalKlik.Co",
     ];
 
     return {
-        subject: `Pengingat: ${title} dimulai dalam 36 jam`,
+        subject: `Pengingat jadwal event: ${title}`,
         text: lines.join("\n"),
     };
 }
