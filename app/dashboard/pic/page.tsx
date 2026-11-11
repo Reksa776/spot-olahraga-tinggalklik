@@ -786,9 +786,9 @@ async function PicSelfServiceSection({
                                         <p className="mt-0.5 truncate text-xs text-muted-foreground">{assignment.eventSlug}</p>
                                         {assignment.isActive ? (
                                             <nav aria-label={`Aksi event ${assignment.eventTitle}`} className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                                                <TextLink href={`/pic/scanner/${assignment.eventId}`} className="text-xs">Pindai tiket</TextLink>
-                                                <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="text-xs">Kirim dokumen peserta</TextLink>
-                                                <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="text-xs">Blast peserta</TextLink>
+                                                <TextLink href={`/pic/scanner/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Pindai tiket</TextLink>
+                                                <TextLink href={`/dashboard/pic/documents/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Kirim dokumen peserta</TextLink>
+                                                <TextLink href={`/dashboard/pic/blast/${assignment.eventId}`} className="inline-flex min-h-9 items-center rounded-lg border border-border px-3 text-xs no-underline transition-colors hover:bg-muted hover:underline">Blast peserta</TextLink>
                                             </nav>
                                         ) : null}
                                     </div>,

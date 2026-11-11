@@ -954,7 +954,7 @@ SELECT name, lastRunAt, lastStatus, lockedUntil FROM joblock;
 - Node pin (`.nvmrc` + `engines`)
 - Health/readiness endpoints
 - `ecosystem.config.cjs`
-- Removal of the stale auto-deploy workflows
+- GitHub Actions push-to-main deploy workflow (`.github/workflows/deploy-production.yml`); it fails safely until the VPS connection secrets and variables are configured
 - Removal of the ephemeral tunnel host from the origin allowlist
 - Untracking the legacy runtime uploads
 - This runbook

@@ -303,6 +303,23 @@ environment contract, the `TRUSTED_PROXY`/`x-forwarded-for` requirement, the upl
 and backup contract, the migration procedure (forward-only; rollback is a restore), the
 rollback steps, and the gate that must be satisfied before the scheduler in §1 is installed.
 
+After the VPS and GitHub Actions secrets are configured, pushes to `main` trigger
+`.github/workflows/deploy-production.yml`. The workflow updates the clean VPS checkout, installs
+locked dependencies, confirms the database has no pending migrations, builds the app, reloads
+the web/notification/scheduler PM2 processes, and checks `/api/health/ready`. It intentionally
+stops instead of applying pending migrations: database and upload backups must be taken using
+the procedure in [`DEPLOYMENT_RUNBOOK.md`](./DEPLOYMENT_RUNBOOK.md) before schema changes.
+
+Configure these under **GitHub → Settings → Secrets and variables → Actions** before relying on
+the workflow:
+
+- Secrets: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` (runner-to-VPS private key),
+  `DEPLOY_KNOWN_HOSTS` (verified VPS host key).
+- Variables: `DEPLOY_PATH` (absolute path to the Git checkout on the VPS), and optionally
+  `DEPLOY_PORT` (defaults to `22`).
+
+The VPS account must also be able to fetch this repository, and its working tree must be clean.
+
 Whatever host you choose, the scheduler in §1 must eventually be installed on it, or the two
 background behaviours described above will be silently inactive — but only after that gate is
 met. Check out the
