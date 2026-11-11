@@ -2,8 +2,6 @@ import { notFound } from "next/navigation";
 
 import { PicEventBlastForm } from "@/components/dashboard/PicEventBlastForm";
 import {
-    DataTable,
-    EmptyBlock,
     InfoNote,
     PageHeader,
     SectionCard,
@@ -11,7 +9,7 @@ import {
 } from "@/components/dashboard/primitives";
 import { requireAuth } from "@/lib/authz";
 import {
-    listPicBlastParticipants,
+    listPicBlastHistory,
     MAX_BLAST_RECIPIENTS,
     requireAssignedPicEvent,
 } from "@/lib/pic/blast";
@@ -19,13 +17,6 @@ import {
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Blast Peserta" };
-
-/** Never render a full phone number in a list a PIC can screenshot. */
-function maskPhone(phone: string): string {
-    return phone.length <= 6
-        ? "•••"
-        : `${phone.slice(0, 4)}••••${phone.slice(-3)}`;
-}
 
 export default async function PicBlastPage({
     params,
@@ -43,7 +34,7 @@ export default async function PicBlastPage({
         notFound();
     }
 
-    const participants = await listPicBlastParticipants(eventId);
+    const history = await listPicBlastHistory(eventId);
 
     return (
         <div className="flex flex-col gap-6">
@@ -58,7 +49,7 @@ export default async function PicBlastPage({
                 />
             </div>
 
-            {participants.hasMore ? (
+            {history.hasMore ? (
                 <InfoNote tone="warn">
                     Jumlah peserta melebihi batas {MAX_BLAST_RECIPIENTS} pesanan per blast. Hubungi admin untuk mengirim ke seluruh peserta.
                 </InfoNote>
@@ -72,42 +63,18 @@ export default async function PicBlastPage({
             </InfoNote>
 
             <SectionCard
-                title={`Peserta (${participants.recipients.length})`}
-                description={`${participants.scannedOrders} pesanan diperiksa · ${participants.withoutPhone} tanpa nomor valid · ${participants.duplicatePhones} nomor duplikat digabung.`}
+                title={`Peserta (${history.recipients.length})`}
+                description={`${history.scannedOrders} pesanan diperiksa · ${history.withoutPhone} tanpa nomor valid · ${history.duplicatePhones} nomor duplikat digabung.`}
             >
-                {participants.recipients.length === 0 ? (
-                    <EmptyBlock
-                        title="Belum ada peserta yang bisa dihubungi"
-                        description="Penerima muncul setelah pesanan lunas dan tiket diterbitkan."
-                    />
-                ) : (
-                    <DataTable
-                        columns={[
-                            { header: "Peserta" },
-                            { header: "Nomor pesanan" },
-                            { header: "WhatsApp" },
-                        ]}
-                        rows={participants.recipients.map((recipient) => ({
-                            key: recipient.orderId,
-                            cells: [
-                                recipient.buyerName,
-                                recipient.orderNumber,
-                                <span
-                                    key="phone"
-                                    className="font-mono text-xs text-muted-foreground"
-                                >
-                                    {maskPhone(recipient.phone)}
-                                </span>,
-                            ],
-                        }))}
-                    />
-                )}
+                <p className="text-sm text-muted-foreground">
+                    Penerima adalah pembeli dengan pesanan lunas dan tiket aktif. Peserta yang check-in maupun yang belum check-in tetap termasuk.
+                </p>
             </SectionCard>
 
             <SectionCard title="Tautan dokumen">
                 <PicEventBlastForm
                     eventId={context.event.id}
-                    recipientCount={participants.recipients.length}
+                    initialHistory={history}
                 />
             </SectionCard>
         </div>

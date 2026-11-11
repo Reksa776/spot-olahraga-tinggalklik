@@ -137,6 +137,7 @@ export type PicBlastRecipient = {
 
 export type PicBlastParticipantResult = {
     recipients: PicBlastRecipient[];
+    withoutPhoneRecipients: Omit<PicBlastRecipient, "phone">[];
     scannedOrders: number;
     /**
      * Every PAID order on the event that has an ISSUED/CHECKED_IN ticket, before the
@@ -188,6 +189,7 @@ export async function listPicBlastParticipants(
 
     const seen = new Set<string>();
     const recipients: PicBlastRecipient[] = [];
+    const withoutPhoneRecipients: Omit<PicBlastRecipient, "phone">[] = [];
     let withoutPhone = 0;
     let duplicatePhones = 0;
 
@@ -197,6 +199,11 @@ export async function listPicBlastParticipants(
 
         if (!phone) {
             withoutPhone += 1;
+            withoutPhoneRecipients.push({
+                orderId: order.id,
+                orderNumber: order.orderNumber,
+                buyerName: order.buyerName,
+            });
             continue;
         }
 
@@ -216,6 +223,7 @@ export async function listPicBlastParticipants(
 
     return {
         recipients,
+        withoutPhoneRecipients,
         scannedOrders: orders.length,
         eligibleOrders,
         hasMore: eligibleOrders > take,
@@ -229,6 +237,123 @@ export type PicBlastEnqueueResult = {
     existing: number;
     failed: number;
 };
+
+export type PicBlastHistoryEntry = {
+    orderId: string;
+    orderNumber: string;
+    buyerName: string;
+    phone: string;
+    status: "SENT" | "QUEUED" | "SENDING" | "FAILED" | "SKIPPED" | "AMBIGUOUS" | "NOT_SENT" | "NO_PHONE";
+    sentAt: Date | null;
+    errorCode: string | null;
+};
+
+export type PicBlastHistory = {
+    recipients: PicBlastHistoryEntry[];
+    eligibleOrders: number;
+    scannedOrders: number;
+    withoutPhone: number;
+    duplicatePhones: number;
+    hasMore: boolean;
+    lastDriveUrl: string | null;
+};
+
+/** Current delivery state for each eligible WhatsApp recipient in the visible blast window. */
+export async function listPicBlastHistory(eventId: string): Promise<PicBlastHistory> {
+    const participants = await listPicBlastParticipants(eventId);
+    const notifications = await prisma.notification.findMany({
+        where: {
+            eventId,
+            templateKey: POST_EVENT_DOCUMENT_TEMPLATE_KEY,
+            channel: "WHATSAPP",
+        },
+        orderBy: [{ createdAt: "desc" }],
+        take: 10_000,
+        select: {
+            eventOrderId: true,
+            payload: true,
+            deliveries: {
+                where: { channel: "WHATSAPP" },
+                select: { status: true, sentAt: true, errorCode: true },
+            },
+        },
+    });
+
+    const byOrder = new Map<string, Array<{ status: string; sentAt: Date | null; errorCode: string | null }>>();
+    let lastDriveUrl: string | null = null;
+    for (const notification of notifications) {
+        if (!notification.payload) continue;
+        let payload: { driveUrl?: unknown };
+        try {
+            payload = JSON.parse(notification.payload) as { driveUrl?: unknown };
+        } catch {
+            // Legacy or malformed payloads do not prevent the delivery history from loading.
+            continue;
+        }
+        // The separate PDF upload flow uses the same template but a private downloadUrl.
+        // It must not count as a delivery of a PIC's Google Drive blast.
+        if (typeof payload.driveUrl !== "string" || !isGoogleDriveShareUrl(payload.driveUrl)) continue;
+        if (!lastDriveUrl) lastDriveUrl = payload.driveUrl;
+        if (!notification.eventOrderId) continue;
+        const states = byOrder.get(notification.eventOrderId) ?? [];
+        states.push(...notification.deliveries);
+        byOrder.set(notification.eventOrderId, states);
+    }
+
+    const recipients: PicBlastHistoryEntry[] = participants.recipients.map((recipient) => {
+        const states = byOrder.get(recipient.orderId) ?? [];
+        const sent = states.find((state) => state.status === "SENT");
+        const queued = states.find((state) => state.status === "QUEUED");
+        const sending = states.find((state) => state.status === "SENDING");
+        const ambiguous = states.find((state) => state.errorCode === "AMBIGUOUS_DELIVERY");
+        const failed = states.find((state) => state.status === "FAILED");
+        const skipped = states.find((state) => state.status === "SKIPPED");
+        const current = sent ?? sending ?? queued ?? ambiguous ?? failed ?? skipped;
+        const status: PicBlastHistoryEntry["status"] = sent
+            ? "SENT"
+            : sending
+              ? "SENDING"
+              : queued
+                ? "QUEUED"
+                : ambiguous
+                  ? "AMBIGUOUS"
+                  : failed
+                    ? "FAILED"
+                    : skipped
+                      ? "SKIPPED"
+                      : "NOT_SENT";
+        return {
+            ...recipient,
+            status,
+            sentAt: sent?.sentAt ?? null,
+            errorCode: current?.errorCode ?? null,
+        };
+    });
+    recipients.push(...participants.withoutPhoneRecipients.map((recipient) => ({
+        ...recipient,
+        phone: "",
+        status: "NO_PHONE" as const,
+        sentAt: null,
+        errorCode: "INVALID_RECIPIENT",
+    })));
+
+    return {
+        recipients,
+        eligibleOrders: participants.eligibleOrders,
+        scannedOrders: participants.scannedOrders,
+        withoutPhone: participants.withoutPhone,
+        duplicatePhones: participants.duplicatePhones,
+        hasMore: participants.hasMore,
+        lastDriveUrl,
+    };
+}
+
+/** Keep only recipients without a confirmed successful send or an in-flight attempt. */
+export function getPicBlastRetryRecipients(history: PicBlastHistory): PicBlastRecipient[] {
+    return history.recipients
+        .filter((recipient) => ["NOT_SENT", "FAILED", "SKIPPED"].includes(recipient.status))
+        .map(({ orderId, orderNumber, buyerName, phone }) => ({ orderId, orderNumber, buyerName, phone }));
+}
 
 /**
  * Enqueue one WhatsApp notification per eligible ticket buyer, idempotently.

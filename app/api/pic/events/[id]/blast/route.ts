@@ -7,7 +7,9 @@ import { requireAuth } from "@/lib/authz";
 import { requireSameOrigin } from "@/lib/csrf";
 import {
     enqueuePicEventBlast,
+    getPicBlastRetryRecipients,
     isGoogleDriveShareUrl,
+    listPicBlastHistory,
     listPicBlastParticipants,
     requireAssignedPicEvent,
 } from "@/lib/pic/blast";
@@ -39,6 +41,7 @@ export const runtime = "nodejs";
 const blastSchema = z
     .object({
         blastId: z.string().uuid(),
+        sendOnlyUnsent: z.boolean().optional().default(false),
         driveUrl: z
             .string()
             .trim()
@@ -47,6 +50,18 @@ const blastSchema = z
             .refine(isGoogleDriveShareUrl, "Gunakan tautan HTTPS dari drive.google.com atau docs.google.com."),
     })
     .strict();
+
+export async function GET(
+    _request: NextRequest,
+    { params }: { params: Promise<{ id: string }> }
+) {
+    return handleApi(async () => {
+        const scope = await requireAuth();
+        const { id: eventId } = await params;
+        await requireAssignedPicEvent(scope.userId, eventId);
+        return ok(await listPicBlastHistory(eventId));
+    });
+}
 
 export async function POST(
     request: NextRequest,
@@ -67,7 +82,29 @@ export async function POST(
         const body = await request.json().catch(() => null);
         const input = parseOrThrow(blastSchema, body);
 
-        const participants = await listPicBlastParticipants(eventId);
+        const history = input.sendOnlyUnsent ? await listPicBlastHistory(eventId) : null;
+        const participants = input.sendOnlyUnsent && history
+            ? {
+                  recipients: getPicBlastRetryRecipients(history),
+                  eligibleOrders: history.eligibleOrders,
+                  scannedOrders: history.scannedOrders,
+                  withoutPhone: history.withoutPhone,
+                  duplicatePhones: history.duplicatePhones,
+              }
+            : await listPicBlastParticipants(eventId);
+
+        if (input.sendOnlyUnsent && participants.recipients.length === 0) {
+            return ok({
+                eligibleRecipients: 0,
+                eligibleOrders: participants.eligibleOrders,
+                scannedOrders: participants.scannedOrders,
+                withoutPhone: participants.withoutPhone,
+                duplicatePhones: participants.duplicatePhones,
+                enqueued: 0,
+                existing: 0,
+                failed: 0,
+            });
+        }
 
         const delivery = await enqueuePicEventBlast({
             context,
@@ -87,6 +124,7 @@ export async function POST(
             afterState: {
                 eventId,
                 blastId: input.blastId,
+                sendOnlyUnsent: input.sendOnlyUnsent,
                 driveHost: new URL(input.driveUrl).hostname,
                 recipients: participants.recipients.length,
                 eligibleOrders: participants.eligibleOrders,
