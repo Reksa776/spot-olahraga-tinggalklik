@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 /** Send a Google Drive share link to checked-in attendees through the notification queue. */
 export function PicEventBlastForm({
@@ -13,8 +13,20 @@ export function PicEventBlastForm({
     const [busy, setBusy] = useState(false);
     const [statusMessage, setStatusMessage] = useState("");
     const [errorMessage, setErrorMessage] = useState("");
+    const [hasCompletedBlast, setHasCompletedBlast] = useState(false);
+    const pendingBlastId = useRef<string | null>(null);
 
     async function submit(formData: FormData) {
+        if (
+            hasCompletedBlast &&
+            !window.confirm(
+                `Kirim ulang tautan dokumen ini kepada ${recipientCount} pembeli dengan tiket aktif?`
+            )
+        ) {
+            return;
+        }
+
+        pendingBlastId.current ??= window.crypto.randomUUID();
         setBusy(true);
         setStatusMessage("");
         setErrorMessage("");
@@ -27,6 +39,7 @@ export function PicEventBlastForm({
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         driveUrl: String(formData.get("driveUrl") ?? ""),
+                        blastId: pendingBlastId.current,
                     }),
                 }
             );
@@ -37,8 +50,10 @@ export function PicEventBlastForm({
             }
 
             const result = body.data;
+            pendingBlastId.current = null;
+            setHasCompletedBlast(true);
             setStatusMessage(
-                `${result.enqueued} pesan masuk antrean untuk peserta yang sudah check-in. ` +
+                `${result.enqueued} pesan masuk antrean untuk pembeli tiket yang memenuhi syarat. ` +
                     `${result.existing} sudah ada di antrean, ${result.failed} gagal, ` +
                     `${result.withoutPhone} dilewati karena nomor WhatsApp tidak valid.`
             );
@@ -73,14 +88,18 @@ export function PicEventBlastForm({
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-xs text-muted-foreground">
-                    Tautan akan dikirim melalui WhatsApp ke {recipientCount} peserta yang sudah check-in.
+                    Tautan dikirim melalui WhatsApp ke {recipientCount} pembeli dengan nomor valid dan tiket aktif.
                 </p>
                 <button
                     type="submit"
                     disabled={busy || recipientCount === 0}
                     className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                    {busy ? "Mengantrekan pesan…" : "Kirim ke peserta"}
+                    {busy
+                        ? "Mengantrekan pesan…"
+                        : hasCompletedBlast
+                          ? "Kirim ulang ke peserta"
+                          : "Kirim ke peserta"}
                 </button>
             </div>
 

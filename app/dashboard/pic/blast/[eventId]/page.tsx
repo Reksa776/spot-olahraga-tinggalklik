@@ -54,7 +54,7 @@ export default async function PicBlastPage({
                 <PageHeader
                     eyebrow="PIC"
                     title="Blast pasca-acara"
-                    description={`Bagikan tautan dokumen Google Drive kepada peserta yang hadir di ${context.event.title}.`}
+                    description={`Bagikan tautan dokumen Google Drive kepada pembeli tiket ${context.event.title}.`}
                 />
             </div>
 
@@ -65,10 +65,10 @@ export default async function PicBlastPage({
             ) : null}
 
             <InfoNote>
-                Peserta yang menerima pesan adalah pembeli dengan pesanan <strong>lunas</strong>
-                dan setidaknya satu tiket berstatus <strong>check-in</strong>. Pesan dikirim
-                ke nomor WhatsApp yang diisi saat pemesanan. Pastikan tautan Drive dapat dibuka
-                oleh peserta yang memiliki tautan.
+                Pesan dikirim kepada pembeli dengan pesanan <strong>lunas</strong> dan setidaknya
+                satu tiket terbit. Status check-in tidak menjadi syarat; tiket void atau refund
+                tidak disertakan. Nomor yang digunakan adalah WhatsApp dari form pemesanan.
+                Pastikan tautan Drive dapat dibuka oleh penerima.
             </InfoNote>
 
             <SectionCard
@@ -78,7 +78,7 @@ export default async function PicBlastPage({
                 {participants.recipients.length === 0 ? (
                     <EmptyBlock
                         title="Belum ada peserta yang bisa dihubungi"
-                        description="Peserta muncul setelah pesanan lunas dan tiket berhasil di-check-in."
+                        description="Penerima muncul setelah pesanan lunas dan tiket diterbitkan."
                     />
                 ) : (
                     <DataTable

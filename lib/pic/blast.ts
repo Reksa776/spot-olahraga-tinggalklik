@@ -1,5 +1,4 @@
 import type { TicketStatus } from "@prisma/client";
-import { createHash } from "node:crypto";
 
 import { AppError } from "@/lib/api/errors";
 import { normalizeIndonesianPhone } from "@/lib/notifications/contacts";
@@ -26,8 +25,9 @@ import { prisma } from "@/lib/prisma";
  * already-established ownership rule (the same one the PIC scanner uses).
  *
  * ── WHO RECEIVES IT ─────────────────────────────────────────────────────────────
- * Buyers of PAID orders on the event that have at least one CHECKED_IN ticket. The WhatsApp
- * number entered on the order at checkout is used; a profile phone is never substituted.
+ * Buyers of PAID orders on the event that have at least one active ISSUED/CHECKED_IN ticket.
+ * Check-in is not required. VOID and REFUNDED tickets are excluded. The WhatsApp number
+ * entered on the order at checkout is used; a profile phone is never substituted.
  * Numbers are normalized to `62…`; an order without a valid mobile is counted and skipped.
  * Duplicate numbers receive one message.
  *
@@ -41,8 +41,8 @@ import { prisma } from "@/lib/prisma";
 /** One request may enqueue this many recipients. */
 export const MAX_BLAST_RECIPIENTS = 500;
 
-/** Only attendees who actually checked in receive a post-event document. */
-const PARTICIPANT_TICKET_STATUSES: TicketStatus[] = ["CHECKED_IN"];
+/** Active paid tickets qualify whether or not the attendee has checked in. */
+const PARTICIPANT_TICKET_STATUSES: TicketStatus[] = ["ISSUED", "CHECKED_IN"];
 
 /** Accept only secure Google Drive or Google Docs share URLs; the server never fetches them. */
 export function isGoogleDriveShareUrl(value: string): boolean {
@@ -139,7 +139,7 @@ export type PicBlastParticipantResult = {
     recipients: PicBlastRecipient[];
     scannedOrders: number;
     /**
-     * Every PAID order on the event that has a CHECKED_IN ticket, before the
+     * Every PAID order on the event that has an ISSUED/CHECKED_IN ticket, before the
      * `MAX_BLAST_RECIPIENTS` window. The list itself is bounded, so `recipients.length`
      * alone cannot tell the page that more participants exist.
      */
@@ -231,19 +231,17 @@ export type PicBlastEnqueueResult = {
 };
 
 /**
- * Enqueue one WhatsApp notification per checked-in participant, idempotently.
+ * Enqueue one WhatsApp notification per eligible ticket buyer, idempotently.
  *
- * The idempotency key includes the event and Drive link, so re-submitting the same link does
- * not send duplicates. A different link creates a new blast.
+ * Every deliberate blast has its own UUID. Retrying the same HTTP operation with that UUID is
+ * idempotent; an explicit resend uses a fresh UUID and can reuse the same Drive link.
  */
 export async function enqueuePicEventBlast(input: {
     context: PicBlastContext;
+    blastId: string;
     driveUrl: string;
     recipients: readonly PicBlastRecipient[];
 }): Promise<PicBlastEnqueueResult> {
-    const blastKey = createHash("sha256")
-        .update(`${input.context.event.id}:${input.driveUrl}`)
-        .digest("hex");
     let enqueued = 0;
     let existing = 0;
     let failed = 0;
@@ -251,7 +249,7 @@ export async function enqueuePicEventBlast(input: {
     for (const recipient of input.recipients) {
         try {
             const result = await enqueueNotification({
-                idempotencyKey: `pic-blast:${blastKey}:${recipient.orderId}:whatsapp:v1`,
+                idempotencyKey: `pic-blast:${input.blastId}:${recipient.orderId}:whatsapp:v1`,
                 channel: "WHATSAPP",
                 recipient: recipient.phone,
                 category: "SYSTEM",

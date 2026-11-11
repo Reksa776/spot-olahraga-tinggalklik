@@ -38,6 +38,7 @@ export const runtime = "nodejs";
 
 const blastSchema = z
     .object({
+        blastId: z.string().uuid(),
         driveUrl: z
             .string()
             .trim()
@@ -70,6 +71,7 @@ export async function POST(
 
         const delivery = await enqueuePicEventBlast({
             context,
+            blastId: input.blastId,
             driveUrl: input.driveUrl,
             recipients: participants.recipients,
         });
@@ -84,6 +86,7 @@ export async function POST(
             description: `PIC blast pasca-acara untuk event ${context.event.title}`,
             afterState: {
                 eventId,
+                blastId: input.blastId,
                 driveHost: new URL(input.driveUrl).hostname,
                 recipients: participants.recipients.length,
                 eligibleOrders: participants.eligibleOrders,
