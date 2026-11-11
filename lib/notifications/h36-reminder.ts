@@ -27,8 +27,9 @@
  * ── ELIGIBILITY IS DERIVED, NOT INVENTED ────────────────────────────────────────────
  * Paid order: `status = PAID`, `paymentStatus = PAID`, `paidAt != null` — the same rule the
  * ticket-issued notification already uses. Ticket: `ISSUED`. Event: `PUBLISHED`, not cancelled
- * or archived, `startAt` in `(now, now + 36h]`. Recipient: attendee phone, holder phone,
- * then the buyer phone captured at checkout.
+ * or archived, `startAt` in `(now, now + 36h]`. Recipient: attendee phone, then the buyer's
+ * WhatsApp number captured from the checkout form. Do not fall back to a profile phone: it can
+ * differ from the contact the buyer provided for this order.
  */
 
 import type { NotificationCategory } from "@prisma/client";
@@ -245,7 +246,6 @@ type ReminderTicket = {
     orderId: string;
     holderUserId: string | null;
     attendeePhone: string | null;
-    holder: { phone: string | null } | null;
     order: { buyerPhone: string | null };
 };
 
@@ -323,9 +323,8 @@ export async function runH36ReminderSweep(
                     orderId: true,
                     holderUserId: true,
                     attendeePhone: true,
-                    holder: { select: { phone: true } },
-                    // Checkout contact is the same number used by purchase-proof. Some buyers
-                    // have no phone saved on their account and no per-ticket attendee phone.
+                    // The buyer contact supplied in the checkout form is the intended reminder
+                    // recipient when no per-ticket attendee phone was entered.
                     order: { select: { buyerPhone: true } },
                 },
             },
@@ -367,7 +366,6 @@ export async function runH36ReminderSweep(
         for (const ticket of event.tickets) {
             const rawPhone =
                 ticket.attendeePhone?.trim() ||
-                ticket.holder?.phone?.trim() ||
                 ticket.order?.buyerPhone?.trim() ||
                 "";
 

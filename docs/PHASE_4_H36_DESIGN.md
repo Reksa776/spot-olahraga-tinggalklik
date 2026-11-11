@@ -55,7 +55,8 @@ tickets: status ISSUED
 
 Per ticket:
 
-1. `attendeePhone` (trimmed) else `holder.phone`.
+1. `attendeePhone` (trimmed), else the buyer's `eventorder.buyerPhone` captured at checkout.
+   Never use `holder.phone` as a fallback: it may differ from the contact entered for this order.
 2. Missing → `skippedNoContact`.
 3. `normalizeIndonesianPhone` fails → `skippedInvalidContact`.
 4. Valid → one WhatsApp enqueue with the normalised `62…` recipient.

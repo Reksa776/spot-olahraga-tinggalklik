@@ -71,7 +71,8 @@ Query: `Event.status = PUBLISHED`, `cancelledAt/archivedAt null`,
 `paymentStatus = PAID`, `paidAt != null`. That paid rule is copied from
 `lib/notifications/ticket-issued.ts:275-292` — no new purchase policy.
 
-Recipient: `attendeePhone` then `holder.phone`, normalised to `62…`. Missing → counted skip;
+Recipient: `attendeePhone` then checkout `eventorder.buyerPhone`, normalised to `62…`. Profile
+phone is not used because it can differ from the buyer's checkout contact. Missing → counted skip;
 invalid → counted skip. Two tickets sharing one phone produce **one** message (first by
 `createdAt`), counted as `skippedDuplicateRecipient`. The occurrence key stays per ticket as
 specified, so the outbox remains ticket-addressable.
